@@ -52,3 +52,15 @@ export function recordValue(value: unknown): Record<string, unknown> | null {
 export function arrayValue(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
 }
+
+/**
+ * The value a `Runtime.evaluate` reply carries, or `null` for a reply that is
+ * not one: a page that THREW has no value worth parsing, and its exception
+ * detail carries page-authored text - so it is dropped rather than read.
+ */
+export function readEvaluateValue(value: unknown): unknown {
+  if (!isRecord(value)) return null;
+  if (isRecord(value.exceptionDetails)) return null;
+  const result = value.result;
+  return isRecord(result) ? result.value : null;
+}

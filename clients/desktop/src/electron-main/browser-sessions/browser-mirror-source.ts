@@ -170,28 +170,12 @@ function handleServerFrame(
     case "clearSelection":
     case "blurEditable":
     case "setZoom":
-      handleMirrorPageSignal(frame);
+      // D13-D15, all seven of them: the coordinates arrive as raw page CSS
+      // pixels (the host resolved them against the asking subscriber's
+      // presented frame), so nothing here correlates a frame. A signal that
+      // arrives before the capture is up is dropped - the host's own request
+      // timeout is the answer, exactly as for a tab that never replied.
+      handle?.pageSignal(frame);
       return;
   }
-}
-
-/**
- * TODO(T10): the page-signal half of the mirror.
- *
- * T10 installs the shared page scripts (`@traycer/protocol/host/browser/page-scripts`)
- * through `BrowserDebugSession.installScriptBeforeNavigation` plus a second
- * `Runtime.addBinding`, and answers these here - `describePoint` /
- * `readSelection` echoing `requestId` AND `subscriberId` back on
- * `pointDescribed` / `selectionText`, `editableFocus` arriving unsolicited with
- * a `subscriberId` and no request id, and `setZoom` going out as
- * `Emulation.setPageScaleFactor`. The coordinates arrive in raw page CSS px,
- * already resolved host-side, so nothing here has to correlate a frame.
- *
- * Until then a signal is logged and dropped: a viewer's long-press simply never
- * gets an answer, which is the same outcome as a host that never asked.
- */
-function handleMirrorPageSignal(frame: BrowserMirrorServerFrame): void {
-  log.debug("[browser-sessions] mirror page signal is not served yet", {
-    kind: frame.kind,
-  });
 }

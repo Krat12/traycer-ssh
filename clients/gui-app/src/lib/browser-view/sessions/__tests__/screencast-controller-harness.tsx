@@ -4,6 +4,7 @@ import type { BrowserScreencastClientFrame } from "@traycer/protocol/host/browse
 import {
   createScreencastController,
   type ScreencastController,
+  type ScreencastSurfacePoint,
 } from "@/lib/browser-view/sessions/screencast-controller";
 
 export const FRAME_SIZE = { width: 800, height: 600 } as const;
@@ -49,6 +50,20 @@ export interface MountedController {
    * or `null` (the default) for a viewer that owns no row close.
    */
   readonly setRequestCloseTab: (value: (() => void) | null) => void;
+  /**
+   * What `readMobileAppShell` answers: whether this is the installed mobile app,
+   * where the keyboard follows the page's editable focus (D13) and a long press
+   * opens the context sheet (D14). `false` (the default) is desktop/web.
+   */
+  readonly setMobileAppShell: (value: boolean) => void;
+  /**
+   * What `readPageSignalsSupported` answers: whether the negotiated minor is
+   * >= 2.2. `false` (the default) is a host that would warn-drop a page signal,
+   * so the gestures needing an answer are never armed.
+   */
+  readonly setPageSignalsSupported: (value: boolean) => void;
+  /** Points a long press reported, in order. */
+  readonly longPresses: ScreencastSurfacePoint[];
 }
 
 /**
@@ -62,7 +77,10 @@ export function mountController(): MountedController {
   let videoPainting = false;
   let requestNewTab: (() => void) | null = null;
   let requestCloseTab: (() => void) | null = null;
+  let mobileAppShell = false;
+  let pageSignalsSupported = false;
   const engaged: number[] = [];
+  const longPresses: ScreencastSurfacePoint[] = [];
   const captured: { current: ScreencastController | null } = { current: null };
 
   function Harness(): React.JSX.Element {
@@ -78,6 +96,8 @@ export function mountController(): MountedController {
       readRequestNewTab: () => requestNewTab,
       readRequestCloseTab: () => requestCloseTab,
       readVideoPainting: () => videoPainting,
+      readMobileAppShell: () => mobileAppShell,
+      readPageSignalsSupported: () => pageSignalsSupported,
       refs: {
         tileRef,
         viewportRef,
@@ -92,6 +112,7 @@ export function mountController(): MountedController {
         onLocalArmCleared: () => {},
         onComposingChange: () => {},
         onDialogSettled: () => {},
+        onLongPress: (point) => longPresses.push(point),
       },
     });
     captured.current = controllerRef.current;
@@ -145,6 +166,13 @@ export function mountController(): MountedController {
     setRequestCloseTab: (value) => {
       requestCloseTab = value;
     },
+    setMobileAppShell: (value) => {
+      mobileAppShell = value;
+    },
+    setPageSignalsSupported: (value) => {
+      pageSignalsSupported = value;
+    },
+    longPresses,
   };
 }
 

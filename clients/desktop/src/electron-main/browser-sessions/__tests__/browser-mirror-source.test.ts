@@ -144,7 +144,7 @@ describe("browser.mirror source", () => {
     ]);
   });
 
-  it("carries ack, setParams and dialogResponse to the capture, and drops a not-yet-served page signal", async () => {
+  it("carries ack, setParams and dialogResponse to the capture, and forwards page signals to the capture", async () => {
     const harness = await acceptedTab();
     harness.electronTabs.handleFrame(mirrorRequest({}));
     await vi.waitFor(() => expect(harness.mirror.handles).toHaveLength(1));
@@ -175,8 +175,64 @@ describe("browser.mirror source", () => {
       },
       null,
     );
-    // T10's half of the stream. Until it lands a signal is logged and dropped,
-    // which is the same outcome as a host that never asked.
+    // T10's half of the stream: all seven page-signal kinds are handed
+    // straight to the capture, in the order the host sent them, with no
+    // frame correlation of its own to get in the way.
+    session.emit(
+      {
+        kind: "describePoint",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+        requestId: "request-a",
+        x: 10,
+        y: 20,
+      },
+      null,
+    );
+    session.emit(
+      {
+        kind: "selectAt",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+        x: 11,
+        y: 21,
+      },
+      null,
+    );
+    session.emit(
+      {
+        kind: "expandSelection",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+        unit: "paragraph",
+      },
+      null,
+    );
+    session.emit(
+      {
+        kind: "readSelection",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+        requestId: "request-b",
+      },
+      null,
+    );
+    session.emit(
+      {
+        kind: "clearSelection",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+      },
+      null,
+    );
+    session.emit(
+      {
+        kind: "blurEditable",
+        hasBinaryPayload: false,
+        subscriberId: "subscriber-1",
+      },
+      null,
+    );
     session.emit(
       {
         kind: "setZoom",
@@ -196,6 +252,31 @@ describe("browser.mirror source", () => {
     expect(handle.dialogs).toEqual([
       { dialogId: "dialog-1", accept: true, promptText: "typed" },
     ]);
+    expect(handle.signals.map((signal) => signal.kind)).toEqual([
+      "describePoint",
+      "selectAt",
+      "expandSelection",
+      "readSelection",
+      "clearSelection",
+      "blurEditable",
+      "setZoom",
+    ]);
+
+    // The capture's answer to one of those signals goes out on the mirror's
+    // own stream, not the sessions stream it shares no channel with.
+    handle.sink.event({
+      kind: "pointDescribed",
+      hasBinaryPayload: false,
+      subscriberId: "subscriber-1",
+      requestId: "request-a",
+      link: null,
+      image: null,
+      text: "hello",
+    });
+    expect(session.sentFrames.map((frame) => frame.kind)).toContain(
+      "pointDescribed",
+    );
+    expect(harness.sent).toEqual([]);
   });
 
   it("puts the capture's frames and events on its own stream", async () => {

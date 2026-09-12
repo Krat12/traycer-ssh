@@ -18,6 +18,7 @@ import type {
   BrowserViewMirrorPort,
   BrowserViewMirrorSink,
 } from "../../browser-view/manager/browser-view-mirror-capture";
+import type { BrowserMirrorPageSignalFrame } from "../../browser-view/manager/browser-view-mirror-page-signals";
 import type {
   BrowserSessionsJarPort,
   BrowserSessionsRegistryDeps,
@@ -451,6 +452,8 @@ export interface MirrorHandleRecord {
     readonly accept: boolean;
     readonly promptText: string | null;
   }>;
+  /** Page signals the capture was asked to serve, in arrival order. */
+  readonly signals: BrowserMirrorPageSignalFrame[];
   stopped: number;
   /** Where the capture would push frames; the suite drives it by hand. */
   readonly sink: BrowserViewMirrorSink;
@@ -503,6 +506,7 @@ export function createMirrorRecorder(): MirrorRecorder {
             acks: [],
             params: [],
             dialogs: [],
+            signals: [],
             stopped: 0,
             sink,
           };
@@ -516,6 +520,9 @@ export function createMirrorRecorder(): MirrorRecorder {
             },
             answerDialog: (dialogId, accept, promptText) => {
               record.dialogs.push({ dialogId, accept, promptText });
+            },
+            pageSignal: (frame) => {
+              record.signals.push(frame);
             },
             stop: () => {
               record.stopped += 1;

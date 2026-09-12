@@ -20,7 +20,7 @@ import type {
   BrowserCdpCommand,
   BrowserCdpResult,
 } from "@traycer/protocol/host/browser/contracts";
-import { isRecord } from "../guards";
+import { isRecord, readEvaluateValue } from "../guards";
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
@@ -533,12 +533,4 @@ function evaluateFailed(value: unknown): boolean {
   const result = value.result;
   if (!isRecord(result)) return true;
   return result.value !== true;
-}
-
-function readEvaluateValue(value: unknown): unknown {
-  if (!isRecord(value)) return null;
-  if (isRecord(value.exceptionDetails)) return null;
-  const result = value.result;
-  if (!isRecord(result)) return null;
-  return result.value;
 }

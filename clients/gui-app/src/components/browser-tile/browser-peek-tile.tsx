@@ -10,6 +10,7 @@ import {
   type BrowserPictureInPictureControl,
 } from "@/components/epic-canvas/renderers/browser-tile-toolbar";
 import { BrowserStartPage } from "./browser-start-page";
+import { BrowserPeekContextSheet } from "./browser-peek-context-sheet";
 import type { BrowserTileNode } from "./browser-tile-placement";
 import { useMaybeBrowserSessionsContext } from "@/components/epic-canvas/renderers/browser-sessions-context";
 import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
@@ -261,6 +262,13 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   const showStartPage = chrome.controller.url === DEFAULT_BROWSER_TILE_URL;
 
   return (
+    // No keyboard inset of its own (D13, critique-2 B20). The iOS keyboard
+    // overlays the webview (`Keyboard.resize: None`), but the app shell sizes
+    // through `h-safe-dvh`, which already subtracts `--keyboard-inset` - so the
+    // pane this tile fills shrinks on its own, the viewport `ResizeObserver`
+    // reports the smaller box, and the host reflows the page. Padding here as
+    // well would subtract the keyboard TWICE (the same trap
+    // `mobile-epic-tile-view.tsx` documents).
     <div
       ref={tileRef}
       className="flex h-full w-full flex-col bg-canvas text-foreground"
@@ -319,6 +327,16 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
               dialog={dialog}
               sheet={coarsePointer}
               onRespond={session.respondToDialog}
+            />
+          )}
+          {/* The long-press sheet (D14). No pointer-grade gate of its own: only
+              the installed mobile app arms the gesture, so a menu existing at
+              all is already the answer. */}
+          {session.contextMenu === null ? null : (
+            <BrowserPeekContextSheet
+              menu={session.contextMenu}
+              hostId={node.hostId}
+              sessionId={node.sessionId}
             />
           )}
         </div>

@@ -22,6 +22,7 @@ import {
 } from "@/components/settings/host-scope/use-host-scope";
 import { LogDetailGroup } from "@/components/settings/panels/diagnostics-log-detail-group";
 import { HOST_DIAGNOSTICS } from "@/components/settings/panels/diagnostics-settings.definitions";
+import { HostVideoPlaneRow } from "@/components/settings/panels/host-video-plane-row";
 import {
   BridgeLogEntry,
   DiagnosticsLogEntryFrame,
@@ -80,6 +81,14 @@ const HOST_LOGS_GATE_METHOD = "diagnostics.logs.list";
  * detail always had the app row to show for an unreachable host; with nothing
  * app-scoped left, a group rendered outside the gate would be an empty card
  * under a host that cannot answer.
+ *
+ * `HostVideoPlaneRow` (D11/T14) is the one addition to that "exactly what
+ * varies by host" claim: it too is a fact of the machine answering, not of
+ * this app window, so it belongs beside `cli`/`host` verbosity rather than
+ * beside `useRunnerFeatureSettingsQuery`'s desktop-local feature flags — it
+ * just owns a gate method (and an "Advanced" card) of its own, since a host
+ * can answer `config.logLevels.get` without yet answering
+ * `config.hostSettings.get`.
  *
  * The one exception is `localConfigFallbackReason`: this computer's host, when
  * its process cannot answer — stopped, or a version predating these methods —
@@ -207,6 +216,12 @@ function DiagnosticsPanelOverRpc(props: {
           ) : (
             <HostRecentLogsSection client={client} hostName={scope.hostLabel} />
           )}
+          <HostVideoPlaneRow
+            hostId={scope.hostId}
+            client={client}
+            enabled={usable}
+            hostPlatform={scope.host?.platform ?? null}
+          />
         </HostScopeGate>
       </div>
     </SettingsPanelShell>

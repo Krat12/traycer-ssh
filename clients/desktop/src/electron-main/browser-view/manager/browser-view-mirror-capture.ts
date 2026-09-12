@@ -16,6 +16,10 @@ import type {
   BrowserDebugSession,
 } from "../debug/browser-debug-session";
 import { boundedString, numberValue, recordValue } from "../guards";
+import {
+  BrowserViewMirrorPageSignals,
+  type BrowserMirrorPageSignalFrame,
+} from "./browser-view-mirror-page-signals";
 import type { BrowserViewEntry } from "./browser-view-entry";
 import type { BrowserViewDebugSessions } from "./debug-session-for";
 import {
@@ -55,6 +59,12 @@ export interface BrowserViewMirrorHandle {
     accept: boolean,
     promptText: string | null,
   ): void;
+  /**
+   * One host page-signal request (D13-D15). The answer, where there is one,
+   * leaves on the same sink the frames do, carrying the requesting
+   * subscriber's id back.
+   */
+  pageSignal(frame: BrowserMirrorPageSignalFrame): void;
   stop(): void;
 }
 
@@ -106,6 +116,7 @@ interface ActiveMirror {
   readonly entry: BrowserViewEntry;
   readonly sink: BrowserViewMirrorSink;
   readonly debug: BrowserDebugSession;
+  readonly signals: BrowserViewMirrorPageSignals;
   params: BrowserMirrorParams;
   offCdpEvent: () => void;
   /** The mirror's own sequence space; the host re-sequences per subscriber. */
@@ -169,6 +180,18 @@ export class BrowserViewMirrorCapture {
       entry,
       sink,
       debug,
+      signals: new BrowserViewMirrorPageSignals({
+        debug,
+        guestKey: entry.guestKey,
+        emit: (frame) => {
+          sink.event(frame);
+        },
+        onZoomApplied: () => {
+          // The frames already carry the new `pageScaleFactor`; the epoch is
+          // what tells every viewer its hit testing has to be re-derived.
+          this.mintViewportEpoch(mirror);
+        },
+      }),
       params,
       offCdpEvent: () => undefined,
       nextSequence: 0,
@@ -199,6 +222,9 @@ export class BrowserViewMirrorCapture {
       // an unreadable viewport is not a reason to have no pixels at all.
       await this.refreshGeometry(mirror);
       await this.startScreencast(mirror);
+      // After the pixels, and it never throws: a mirror whose page signals
+      // could not be installed is still a mirror.
+      await mirror.signals.install();
     } catch (error) {
       log.warn("[browser-view] mirror capture could not start", {
         guestKey: entry.guestKey,
@@ -224,6 +250,9 @@ export class BrowserViewMirrorCapture {
       },
       answerDialog: (dialogId, accept, promptText) => {
         this.answerDialog(mirror, dialogId, accept, promptText);
+      },
+      pageSignal: (frame) => {
+        mirror.signals.handle(frame);
       },
       stop: () => {
         this.stop(entry);
@@ -301,6 +330,9 @@ export class BrowserViewMirrorCapture {
     if (mirror.watchdog !== null) clearInterval(mirror.watchdog);
     if (mirror.pollTimer !== null) clearTimeout(mirror.pollTimer);
     mirror.offCdpEvent();
+    // The last mirror of this tab takes the scripts and the binding with it;
+    // the annotation overlay's own binding on the same attachment is untouched.
+    mirror.signals.dispose();
     if (mirror.debug.isReady()) {
       void mirror.debug
         .sendCommand("Page.stopScreencast", {}, undefined)
@@ -349,6 +381,10 @@ export class BrowserViewMirrorCapture {
     // one can be acked, and holding it would stall the new stream forever.
     mirror.pendingCdpAcks = [];
     void this.refreshGeometry(mirror);
+    // Neither the binding nor the on-new-document scripts survive a reattach:
+    // `resetDetachedState` clears the enabled flag and the re-enable list is
+    // domains only.
+    void mirror.signals.install();
   }
 
   private handleCdpEvent(
@@ -634,13 +670,7 @@ export class BrowserViewMirrorCapture {
       // that is already in flight.
       if (sameGeometry(mirror.applied, geometry)) return;
       mirror.applied = geometry;
-      mirror.epoch += 1;
-      mirror.sink.event({
-        kind: "viewportEpoch",
-        hasBinaryPayload: false,
-        epoch: mirror.epoch,
-        logicalViewport: geometry,
-      });
+      this.mintViewportEpoch(mirror);
     } catch (error) {
       log.warn("[browser-view] mirror could not read its viewport", {
         guestKey: mirror.entry.guestKey,
@@ -649,6 +679,22 @@ export class BrowserViewMirrorCapture {
     } finally {
       mirror.geometryRefreshInFlight = false;
     }
+  }
+
+  /**
+   * The next epoch for the geometry currently in `applied`. A page-scale change
+   * mints one too: the layout did not move, but what a viewer's input has to be
+   * divided by did.
+   */
+  private mintViewportEpoch(mirror: ActiveMirror): void {
+    if (mirror.stopped) return;
+    mirror.epoch += 1;
+    mirror.sink.event({
+      kind: "viewportEpoch",
+      hasBinaryPayload: false,
+      epoch: mirror.epoch,
+      logicalViewport: mirror.applied,
+    });
   }
 
   private failMirror(

@@ -37,6 +37,11 @@ export const CONFIG_LOG_LEVEL_METHODS = [
   "config.logLevels.set",
 ] as const;
 
+export const CONFIG_HOST_SETTINGS_METHODS = [
+  "config.hostSettings.get",
+  "config.hostSettings.set",
+] as const;
+
 export const DIAGNOSTICS_LOG_METHODS = [
   "diagnostics.logs.list",
   "diagnostics.logs.tail",
@@ -45,6 +50,7 @@ export const DIAGNOSTICS_LOG_METHODS = [
 export const ALL_CONFIG_RPC_METHODS = [
   ...CONFIG_SHELL_METHODS,
   ...CONFIG_LOG_LEVEL_METHODS,
+  ...CONFIG_HOST_SETTINGS_METHODS,
   ...DIAGNOSTICS_LOG_METHODS,
 ] as const;
 
@@ -67,6 +73,13 @@ export interface ConfigHostFixture {
   readonly getLogLevels: () => {
     cliLogLevel: LogLevel;
     hostLogLevel: LogLevel;
+  };
+  readonly setHostSettingsCalls: Array<{
+    readonly browserVideoPlane: boolean | null;
+  }>;
+  readonly getHostSettings: () => {
+    browserVideoPlane: boolean | null;
+    effective: boolean;
   };
   /**
    * How many times `host.status` was answered by this fixture's client -
@@ -91,6 +104,16 @@ export function buildConfigHostFixture(options: {
   readonly isLocalMachine: boolean;
   readonly cli?: MockTraycerCli;
   readonly logLevels?: { cliLogLevel: LogLevel; hostLogLevel: LogLevel };
+  /**
+   * `effective` is what a real host computes from `browserVideoPlane` and its
+   * own platform (D11: off on darwin, on elsewhere) — this fixture never
+   * derives it, so a test states both halves explicitly instead of the
+   * fixture guessing a platform default it does not model.
+   */
+  readonly hostSettings?: {
+    browserVideoPlane: boolean | null;
+    effective: boolean;
+  };
   readonly diagnosticsLogs?: readonly DiagnosticsLogFixtureEntry[];
   /**
    * Replaces (rather than merges into) individual method handlers after the
@@ -108,6 +131,18 @@ export function buildConfigHostFixture(options: {
   const setLogLevelCalls: Array<{
     readonly scope: ConfigLogLevelScope;
     readonly level: LogLevel;
+  }> = [];
+  let hostSettings = options.hostSettings ?? {
+    browserVideoPlane: null,
+    effective: false,
+  };
+  // What `browserVideoPlane: null` resolves to on the fixture's (unmodelled)
+  // platform — pinned once, from the initial fixture, so a `set` back to
+  // `null` returns to the SAME default rather than "off" by construction.
+  const platformDefaultEffective =
+    hostSettings.browserVideoPlane === null ? hostSettings.effective : false;
+  const setHostSettingsCalls: Array<{
+    readonly browserVideoPlane: boolean | null;
   }> = [];
   const logs = new Map(
     (options.diagnosticsLogs ?? []).map((entry) => [
@@ -196,6 +231,18 @@ export function buildConfigHostFixture(options: {
           : { ...logLevels, hostLogLevel: req.level };
       return { ...logLevels };
     },
+    "config.hostSettings.get": () => ({ ...hostSettings }),
+    "config.hostSettings.set": (req) => {
+      setHostSettingsCalls.push({ browserVideoPlane: req.browserVideoPlane });
+      hostSettings = {
+        browserVideoPlane: req.browserVideoPlane,
+        effective:
+          req.browserVideoPlane === null
+            ? platformDefaultEffective
+            : req.browserVideoPlane,
+      };
+      return { ...hostSettings };
+    },
     "diagnostics.logs.list": () => ({
       logs: [...logs.entries()].map(([target, entry]) => ({
         target,
@@ -259,6 +306,8 @@ export function buildConfigHostFixture(options: {
     cli,
     setLogLevelCalls,
     getLogLevels: () => logLevels,
+    setHostSettingsCalls,
+    getHostSettings: () => hostSettings,
     hostStatusCalls: () => hostStatusCalls,
   };
 }

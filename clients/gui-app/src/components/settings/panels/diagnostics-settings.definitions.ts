@@ -58,4 +58,35 @@ export const HOST_DIAGNOSTICS = defineSettingsSection("diagnostics", {
     availableWhen: alwaysAvailable,
     keywords: [],
   },
+  // Host-scoped like `logDetail` above, but a fact of the machine rather than
+  // its logs — its own card so a host too old for `config.hostSettings.get`
+  // drops just this row (see `HostVideoPlaneRow`), not the log-level card too.
+  advanced: {
+    kind: "group",
+    search: { contributesTo: "page" },
+    label: "Advanced",
+    description: null,
+    breadcrumb: null,
+    availableWhen: alwaysAvailable,
+    keywords: [],
+  },
+  videoPlane: {
+    kind: "row",
+    group: "advanced",
+    search: { contributesTo: "page" },
+    label: "Low-latency video for remote viewing",
+    description:
+      "Streams this host's browser tabs to your phone and other devices over WebRTC instead of images, which is smoother on a good network. On macOS, turning this on makes the host ask for Screen Recording permission and for permission to reach devices on your local network. Leave it off and tabs still stream as images.",
+    availableWhen: alwaysAvailable,
+    keywords: [
+      "webrtc",
+      "video",
+      "screen recording",
+      "local network",
+      "browser",
+      "remote",
+      "phone",
+      "mobile",
+    ],
+  },
 });

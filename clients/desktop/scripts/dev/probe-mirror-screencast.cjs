@@ -210,4 +210,20 @@ async function probePageScaleFactor(guest) {
   console.log(
     `[pageScaleFactor] accepted=${accepted} visualViewport.scale ${before} -> ${after}`,
   );
+  // T10 step 0's second half: a `<webview>` has its own zoom
+  // (`browser-view-port.ts` setZoomFactor, `windows/window-zoom.ts`), and the
+  // desktop user may change it while a mirror is live. If that resets the page
+  // scale, `setZoom` on a mirrored tab is not durable and T13 hides double-tap
+  // zoom for mirrored tabs.
+  const zoomBefore = guest.getZoomFactor();
+  guest.setZoomFactor(1.25);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const afterZoom = await guest.executeJavaScript("visualViewport.scale");
+  guest.setZoomFactor(zoomBefore);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const afterRestore = await guest.executeJavaScript("visualViewport.scale");
+  console.log(
+    `[pageScaleFactor] survives setZoomFactor: ${after} -> ${afterZoom} ` +
+      `(zoom 1.25) -> ${afterRestore} (zoom ${zoomBefore})`,
+  );
 }

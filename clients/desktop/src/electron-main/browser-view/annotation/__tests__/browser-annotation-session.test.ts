@@ -6,6 +6,7 @@ import type {
   BrowserAnnotationTheme,
 } from "../../../../ipc-contracts/browser-annotation-types";
 import type { RecordedCommand } from "../../debug/__tests__/browser-debug-session-test-support";
+import { BROWSER_EDITABLE_FOCUS_BINDING } from "@traycer/protocol/host/browser/page-scripts";
 import {
   ANNOTATION_BINDING_NAME,
   ANNOTATION_VIEWPORT_SIZE_EXPRESSION,
@@ -16,6 +17,7 @@ import {
 import { ANNOTATION_OVERLAY_GUEST_SOURCE } from "../browser-annotation-overlay-guest.generated";
 import { BrowserAnnotationSession } from "../browser-annotation-session";
 import { BrowserDebugSession } from "../../debug/browser-debug-session";
+import { BrowserViewMirrorPageSignals } from "../../manager/browser-view-mirror-page-signals";
 import type {
   BrowserViewCapturedImage,
   BrowserViewDebugger,
@@ -91,6 +93,13 @@ class FakeDebugger implements BrowserViewDebugger {
   private addBindingResolve: ((value: unknown) => void) | null = null;
   private prepareAttachResolve: ((value: unknown) => void) | null = null;
   private readonly events = new EventEmitter();
+  /**
+   * A mirror's page scripts need a real identifier back, not the `{}` this
+   * fake otherwise answers everything with - `installScriptBeforeNavigation`
+   * throws without one, which would swallow the whole mirror install behind
+   * a caught warning instead of exercising it.
+   */
+  private scriptIdentifierCounter = 0;
 
   constructor(attached: boolean) {
     this.attached = attached;
@@ -135,6 +144,12 @@ class FakeDebugger implements BrowserViewDebugger {
         });
       }
       return Promise.resolve({});
+    }
+    if (method === "Page.addScriptToEvaluateOnNewDocument") {
+      this.scriptIdentifierCounter += 1;
+      return Promise.resolve({
+        identifier: `mirror-script-${this.scriptIdentifierCounter}`,
+      });
     }
     if (method === "Page.createIsolatedWorld") {
       if (this.missingWorld) {
@@ -1234,5 +1249,47 @@ describe("BrowserAnnotationSession annotation overlay", () => {
     expect(retry.isActive()).toBe(true);
     expect(retryEvents).toEqual([]);
     retry.dispose("tile-close");
+  });
+
+  it("keeps its own binding working alongside a mirror's page signals on the same guest, and the mirror removes only its own binding", async () => {
+    const harness = createHarness(true);
+    await harness.session.start();
+
+    // A second binding on the SAME shared attachment (`onBindingCalled`'s
+    // fan-out serves both), never a replacement for the annotation's.
+    const pageSignals = new BrowserViewMirrorPageSignals({
+      debug: harness.debugSession,
+      guestKey: "guest-1",
+      emit: () => undefined,
+      onZoomApplied: () => undefined,
+    });
+    await pageSignals.install();
+
+    emitBinding(
+      harness.webContents.debugger,
+      { type: "stateChanged", mode: "region", markCount: 1 },
+      77,
+    );
+    expect(harness.events).toEqual([
+      { type: "stateChanged", mode: "region", markCount: 1 },
+    ]);
+
+    pageSignals.dispose();
+
+    // By NAME: the annotation overlay's own binding on the same attachment
+    // must survive the mirror's own teardown.
+    expect(
+      harness.webContents.debugger
+        .finds("Runtime.removeBinding")
+        .map((command) => command.params.name),
+    ).toEqual([BROWSER_EDITABLE_FOCUS_BINDING]);
+
+    harness.session.dispose("tile-close");
+
+    expect(
+      harness.webContents.debugger
+        .finds("Runtime.removeBinding")
+        .map((command) => command.params.name),
+    ).toEqual([BROWSER_EDITABLE_FOCUS_BINDING, ANNOTATION_BINDING_NAME]);
   });
 });

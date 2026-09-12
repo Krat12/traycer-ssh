@@ -13,6 +13,7 @@ import type {
   BrowserScreencastClientFrame,
   BrowserScreencastServerFrameV22,
 } from "@traycer/protocol/host/browser/contracts";
+import { toast } from "sonner";
 import { BrowserScreencastStreamClient } from "@traycer-clients/shared/host-transport/browser-screencast-stream-client";
 import type {
   StreamCloseReason,
@@ -33,7 +34,9 @@ import {
   type ScreencastImeHandlers,
   type ScreencastOverlayHandlers,
   type ScreencastSessionRefs,
+  type ScreencastSurfacePoint,
 } from "@/lib/browser-view/sessions/screencast-controller";
+import { isMobileApp } from "@/lib/mobile-app";
 import type {
   AgentCursorPosition,
   ScreencastFrameSize,
@@ -92,6 +95,74 @@ const RESUBSCRIBE_MAX_ATTEMPTS = 8;
 /** The loader line while a bump is pending, in place of "Screencast ended.". */
 const RESUBSCRIBING_DETAILS = "Reconnecting…";
 
+/**
+ * How long a long press waits for its `describePoint` answer (D14). Past it the
+ * gesture is closed silently rather than left as a sheet that never opens: the
+ * finger is long gone, and a sheet arriving a beat later is a sheet over
+ * whatever the reader is doing now.
+ */
+const DESCRIBE_POINT_TIMEOUT_MS = 3_000;
+
+export type ScreencastSelectionUnit = Extract<
+  BrowserScreencastClientFrame,
+  { readonly kind: "expandSelection" }
+>["unit"];
+
+/**
+ * What "Select more" walks to next, or `null` once the page is fully selected
+ * and the row has nothing left to offer. Exhaustive on the unit, so a fourth
+ * one fails to compile here rather than silently ending the cycle.
+ */
+function nextSelectionUnit(
+  unit: ScreencastSelectionUnit,
+): ScreencastSelectionUnit | null {
+  switch (unit) {
+    case "sentence":
+      return "paragraph";
+    case "paragraph":
+      return "all";
+    case "all":
+      return null;
+    default: {
+      const unhandled: never = unit;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Process-wide, because a request id only has to be unique among the answers
+ * ONE subscription is waiting for and a counter per hook would be indexed by
+ * nothing. Prefixed so a stray id in a host log reads as this client's.
+ */
+let screencastRequestSerial = 0;
+function nextScreencastRequestId(): string {
+  screencastRequestSerial += 1;
+  return `pg-${screencastRequestSerial}`;
+}
+
+/**
+ * The clipboard write the long-press sheet's copy rows end in. It lands from a
+ * FRAME handler, not a click (the text is the host's answer), so it cannot use
+ * `useClipboardCopy` - and `navigator.clipboard` is absent in an insecure
+ * context, where reading `.writeText` throws synchronously rather than
+ * rejecting. Both boundaries report the same thing.
+ */
+function copyToClipboard(text: string): void {
+  try {
+    void navigator.clipboard.writeText(text).then(
+      () => {
+        toast.success("Copied");
+      },
+      () => {
+        toast.error("Couldn't copy to the clipboard.");
+      },
+    );
+  } catch {
+    toast.error("Couldn't copy to the clipboard.");
+  }
+}
+
 // The one re-export left: `ScreencastDialog` is this hook's OUTPUT type, so
 // tiles read it off the session rather than off the controller they never see.
 export type { ScreencastDialog };
@@ -116,6 +187,33 @@ export interface ScreencastImage {
   readonly src: string;
   readonly sequence: number;
 }
+
+/** What the host found under a long press, and what can be done about it (D14). */
+export interface ScreencastContextMenuData {
+  /** URL strings or `null`; a point can be a link, an image, both, or neither. */
+  readonly link: string | null;
+  readonly image: string | null;
+  /** The page text around the point - the offer of a selection, not the selection. */
+  readonly text: string | null;
+  /** What the host reports SELECTED right now, once it has answered a read. */
+  readonly selection: string | null;
+  /** The next unit "Select more" would grow to, `null` once `all` is spent. */
+  readonly nextExpandUnit: ScreencastSelectionUnit | null;
+}
+
+/**
+ * The long-press sheet's model (D14). Every string here is the HOST's - the
+ * link, the image address and the selected text all come off the page through
+ * `describePoint` / `selectionText`, never out of a frame client-side.
+ */
+export type ScreencastContextMenu = ScreencastContextMenuData & {
+  /** Copy the page's live selection: one `readSelection`, clipboard on the answer. */
+  readonly copySelection: () => void;
+  /** Grow the selection one unit and re-read it, so the sheet shows what it took. */
+  readonly expandSelection: () => void;
+  /** Dismiss. Drops the page's selection too - the sheet made it, the sheet owns it. */
+  readonly close: () => void;
+};
 
 export interface ScreencastSession {
   readonly refs: ScreencastSessionRefs;
@@ -160,6 +258,12 @@ export interface ScreencastSession {
    * driving it. Positional only - the overlay owns how long it stays visible.
    */
   readonly agentCursor: AgentCursorPosition | null;
+  /**
+   * The long-press sheet, or `null` when none is open - which on every shell but
+   * the installed mobile app is always (D14: the controller does not arm the
+   * gesture there, and neither does it against a pre-2.2 host).
+   */
+  readonly contextMenu: ScreencastContextMenu | null;
   readonly overlayHandlers: ScreencastOverlayHandlers;
   readonly imeHandlers: ScreencastImeHandlers;
 }
@@ -395,12 +499,37 @@ export function useScreencastSession(
     readonly at: number;
   } | null>(null);
 
+  /**
+   * The `describePoint` a long press is waiting on, with the point it asked
+   * about (the sheet's selection request reuses it) and the timer that gives up.
+   * A ref, not state: no render reads a request in flight, and the answer
+   * arrives in a frame handler.
+   */
+  const describePointRef = useRef<{
+    readonly requestId: string;
+    readonly point: ScreencastSurfacePoint;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  /**
+   * The `readSelection` awaiting an answer. `copy` is what distinguishes "Copy
+   * text" from "Select more": both read the selection back, only one of them
+   * writes it to the clipboard.
+   */
+  const readSelectionRef = useRef<{
+    readonly requestId: string;
+    readonly copy: boolean;
+  } | null>(null);
+  /** Latest-value read of the open sheet, for the actions below. */
+  const contextMenuRef = useRef<ScreencastContextMenuData | null>(null);
+
   const [armedState, setArmedState] = useState<ClientScoped<number> | null>(
     null,
   );
   const [dialogState, setDialogState] =
     useState<ClientScoped<ScreencastDialog> | null>(null);
   const [composing, setComposing] = useState(false);
+  const [contextMenuState, setContextMenuState] =
+    useState<ScreencastContextMenuData | null>(null);
   const [agentCursorState, setAgentCursorState] =
     useState<ClientScoped<AgentCursorPosition> | null>(null);
   const [videoViewState, setVideoView] =
@@ -511,6 +640,32 @@ export function useScreencastSession(
     setDialogState(null);
     setArmedState(null);
   }, []);
+  /**
+   * One page-signal frame onto the live stream. Every 2.2 client frame the sheet
+   * and the keyboard send goes through here, and the SHARED client drops it when
+   * the negotiated minor is below 2.2 - which is the belt to the controller's
+   * braces (it does not arm the gestures that need an answer at all).
+   */
+  const sendPageSignal = useCallback((frame: BrowserScreencastClientFrame) => {
+    streamRef.current?.sendClientFrame(frame);
+  }, []);
+  /**
+   * Whether this host can answer a page signal (>= 2.2). Client-wide per method,
+   * which is exactly the grain that matters: the tile's own subscription is on
+   * this client and negotiated the same minor.
+   */
+  const readPageSignalsSupported = useCallback((): boolean => {
+    const version =
+      clientRef.current?.getMethodSchemaVersion("browser.screencast") ?? null;
+    if (version === null) return false;
+    return version.major > 2 || (version.major === 2 && version.minor >= 2);
+  }, []);
+  const clearDescribePoint = useCallback(() => {
+    const pending = describePointRef.current;
+    if (pending === null) return;
+    clearTimeout(pending.timer);
+    describePointRef.current = null;
+  }, []);
   // eslint-disable-next-line react-hooks/refs -- the controller only stores the ref bag; it reads `.current` from handlers and effects, never during render.
   const [controller] = useState<ScreencastController>(() =>
     createScreencastController({
@@ -524,6 +679,10 @@ export function useScreencastSession(
       readVideoPainting: () => videoActiveRef.current,
       readRequestNewTab: () => requestNewTabRef.current,
       readRequestCloseTab: () => requestCloseTabRef.current,
+      // A boot-time constant, read through the same seam as everything else the
+      // controller cannot capture (D13, D14).
+      readMobileAppShell: isMobileApp,
+      readPageSignalsSupported,
       listeners: {
         // Control, not the arm epoch, is what a render shows: a hover pre-arm
         // holds the epoch at the host but drives nothing.
@@ -536,6 +695,28 @@ export function useScreencastSession(
         onComposingChange: setComposing,
         onDialogSettled: () => {
           setDialogState(null);
+        },
+        // The gesture is the controller's; the request, its correlation and the
+        // sheet are this hook's, because all three outlive the finger (D14).
+        onLongPress: (point) => {
+          const requestId = nextScreencastRequestId();
+          clearDescribePoint();
+          describePointRef.current = {
+            requestId,
+            point,
+            timer: setTimeout(() => {
+              describePointRef.current = null;
+            }, DESCRIBE_POINT_TIMEOUT_MS),
+          };
+          sendPageSignal({
+            kind: "describePoint",
+            hasBinaryPayload: false,
+            requestId,
+            x: point.x,
+            y: point.y,
+            castSequence: point.castSequence,
+            viewportEpoch: point.viewportEpoch,
+          });
         },
       },
     }),
@@ -709,6 +890,48 @@ export function useScreencastSession(
       );
     };
 
+    /**
+     * The 2.2 page signals (D13, D14): the page's editable-focus report, and the
+     * two answers the long-press sheet waits for. Their kinds are disjoint from
+     * every branch of `onServerFrame`'s chain, so this runs beside that chain
+     * rather than inside it.
+     */
+    const handlePageSignalFrame = (
+      frame: BrowserScreencastServerFrameV22,
+    ): void => {
+      if (frame.kind === "editableFocus") {
+        // The keyboard's only trigger on the mobile app, and a no-op on every
+        // other shell (D13). `rect` is deliberately unread here: the page script
+        // scrolls the field into view itself (critique-2 B20).
+        controller.applyEditableFocus(frame);
+        return;
+      }
+      if (frame.kind === "pointDescribed") {
+        const pending = describePointRef.current;
+        // An answer nobody is waiting for is dropped - a timed-out gesture, or
+        // a stale request from before a resubscribe.
+        if (pending === null || pending.requestId !== frame.requestId) return;
+        clearDescribePoint();
+        openScreencastContextMenu({
+          frame,
+          point: pending.point,
+          send,
+          setContextMenuState,
+        });
+        return;
+      }
+      if (frame.kind !== "selectionText") return;
+      const pending = readSelectionRef.current;
+      if (pending === null || pending.requestId !== frame.requestId) return;
+      readSelectionRef.current = null;
+      setContextMenuState((current) =>
+        current === null ? null : { ...current, selection: frame.text },
+      );
+      // Deliberately outside the sheet's lifetime: "Copy text" dismisses, and
+      // the copy it asked for still has to land.
+      if (pending.copy) copyToClipboard(frame.text);
+    };
+
     const onServerFrame = (
       frame: BrowserScreencastServerFrameV22,
       binaryPayload: Uint8Array | null,
@@ -724,6 +947,10 @@ export function useScreencastSession(
       // willing to send. Same split PiP already uses (pip-headless-stream.ts).
       if (frame.kind === "frame") {
         controller.noteFrameArrived(frame.sequence);
+        // The page's own scale, which re-syncs the double tap's local flag: the
+        // host re-mints the viewport epoch after a zoom, so this is the first
+        // frame that reports the new one (D15).
+        controller.notePageScaleFactor(frame.metadata.pageScaleFactor);
         // A delivered frame is what makes the attempt budget per-outage
         // rather than per-lifetime: this subscription produces, so the
         // ladder starts over from 250ms.
@@ -778,6 +1005,7 @@ export function useScreencastSession(
           });
         }
       }
+      handlePageSignalFrame(frame);
       // D20: a `complete` is a routine event, so the ladder - not the reader
       // - is what re-establishes the pump. A `refused` is the opposite: it
       // says re-subscribing changes nothing until the host does.
@@ -858,10 +1086,16 @@ export function useScreencastSession(
       // dead round's `srcObject` until its first decoded frame lands.
       setVideoView(NO_VIDEO_VIEW);
       setVideoStats(null);
+      // The sheet describes a point on a stream that is going away, and the
+      // requests behind it can no longer be answered.
+      clearDescribePoint();
+      readSelectionRef.current = null;
+      setContextMenuState(null);
       controller.clearLocalArm(false);
       opened.close();
     };
   }, [
+    clearDescribePoint,
     clearResubscribeTimer,
     client,
     controller,
@@ -915,6 +1149,7 @@ export function useScreencastSession(
     requestCloseTabRef.current = options.onRequestCloseTab;
     videoStatsRef.current = videoStats;
     tabStillListedRef.current = options.tabStillListed;
+    contextMenuRef.current = contextMenuState;
   });
 
   /**
@@ -1140,12 +1375,65 @@ export function useScreencastSession(
     };
   }, [notePresented]);
 
+  const copyContextSelection = useCallback(() => {
+    const requestId = nextScreencastRequestId();
+    readSelectionRef.current = { requestId, copy: true };
+    sendPageSignal({
+      kind: "readSelection",
+      hasBinaryPayload: false,
+      requestId,
+    });
+  }, [sendPageSignal]);
+  const expandContextSelection = useCallback(() => {
+    // Read through the ref rather than inside a state updater: the two frames
+    // below are a side effect, and an updater may run twice.
+    const unit = contextMenuRef.current?.nextExpandUnit ?? null;
+    if (unit === null) return;
+    const requestId = nextScreencastRequestId();
+    readSelectionRef.current = { requestId, copy: false };
+    sendPageSignal({ kind: "expandSelection", hasBinaryPayload: false, unit });
+    sendPageSignal({
+      kind: "readSelection",
+      hasBinaryPayload: false,
+      requestId,
+    });
+    setContextMenuState((current) =>
+      current === null
+        ? null
+        : { ...current, nextExpandUnit: nextSelectionUnit(unit) },
+    );
+  }, [sendPageSignal]);
+  const closeContextMenu = useCallback(() => {
+    setContextMenuState(null);
+    // A pending `readSelection` is deliberately LEFT pending: "Copy text"
+    // dismisses the sheet, and the clipboard write it asked for is still owed.
+    sendPageSignal({ kind: "clearSelection", hasBinaryPayload: false });
+  }, [sendPageSignal]);
+  const contextMenu = useMemo<ScreencastContextMenu | null>(
+    () =>
+      contextMenuState === null
+        ? null
+        : {
+            ...contextMenuState,
+            copySelection: copyContextSelection,
+            expandSelection: expandContextSelection,
+            close: closeContextMenu,
+          },
+    [
+      closeContextMenu,
+      contextMenuState,
+      copyContextSelection,
+      expandContextSelection,
+    ],
+  );
+
   return {
     refs,
     ...planeView,
     armedEpoch,
     dialog,
     composing,
+    contextMenu,
     disarm: controller.disarm,
     requestNav: controller.requestNav,
     releaseForwardedPageKeys: controller.releaseForwardedPageKeys,
@@ -1155,6 +1443,48 @@ export function useScreencastSession(
     overlayHandlers: controller.overlayHandlers,
     imeHandlers: controller.imeHandlers,
   };
+}
+
+/**
+ * The long press's answer, turned into a sheet (D14).
+ *
+ * A point that is nothing - no link, no image, no text - opens NOTHING: an empty
+ * sheet is worse than the gesture appearing not to have registered. A point with
+ * text puts the page's selection on it right away, so the reader can see what
+ * "Copy text" would take and "Select more" has something to grow; the copy rows
+ * then act on that live selection rather than re-selecting, which is what lets
+ * "Copy text" follow an expansion instead of collapsing it back to one word.
+ */
+function openScreencastContextMenu(input: {
+  readonly frame: Extract<
+    BrowserScreencastServerFrameV22,
+    { readonly kind: "pointDescribed" }
+  >;
+  readonly point: ScreencastSurfacePoint;
+  readonly send: (frame: BrowserScreencastClientFrame) => void;
+  readonly setContextMenuState: (
+    next: ScreencastContextMenuData | null,
+  ) => void;
+}): void {
+  const { frame, point, send } = input;
+  if (frame.link === null && frame.image === null && frame.text === null)
+    return;
+  input.setContextMenuState({
+    link: frame.link,
+    image: frame.image,
+    text: frame.text,
+    selection: null,
+    nextExpandUnit: frame.text === null ? null : "sentence",
+  });
+  if (frame.text === null) return;
+  send({
+    kind: "selectAt",
+    hasBinaryPayload: false,
+    x: point.x,
+    y: point.y,
+    castSequence: point.castSequence,
+    viewportEpoch: point.viewportEpoch,
+  });
 }
 
 /**
