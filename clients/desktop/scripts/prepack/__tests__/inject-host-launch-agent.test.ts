@@ -66,9 +66,23 @@ const REAL_STAMP_SCRIPT_PATH = path.resolve(
 );
 const REAL_PACKAGE_JSON = JSON.parse(
   readFileSync(REAL_PACKAGE_JSON_PATH, "utf8"),
-) as { build: { productName: string; appId: string } };
+) as {
+  build: {
+    productName: string;
+    appId: string;
+    mac: { extendInfo: Record<string, string> };
+  };
+};
 const PRODUCT_NAME = REAL_PACKAGE_JSON.build.productName;
 const APP_ID = REAL_PACKAGE_JSON.build.appId;
+/**
+ * T05: both bundles that can raise the macOS Local Network prompt must read
+ * the same sentence. Taking the helper's expectation FROM the desktop app's
+ * `extendInfo` is what keeps them byte-identical - a third literal here could
+ * drift from both.
+ */
+const LOCAL_NETWORK_USAGE_DESCRIPTION =
+  REAL_PACKAGE_JSON.build.mac.extendInfo.NSLocalNetworkUsageDescription;
 
 interface InjectHostLaunchAgentModule {
   afterPack: (context: {
@@ -397,6 +411,13 @@ describe("inject-host-launch-agent afterPack", () => {
         ).not.toThrow();
         expect(readFileSync(helperInfoPlist, "utf8")).toContain(
           `<string>${APP_ID}.host</string>`,
+        );
+        // Reason text only - the key does not suppress the Local Network
+        // prompt; hostSettings.browserVideoPlane (T03) is what prevents it on
+        // a host. plutil -lint above is the XML-validity half of this pair.
+        expect(readFileSync(helperInfoPlist, "utf8")).toContain(
+          `<key>NSLocalNetworkUsageDescription</key>
+  <string>${LOCAL_NETWORK_USAGE_DESCRIPTION}</string>`,
         );
 
         const agentPlistPath = path.join(

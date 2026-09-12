@@ -150,7 +150,8 @@
       "entitlements": "resources/bundle/entitlements.mac.plist",
       "entitlementsInherit": "resources/bundle/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Traycer uses the microphone for voice dictation in the composer."
+        "NSMicrophoneUsageDescription": "Traycer uses the microphone for voice dictation in the composer.",
+        "NSLocalNetworkUsageDescription": "Traycer streams browser tabs to your other devices over your local network when they are nearby."
       },
       "extraResources": [
         {

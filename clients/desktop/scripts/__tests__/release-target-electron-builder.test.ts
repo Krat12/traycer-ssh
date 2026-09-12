@@ -11,6 +11,12 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 
+// The anchor for T05's sentence: this literal pins package.json, and
+// inject-host-launch-agent.test.ts asserts the host helper's Info.plist
+// against package.json - so both Local Network prompts read the same string.
+const LOCAL_NETWORK_USAGE_DESCRIPTION =
+  "Traycer streams browser tabs to your other devices over your local network when they are nearby.";
+
 const scriptSource = join(
   process.cwd(),
   "scripts",
@@ -286,5 +292,14 @@ describe("release-target-electron-builder", () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("TRAYCER_RELEASE_REPO");
+  });
+
+  it("declares NSLocalNetworkUsageDescription in build.mac.extendInfo", () => {
+    const pkg: {
+      build?: { mac?: { extendInfo?: Record<string, string> } };
+    } = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    expect(pkg.build?.mac?.extendInfo?.NSLocalNetworkUsageDescription).toBe(
+      LOCAL_NETWORK_USAGE_DESCRIPTION,
+    );
   });
 });

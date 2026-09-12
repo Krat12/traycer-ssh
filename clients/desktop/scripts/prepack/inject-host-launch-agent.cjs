@@ -386,6 +386,11 @@ function installHelperApp(appPath, archName) {
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <!-- Reason text only: this supplies the Local Network prompt's copy, it
+       does not suppress the prompt. hostSettings.browserVideoPlane (T03) is
+       what prevents it from firing on a host. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Traycer streams browser tabs to your other devices over your local network when they are nearby.</string>
 </dict>
 </plist>
 `;
