@@ -30,7 +30,6 @@ import {
   LANDING_BROWSER_TAB_CAP,
   landingBrowserCapMessage,
   landingBrowserTabCount,
-  landingBrowserViewerMessage,
   useLandingBrowserOpenTab,
 } from "../use-landing-browser-open-tab";
 
@@ -49,6 +48,7 @@ function sessionsState(
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: () => Promise.reject(new Error("not used in this test")),
@@ -95,9 +95,6 @@ function renderOpener(args: {
   return renderHook(
     () =>
       useLandingBrowserOpenTab({
-        // Every scenario below is about a shell that CAN drive a tab; the one
-        // that is not renders its own opener.
-        canDriveTabs: true,
         hostId: HOST_ID,
         browserSessions:
           args.sessions === null ? {} : { [HOST_ID]: args.sessions },
@@ -134,7 +131,6 @@ describe("landingBrowserTabCount", () => {
     const { result, rerender } = renderHook(
       () =>
         useLandingBrowserOpenTab({
-          canDriveTabs: true,
           hostId: hostRef.current,
           browserSessions: {
             "host-a": sessionsState({ openTab }),
@@ -195,44 +191,6 @@ describe("landingBrowserTabCount", () => {
       { tabId: "tab-b", placeholderInstanceId: "placeholder-b" },
       { tabId: "tab-a", placeholderInstanceId: "placeholder-a" },
     ]);
-  });
-
-  // A shell with no native browser capability can only WATCH a tab: the tile
-  // renders as a "View only" screencast, and an independent session has no
-  // agent driving it either. The chord opens without ever rendering the
-  // chooser's card, so the refusal has to be in the opener as well.
-  it("refuses on a shell that could only watch the tab it opened", async () => {
-    const openTab = vi.fn(() =>
-      Promise.resolve({
-        sessionId: "session-1",
-        tabId: "tab-1",
-        handoffToken: null,
-      }),
-    );
-    const onOpened = vi.fn();
-    const { result } = renderHook(
-      () =>
-        useLandingBrowserOpenTab({
-          canDriveTabs: false,
-          hostId: HOST_ID,
-          browserSessions: { [HOST_ID]: sessionsState({ openTab }) },
-          onOpened,
-        }),
-      { wrapper: QueryWrapper },
-    );
-
-    act(() => {
-      result.current.open({ placeholderInstanceId: null });
-    });
-
-    await waitFor(() => {
-      expect(mocks.toastError).toHaveBeenCalledWith(
-        landingBrowserViewerMessage(),
-      );
-    });
-    // The device was never asked, so no tab was left open on it.
-    expect(openTab).not.toHaveBeenCalled();
-    expect(onOpened).not.toHaveBeenCalled();
   });
 
   it("has no answer before the device publishes an inventory", () => {
@@ -376,7 +334,6 @@ describe("useLandingBrowserOpenTab", () => {
     const { result, rerender } = renderHook(
       (props: { readonly sessions: BrowserSessionsState }) => ({
         opener: useLandingBrowserOpenTab({
-          canDriveTabs: true,
           hostId: HOST_ID,
           browserSessions: { [HOST_ID]: props.sessions },
           onOpened: () => undefined,
@@ -448,7 +405,6 @@ describe("useLandingBrowserOpenTab", () => {
         readonly browserSessions: LandingBrowserSessionEntries;
       }) => ({
         opener: useLandingBrowserOpenTab({
-          canDriveTabs: true,
           hostId: props.hostId,
           browserSessions: props.browserSessions,
           onOpened: () => undefined,
@@ -563,7 +519,6 @@ describe("useLandingBrowserOpenTab", () => {
     const { result, rerender } = renderHook(
       () =>
         useLandingBrowserOpenTab({
-          canDriveTabs: true,
           hostId: hostRef.current,
           browserSessions: {
             "host-a": sessionsState({ openTab }),

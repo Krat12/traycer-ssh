@@ -2147,8 +2147,8 @@ describe("WsStreamClient", () => {
     browserSessionsSession.close();
 
     // A host that offers both installed majors: the client's own canonical
-    // (major 2, latest minor 1) is what gets declared, since neither side is
-    // older here.
+    // (major 2, latest minor 2 since T01 added the `@2.2` line) is what gets
+    // declared, since neither side is older here.
     let capturedBrowserSessionsBothMajorsVersion: {
       major: number;
       minor: number;
@@ -2165,7 +2165,7 @@ describe("WsStreamClient", () => {
     completeHandshake(sockets[1].socket);
     expect(capturedBrowserSessionsBothMajorsVersion).toMatchObject({
       major: 2,
-      minor: 1,
+      minor: 2,
     });
     browserSessionsBothMajorsSession.close();
 

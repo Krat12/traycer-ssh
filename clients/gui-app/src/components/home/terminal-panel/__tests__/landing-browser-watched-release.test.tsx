@@ -49,6 +49,7 @@ function sessionsState(
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: () => Promise.reject(new Error("not used in this test")),
@@ -103,7 +104,6 @@ function Harness(props: {
   const { browserSessions, onReady, onWatched, paneVisible } = props;
   const link = useLandingBrowserOpenLink({ browserSessions });
   const chooser = useLandingBrowserOpenTab({
-    canDriveTabs: true,
     hostId: HOST_ID,
     browserSessions,
     onOpened: () => undefined,
@@ -175,7 +175,6 @@ function RetargetHarness(props: {
   const link = useLandingBrowserOpenLink({ browserSessions });
 
   const chooser = useLandingBrowserOpenTab({
-    canDriveTabs: true,
     hostId: targetHostId,
     browserSessions,
     onOpened: () => undefined,

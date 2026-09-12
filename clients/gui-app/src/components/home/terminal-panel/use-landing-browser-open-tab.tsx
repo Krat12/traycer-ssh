@@ -133,12 +133,6 @@ export function useLandingBrowserOpenTab(args: {
    */
   readonly browserSessions: LandingBrowserSessionEntries;
   /**
-   * Whether this shell can drive a tab it opens. See
-   * {@link landingBrowserViewerMessage} - the chord opens without ever
-   * rendering the chooser's card, so the refusal has to live here too.
-   */
-  readonly canDriveTabs: boolean;
-  /**
    * Runs once the device has answered, with the ref that was added and the
    * request it answers - never a slot some other request may have overwritten.
    */
@@ -147,7 +141,7 @@ export function useLandingBrowserOpenTab(args: {
     request: LandingBrowserOpenRequest,
   ) => void;
 }): LandingBrowserOpenTab {
-  const { canDriveTabs, hostId, browserSessions, onOpened } = args;
+  const { hostId, browserSessions, onOpened } = args;
   const sessions = hostId === null ? null : (browserSessions[hostId] ?? null);
   /**
    * The devices with an open in flight, so `open()` is idempotent per tick.
@@ -203,12 +197,6 @@ export function useLandingBrowserOpenTab(args: {
       // device whose tabs nobody has counted. The device has not spoken yet -
       // which is what the connecting refusal says, and it is not the cap's
       // sentence to say.
-      // Before the stream terms, because this one is about the shell and does
-      // not resolve: a viewer that waited for `inventoryReady` would be told
-      // it is connecting to a device whose answer changes nothing.
-      if (!canDriveTabs) {
-        throw new Error(landingBrowserViewerMessage());
-      }
       if (
         target === null ||
         live === null ||
@@ -303,21 +291,6 @@ export function useLandingBrowserOpenTab(args: {
 /** The chooser's disabled-card copy, and the chord's toast when it refuses. */
 export function landingBrowserCapMessage(): string {
   return `This device has ${LANDING_BROWSER_TAB_CAP} browser tabs open`;
-}
-
-/**
- * The same, on a shell that can only watch a browser tab.
- *
- * A Start Page browser tab is one the READER drives, and driving it needs the
- * shell's own native browser capability: without it the tile is a screencast
- * viewer marked "View only" (`screencastRoleForShell` - `readOnly` follows the
- * SHELL, which is why a desktop viewing a remote host's tab still controls it
- * and is not refused here). An independent session has no agent driving it
- * either, so what the card would open is a blank page nobody can navigate away
- * from - and unlike the cap or the connecting wait, this does not resolve.
- */
-export function landingBrowserViewerMessage(): string {
-  return "Browser tabs need the desktop app";
 }
 
 /** Where a popup the page raised should land relative to the reader. */

@@ -221,6 +221,7 @@ function unavailableBrowserSessionsState(
     viewports: {},
     setViewport: unavailable,
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: unavailable,

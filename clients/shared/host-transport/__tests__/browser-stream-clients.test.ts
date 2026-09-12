@@ -10,7 +10,7 @@ import {
   identityFromAuthenticatedUser,
 } from "@traycer/protocol/auth/request-context";
 import type {
-  BrowserScreencastServerFrame,
+  BrowserScreencastServerFrameV22,
   BrowserSessionsClientFrame,
   BrowserSessionsServerFrame,
 } from "@traycer/protocol/host/browser/contracts";
@@ -175,6 +175,34 @@ function completeHandshakeWithManifest(
   });
 }
 
+/**
+ * Like {@link completeHandshake}, but ONE method's advertised entry is
+ * replaced with `override` after being echoed from the client's own `open`
+ * frame - every other method still agrees with what this client itself
+ * declared, so only the targeted method's negotiation moves. `served`
+ * restricts by MAJOR only ({@link restrictLineToServed} in
+ * `capability-manifest.ts` filters registry keys, and registry keys are
+ * majors), so it is the wrong tool for pinning a MINOR - this is how the
+ * 2.1-vs-2.2 emission-gate tests below force a host that is one minor behind
+ * without also making it a `@1`-only host.
+ */
+function completeHandshakeWithMethodOverride(
+  socket: StubStreamWebSocket,
+  method: string,
+  override: { major: number; minor: number },
+): void {
+  socket.fireOpen();
+  const openRaw = socket.textSent[0];
+  const openParsed = JSON.parse(openRaw) as {
+    readonly kind: "open";
+    readonly manifest: Record<string, { major: number; minor: number }>;
+  };
+  socket.fireText({
+    kind: "openAck",
+    manifest: { ...openParsed.manifest, [method]: override },
+  });
+}
+
 /** Parses one text frame written to the wire into a plain record. */
 function parseSent(raw: string): Record<string, unknown> {
   return JSON.parse(raw) as Record<string, unknown>;
@@ -263,12 +291,108 @@ describe("BrowserSessionsStreamClient", () => {
   });
 });
 
+/**
+ * The `@2.2` emission gate (T04, critique-2 B10). `reportViewport.pointer`
+ * and the whole of `releaseViewport` are additions a 2.1 host has no arm for:
+ * `reportViewport` is `.strict()` on the SERVER side of a 2.1-only host (a
+ * real host is never actually behind the client's own registry today, but
+ * the gate exists precisely so a future skew degrades one field rather than
+ * losing the Fit report outright), and `releaseViewport` has no arm at all -
+ * a 2.1 host would warn-drop it and answer nothing, which is a wasted round
+ * trip for a frame that is not supposed to need one (D03: releasing a claim
+ * nobody holds is a no-op). `completeHandshakeWithMethodOverride` is what
+ * lets this suite force that skew without also making the host `@1`-only.
+ */
+describe("BrowserSessionsStreamClient @2.2 client-frame emission gate", () => {
+  const REPORT_VIEWPORT_FRAME: BrowserSessionsClientFrame = {
+    kind: "reportViewport",
+    hasBinaryPayload: false,
+    sessionId: "browser-session-1",
+    tabId: "browser-tab-1",
+    viewerId: "viewer-1",
+    claim: true,
+    pointer: "coarse",
+    width: 390,
+    height: 844,
+    dpr: 3,
+  };
+  const RELEASE_VIEWPORT_FRAME: BrowserSessionsClientFrame = {
+    kind: "releaseViewport",
+    hasBinaryPayload: false,
+    sessionId: "browser-session-1",
+    tabId: "browser-tab-1",
+    viewerId: "viewer-1",
+  };
+
+  it("strips `pointer` from reportViewport and drops releaseViewport outright when the host negotiates only @2.1", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const stream = new BrowserSessionsStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      callbacks: {
+        onServerFrame: () => undefined,
+        onConnectionStatus: () => undefined,
+      },
+    });
+
+    completeHandshakeWithMethodOverride(sockets[0], "browser.sessions", {
+      major: 2,
+      minor: 1,
+    });
+    const baseline = sockets[0].textSent.length;
+
+    stream.sendClientFrame(REPORT_VIEWPORT_FRAME);
+    // `undefined` is never serialised, so the rebuilt frame IS the 2.1 shape
+    // - not a `pointer: undefined` key left behind for a `.strict()` schema
+    // to trip over.
+    expect(sockets[0].textSent).toHaveLength(baseline + 1);
+    const sentReport = parseSent(sockets[0].textSent[baseline]);
+    expect(sentReport.kind).toBe("reportViewport");
+    expect("pointer" in sentReport).toBe(false);
+
+    stream.sendClientFrame(RELEASE_VIEWPORT_FRAME);
+    expect(sockets[0].textSent).toHaveLength(baseline + 1);
+
+    stream.close();
+  });
+
+  it("sends `pointer` on reportViewport and lets releaseViewport onto the wire once the host negotiates @2.2", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const stream = new BrowserSessionsStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      callbacks: {
+        onServerFrame: () => undefined,
+        onConnectionStatus: () => undefined,
+      },
+    });
+
+    completeHandshake(sockets[0]);
+    const baseline = sockets[0].textSent.length;
+
+    stream.sendClientFrame(REPORT_VIEWPORT_FRAME);
+    const sentReport = parseSent(sockets[0].textSent[baseline]);
+    expect(sentReport.kind).toBe("reportViewport");
+    expect(sentReport.pointer).toBe("coarse");
+
+    stream.sendClientFrame(RELEASE_VIEWPORT_FRAME);
+    expect(sockets[0].textSent).toHaveLength(baseline + 2);
+    expect(parseSent(sockets[0].textSent[baseline + 1])).toEqual(
+      RELEASE_VIEWPORT_FRAME,
+    );
+
+    stream.close();
+  });
+});
+
 describe("BrowserScreencastStreamClient", () => {
   it("pairs a frame envelope with its binary payload and leaves acking to the consumer", () => {
     const { factory, sockets } = makeFactory();
     const client = makeClient(factory);
     const received: {
-      readonly frame: BrowserScreencastServerFrame;
+      readonly frame: BrowserScreencastServerFrameV22;
       readonly bytes: Uint8Array | null;
     }[] = [];
     const stream = new BrowserScreencastStreamClient({
@@ -337,7 +461,7 @@ describe("BrowserScreencastStreamClient", () => {
   it("delivers the WebRTC video-plane frames and still drops unknown kinds", () => {
     const { factory, sockets } = makeFactory();
     const client = makeClient(factory);
-    const received: BrowserScreencastServerFrame[] = [];
+    const received: BrowserScreencastServerFrameV22[] = [];
     const stream = new BrowserScreencastStreamClient({
       wsStreamClient: client,
       scope: { kind: "epic", epicId: "epic-1" },
@@ -379,6 +503,116 @@ describe("BrowserScreencastStreamClient", () => {
     expect(received.map((frame) => frame.kind)).toEqual([
       "sdpOffer",
       "captureMode",
+    ]);
+    stream.close();
+  });
+
+  it("parses a `refused` frame and an `editableFocus` frame - both 2.2-only kinds the pre-2.2 union had no arm for", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const received: BrowserScreencastServerFrameV22[] = [];
+    const stream = new BrowserScreencastStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      sessionId: "browser-session-1",
+      tabId: "browser-tab-1",
+      maxWidth: 1280,
+      maxHeight: 720,
+      quality: 80,
+      format: "jpeg",
+      role: "tile",
+      handoffToken: null,
+      callbacks: {
+        onServerFrame: (frame) => {
+          received.push(frame);
+        },
+        onConnectionStatus: () => undefined,
+      },
+    });
+
+    completeHandshake(sockets[0]);
+    sockets[0].fireText({
+      kind: "refused",
+      hasBinaryPayload: false,
+      reason: "desktop-update-required",
+    });
+    sockets[0].fireText({
+      kind: "editableFocus",
+      hasBinaryPayload: false,
+      focused: true,
+      inputMode: "text",
+      multiline: false,
+      rect: { x: 0, y: 0, width: 100, height: 20 },
+    });
+
+    // Parsing with the frozen 2.1 union (`browserScreencastServerFrameSchema`)
+    // would reject both of these outright - `.strict()` has no arm for
+    // either `kind` - and the client would warn-drop them instead of
+    // delivering them. This is the whole reason both stream clients parse
+    // with the NEWEST union regardless of what was negotiated.
+    expect(received).toEqual([
+      {
+        kind: "refused",
+        hasBinaryPayload: false,
+        reason: "desktop-update-required",
+      },
+      {
+        kind: "editableFocus",
+        hasBinaryPayload: false,
+        focused: true,
+        inputMode: "text",
+        multiline: false,
+        rect: { x: 0, y: 0, width: 100, height: 20 },
+      },
+    ]);
+    stream.close();
+  });
+
+  it("still parses a plain 2.0-shaped navState frame - the newest union is a superset, not a replacement", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const received: BrowserScreencastServerFrameV22[] = [];
+    const stream = new BrowserScreencastStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      sessionId: "browser-session-1",
+      tabId: "browser-tab-1",
+      maxWidth: 1280,
+      maxHeight: 720,
+      quality: 80,
+      format: "jpeg",
+      role: "tile",
+      handoffToken: null,
+      callbacks: {
+        onServerFrame: (frame) => {
+          received.push(frame);
+        },
+        onConnectionStatus: () => undefined,
+      },
+    });
+
+    completeHandshake(sockets[0]);
+    // `navState` has not grown a field across any screencast minor, so this
+    // is exactly the frame a 2.0 host sends today - nothing in the V22 union
+    // should demand more of it.
+    sockets[0].fireText({
+      kind: "navState",
+      hasBinaryPayload: false,
+      url: "https://example.com/page",
+      canGoBack: true,
+      canGoForward: false,
+      loading: false,
+    });
+
+    expect(received).toEqual([
+      {
+        kind: "navState",
+        hasBinaryPayload: false,
+        url: "https://example.com/page",
+        canGoBack: true,
+        canGoForward: false,
+        loading: false,
+      },
     ]);
     stream.close();
   });
@@ -740,7 +974,7 @@ describe("BrowserScreencastStreamClient against a @1-only host (epic scope)", ()
   it("still delivers unprojected frame/started frames - there is no lift path for screencast", () => {
     const { factory, sockets } = makeFactory();
     const client = makeClient(factory);
-    const received: BrowserScreencastServerFrame[] = [];
+    const received: BrowserScreencastServerFrameV22[] = [];
     const stream = new BrowserScreencastStreamClient({
       wsStreamClient: client,
       scope: { kind: "epic", epicId: "epic-1" },
@@ -790,7 +1024,7 @@ describe("BrowserScreencastStreamClient against a @1-only host (epic scope)", ()
   });
 });
 
-describe("browser.sessions / browser.screencast: the `independent` scope uses @2.1", () => {
+describe("browser.sessions / browser.screencast: the `independent` scope negotiates the newest scope-addressed minor", () => {
   it("sends the strict scope request to a @1-only host and surfaces its frozen-schema refusal", () => {
     const { factory, sockets } = makeFactory();
     const client = makeClient(factory);
@@ -860,7 +1094,7 @@ describe("browser.sessions / browser.screencast: the `independent` scope uses @2
       readonly status: StreamConnectionStatus;
       readonly reason: StreamCloseReason | null;
     }[] = [];
-    const received: BrowserScreencastServerFrame[] = [];
+    const received: BrowserScreencastServerFrameV22[] = [];
     const stream = new BrowserScreencastStreamClient({
       wsStreamClient: client,
       scope: { kind: "independent" },
@@ -943,8 +1177,11 @@ describe("browser.sessions / browser.screencast: the `independent` scope uses @2
 
     completeHandshake(sockets[0]);
 
+    // `browser.sessions@2` now installs 2.0/2.1/2.2 (T04's `refused` /
+    // `releaseViewport` minor), so a host that echoes this client's own
+    // manifest verbatim negotiates the newest minor, not a hardcoded 2.1.
     const subscribeFrame = parseSent(sockets[0].textSent[1]);
-    expect(subscribeFrame.schemaVersion).toMatchObject({ major: 2, minor: 1 });
+    expect(subscribeFrame.schemaVersion).toMatchObject({ major: 2, minor: 2 });
     expect(subscribeFrame.params).toEqual({ scope: { kind: "independent" } });
 
     stream.close();
@@ -969,8 +1206,12 @@ describe("browser.sessions against a host serving @1 and @2 (epic scope)", () =>
 
     completeHandshake(sockets[0]);
 
+    // Same newest-minor negotiation as the independent-scope case above:
+    // both peers echo the same manifest, so the shared major's newest
+    // installed minor (2.2) wins, not the 2.1 this literal used to pin
+    // before `browser.sessions@2.2` existed.
     const subscribeFrame = parseSent(sockets[0].textSent[1]);
-    expect(subscribeFrame.schemaVersion).toMatchObject({ major: 2, minor: 1 });
+    expect(subscribeFrame.schemaVersion).toMatchObject({ major: 2, minor: 2 });
     expect(subscribeFrame.params).toEqual({
       scope: { kind: "epic", epicId: "epic-1" },
     });
@@ -1027,11 +1268,15 @@ describe("browser.sessions against a host serving @1 and @2 (epic scope)", () =>
       requestId: "attach-1",
       tabId: "browser-tab-1",
     });
+    // Negotiated at 2.2 (the newest installed minor, per the fixed assertion
+    // above), so `mirror` - added alongside `browser.sessions@2.2` - passes
+    // through verbatim rather than being projected away for an older peer.
     expect(parseSent(sockets[0].textSent[sentBeforeClientFrames + 1])).toEqual({
       kind: "electronTabLifecycleReady",
       hasBinaryPayload: false,
       coLocatedHostId: "host-1",
       desktopWindowId: "window-1",
+      mirror: false,
     });
 
     stream.close();

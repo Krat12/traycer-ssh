@@ -116,11 +116,7 @@ export function ScreencastSurface(props: {
   const { image, video } = session;
   const { imageRef, videoRef } = session.refs;
   const verb = useCoarsePointer() ? "Tap" : "Click";
-  // A `viewer` has no control to offer (H12): the host refuses its claims, so
-  // the loader must not invite a gesture that will never land.
-  const hint = session.readOnly
-    ? "You are watching this tab. Only the host's own window can control it."
-    : `${verb} the screencast to control this browser tab.`;
+  const hint = `${verb} the screencast to control this browser tab.`;
   return (
     <>
       <ScreencastPixels

@@ -109,11 +109,13 @@ function sessionsState(
   setViewport: BrowserSessionsState["setViewport"],
   viewport: BrowserViewportState,
   reportViewport: BrowserSessionsState["reportViewport"],
+  releaseViewport: BrowserSessionsState["releaseViewport"],
 ): BrowserSessionsState {
   return {
     viewports: { "tab-1": viewport },
     setViewport,
     reportViewport,
+    releaseViewport,
     hostId: "host-1",
     lifecycle: "live",
     inventoryReady: true,
@@ -230,7 +232,12 @@ function renderProbe(setViewport: BrowserSessionsState["setViewport"]): void {
   render(
     <QueryClientProvider client={queryClient}>
       <BrowserSessionsContext.Provider
-        value={sessionsState(setViewport, viewportState(), () => undefined)}
+        value={sessionsState(
+          setViewport,
+          viewportState(),
+          () => undefined,
+          () => undefined,
+        )}
       >
         <ViewportProbe />
       </BrowserSessionsContext.Provider>
@@ -286,7 +293,12 @@ function toolbarProbeTree(
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserSessionsContext.Provider
-        value={sessionsState(setViewport, viewport, () => undefined)}
+        value={sessionsState(
+          setViewport,
+          viewport,
+          () => undefined,
+          () => undefined,
+        )}
       >
         <ToolbarProbe />
       </BrowserSessionsContext.Provider>
@@ -379,6 +391,7 @@ function renderReadOnlyProbe(
           setViewport,
           readOnlyViewportState(),
           reportViewport,
+          () => undefined,
         )}
       >
         <ReadOnlyViewportProbe />
@@ -461,6 +474,7 @@ function renderPreviewScaleProbe(
           setViewport,
           fixedViewportState(),
           () => undefined,
+          () => undefined,
         )}
       >
         <PreviewScaleProbe />
@@ -517,7 +531,12 @@ describe("useBrowserViewport", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, viewportState(), reportViewport)}
+          value={sessionsState(
+            setViewport,
+            viewportState(),
+            reportViewport,
+            () => undefined,
+          )}
         >
           <MeasuredViewportProbe
             instanceId="instance-invalid"
@@ -598,7 +617,7 @@ describe("useBrowserViewport", () => {
     const view = render(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, state, reportViewport),
+        sessionsState(setViewport, state, reportViewport, () => undefined),
         {
           activity: { visible: true, focused: true },
           probe: {
@@ -623,7 +642,7 @@ describe("useBrowserViewport", () => {
     view.rerender(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, state, reportViewport),
+        sessionsState(setViewport, state, reportViewport, () => undefined),
         {
           activity: { visible: true, focused: false },
           probe: {
@@ -644,7 +663,7 @@ describe("useBrowserViewport", () => {
     view.rerender(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, state, reportViewport),
+        sessionsState(setViewport, state, reportViewport, () => undefined),
         {
           activity: { visible: true, focused: true },
           probe: {
@@ -687,7 +706,12 @@ describe("useBrowserViewport", () => {
     const view = render(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, viewportState(), reportViewport),
+        sessionsState(
+          setViewport,
+          viewportState(),
+          reportViewport,
+          () => undefined,
+        ),
         {
           activity: { visible: true, focused: false },
           probe: {
@@ -706,7 +730,12 @@ describe("useBrowserViewport", () => {
     view.rerender(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, viewportState(), reportViewport),
+        sessionsState(
+          setViewport,
+          viewportState(),
+          reportViewport,
+          () => undefined,
+        ),
         {
           activity: { visible: true, focused: true },
           probe: {
@@ -748,7 +777,12 @@ describe("useBrowserViewport", () => {
     render(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, viewportState(), reportViewport),
+        sessionsState(
+          setViewport,
+          viewportState(),
+          reportViewport,
+          () => undefined,
+        ),
         {
           activity: { visible: true, focused: true },
           probe: {
@@ -802,7 +836,7 @@ describe("useBrowserViewport", () => {
     const view = render(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, state, reportViewport),
+        sessionsState(setViewport, state, reportViewport, () => undefined),
         {
           activity,
           probe: {
@@ -825,7 +859,7 @@ describe("useBrowserViewport", () => {
     view.rerender(
       measuredViewportTree(
         queryClient,
-        sessionsState(setViewport, state, reportViewport),
+        sessionsState(setViewport, state, reportViewport, () => undefined),
         {
           activity,
           probe: {
@@ -978,7 +1012,12 @@ describe("useBrowserViewport", () => {
     const view = render(
       <QueryClientProvider client={queryClient}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, initial, () => undefined)}
+          value={sessionsState(
+            setViewport,
+            initial,
+            () => undefined,
+            () => undefined,
+          )}
         >
           <ViewportProbe />
         </BrowserSessionsContext.Provider>
@@ -1003,11 +1042,17 @@ describe("useBrowserViewport", () => {
       setViewport,
       rollback,
       () => undefined,
+      () => undefined,
     );
     view.rerender(
       <QueryClientProvider client={queryClient}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, rollback, () => undefined)}
+          value={sessionsState(
+            setViewport,
+            rollback,
+            () => undefined,
+            () => undefined,
+          )}
         >
           <ViewportProbe />
         </BrowserSessionsContext.Provider>
@@ -1029,11 +1074,17 @@ describe("useBrowserViewport", () => {
       setViewport,
       later,
       () => undefined,
+      () => undefined,
     );
     view.rerender(
       <QueryClientProvider client={queryClient}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, later, () => undefined)}
+          value={sessionsState(
+            setViewport,
+            later,
+            () => undefined,
+            () => undefined,
+          )}
         >
           <ViewportProbe />
         </BrowserSessionsContext.Provider>
@@ -1133,7 +1184,12 @@ describe("useBrowserViewport", () => {
     const view = render(
       <QueryClientProvider client={queryClient}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, fixedAgent, () => undefined)}
+          value={sessionsState(
+            setViewport,
+            fixedAgent,
+            () => undefined,
+            () => undefined,
+          )}
         >
           <PreviewScaleProbe />
         </BrowserSessionsContext.Provider>
@@ -1164,7 +1220,12 @@ describe("useBrowserViewport", () => {
     view.rerender(
       <QueryClientProvider client={queryClient}>
         <BrowserSessionsContext.Provider
-          value={sessionsState(setViewport, fitAgent, () => undefined)}
+          value={sessionsState(
+            setViewport,
+            fitAgent,
+            () => undefined,
+            () => undefined,
+          )}
         >
           <PreviewScaleProbe />
         </BrowserSessionsContext.Provider>
@@ -1204,6 +1265,7 @@ describe("useBrowserViewport", () => {
             setViewport,
             fixedViewportState(),
             reportViewport,
+            () => undefined,
           )}
         >
           <InteractionProbe />
@@ -1245,5 +1307,259 @@ describe("useBrowserViewport", () => {
     expect(
       reportViewport.mock.calls.filter(([input]) => input.claim),
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * The global test shim (`test-browser-apis.ts`) answers every media query
+ * with `matches: false`, so every OTHER test in this file - and every test in
+ * this suite that came before D02 - measures on a fine pointer without
+ * knowing it. This narrows just the coarse-pointer query, the same helper
+ * `coarse-pointer-autofocus.test.tsx` uses, so the rest of the app's queries
+ * keep the shim's answer.
+ */
+function stubCoarsePointer(coarse: boolean): void {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: coarse && query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }),
+  });
+}
+
+/**
+ * D02: the Fit report carries the viewer's pointer class, because a
+ * coarse-pointer owner is what makes the host apply phone-shaped emulation to
+ * the tab. `measuredViewportTree` is the same harness the "claim" suite above
+ * uses - stubbed `ResizeObserver` plus `clientWidth`/`clientHeight` spies -
+ * so the only new variable here is the pointer query.
+ */
+describe("pointer class on the Fit report (D02)", () => {
+  afterEach(() => {
+    stubCoarsePointer(false);
+  });
+
+  it("reports pointer: coarse when matchMedia reports a coarse pointer", async () => {
+    stubCoarsePointer(true);
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    vi.stubGlobal("ResizeObserver", ControllableViewportResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(480);
+    const queryClient = new QueryClient();
+    render(
+      measuredViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          viewportState(),
+          reportViewport,
+          () => undefined,
+        ),
+        {
+          activity: { visible: true, focused: true },
+          probe: {
+            instanceId: "instance-pointer-coarse",
+            pageZoom: 1,
+            registrationId: "registration-pointer-coarse",
+            visible: true,
+          },
+        },
+      ),
+    );
+
+    await waitFor(() => {
+      expect(reportViewport).toHaveBeenCalledWith(
+        expect.objectContaining({ pointer: "coarse" }),
+      );
+    });
+  });
+
+  it("reports pointer: fine when matchMedia reports no coarse pointer", async () => {
+    stubCoarsePointer(false);
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    vi.stubGlobal("ResizeObserver", ControllableViewportResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(640);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(480);
+    const queryClient = new QueryClient();
+    render(
+      measuredViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          viewportState(),
+          reportViewport,
+          () => undefined,
+        ),
+        {
+          activity: { visible: true, focused: true },
+          probe: {
+            instanceId: "instance-pointer-fine",
+            pageZoom: 1,
+            registrationId: "registration-pointer-fine",
+            visible: true,
+          },
+        },
+      ),
+    );
+
+    await waitFor(() => {
+      expect(reportViewport).toHaveBeenCalledWith(
+        expect.objectContaining({ pointer: "fine" }),
+      );
+    });
+  });
+});
+
+interface ReleaseViewportProbeProps {
+  readonly pageZoom: number;
+}
+
+/**
+ * Exposes only `controller.open` and its `expanded` readback: the release
+ * effect's dep array (`use-browser-viewport.ts`) is deliberately narrower
+ * than the measure effect's, and `expanded` is one of the four inputs this
+ * suite proves does NOT belong to it.
+ */
+function ReleaseViewportProbe(props: ReleaseViewportProbeProps): ReactElement {
+  const { controller } = useBrowserViewport({
+    hostId: "host-1",
+    sessionId: "session-1",
+    tabId: "tab-1",
+    instanceId: "instance-release",
+    registrationId: null,
+    visible: true,
+    disabled: false,
+    pageZoom: props.pageZoom,
+    native: true,
+  });
+  if (controller === null) {
+    return <output data-testid="missing">missing</output>;
+  }
+  return (
+    <>
+      <button type="button" onClick={controller.open}>
+        Open viewport
+      </button>
+      <output data-testid="release-probe-expanded">
+        {controller.expanded ? "expanded" : "collapsed"}
+      </output>
+    </>
+  );
+}
+
+function releaseViewportTree(
+  queryClient: QueryClient,
+  sessions: BrowserSessionsState,
+  options: {
+    readonly activity: PaneSurfaceActivity;
+    readonly pageZoom: number;
+  },
+): ReactElement {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserSessionsContext.Provider value={sessions}>
+        <PaneSurfaceActivityContext.Provider value={options.activity}>
+          <ReleaseViewportProbe pageZoom={options.pageZoom} />
+        </PaneSurfaceActivityContext.Provider>
+      </BrowserSessionsContext.Provider>
+    </QueryClientProvider>
+  );
+}
+
+/**
+ * Critique-2 B6, pinned directly: `releaseViewport` is its own effect
+ * (`use-browser-viewport.ts`) precisely so an expand, a pane-focus change, a
+ * `pageZoom` change or a sessions reconnect cannot fire it - each of those
+ * DOES belong to the eleven-input measure effect, and folding release into
+ * that effect's cleanup would drop this viewer's own Fit ownership mid-
+ * session on every one of them. Only unmount may fire it, and it must fire
+ * exactly once.
+ */
+describe("releaseViewport fires only on unmount (D03, critique-2 B6)", () => {
+  it("does not fire on expand, pane-focus, pageZoom or a sessions reconnect - only on unmount, exactly once", async () => {
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const releaseViewport = vi.fn<BrowserSessionsState["releaseViewport"]>();
+    const queryClient = new QueryClient();
+    const baseState = (): BrowserSessionsState =>
+      sessionsState(
+        setViewport,
+        viewportState(),
+        () => undefined,
+        releaseViewport,
+      );
+
+    const view = render(
+      releaseViewportTree(queryClient, baseState(), {
+        activity: { visible: true, focused: true },
+        pageZoom: 1,
+      }),
+    );
+    expect(releaseViewport).not.toHaveBeenCalled();
+
+    // Expand: `controller.open()` flips `expanded`, one of the measure
+    // effect's eleven deps - not one of the release effect's four.
+    await act(async () => {
+      screen.getByRole("button", { name: "Open viewport" }).click();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("release-probe-expanded").textContent).toBe(
+        "expanded",
+      );
+    });
+    expect(releaseViewport).not.toHaveBeenCalled();
+
+    // Pane focus changes.
+    view.rerender(
+      releaseViewportTree(queryClient, baseState(), {
+        activity: { visible: true, focused: false },
+        pageZoom: 1,
+      }),
+    );
+    expect(releaseViewport).not.toHaveBeenCalled();
+
+    // `pageZoom` changes.
+    view.rerender(
+      releaseViewportTree(queryClient, baseState(), {
+        activity: { visible: true, focused: false },
+        pageZoom: 2,
+      }),
+    );
+    expect(releaseViewport).not.toHaveBeenCalled();
+
+    // The sessions connection reconnects - a new `connectionGeneration`,
+    // exactly what a `browser.sessions` re-subscribe bumps.
+    view.rerender(
+      releaseViewportTree(
+        queryClient,
+        { ...baseState(), connectionGeneration: 2 },
+        { activity: { visible: true, focused: false }, pageZoom: 2 },
+      ),
+    );
+    expect(releaseViewport).not.toHaveBeenCalled();
+
+    view.unmount();
+    expect(releaseViewport).toHaveBeenCalledTimes(1);
+    expect(releaseViewport).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      tabId: "tab-1",
+      viewerId: JSON.stringify(["window-a", "instance-release"]),
+    });
   });
 });

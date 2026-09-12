@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { X } from "lucide-react";
 import { toast } from "sonner";
 import type { BrowserSessionInfo } from "@traycer/protocol/host/browser/contracts";
 import type { BrowserViewViewportPresetId } from "@traycer-clients/shared/platform/browser-view";
@@ -40,7 +39,7 @@ import { useHostReachability } from "@/hooks/agent/use-host-reachability";
 
 /**
  * The shared browser tab tile: the binding wait, the wake window and its
- * deadline, the demotion note, and the electron-versus-peek switch. Everything
+ * deadline, and the electron-versus-peek switch. Everything
  * here is placement-independent, which is what lets the task canvas and the
  * Start Page panel render the same tile.
  *
@@ -567,8 +566,8 @@ function BrowserTabDormantPlaceholder(props: {
   // that mounts this), but it keeps re-reading afterwards - and the cache is
   // insertion-order evicted, so other tiles streaming can drop this key while
   // the placeholder is still up. Latching here keeps the greyed frame from
-  // disappearing mid-dormancy. Set during render, the same sanctioned pattern
-  // `useRuntimeDemotionNote` uses below.
+  // disappearing mid-dormancy. Set during render - React's documented
+  // "adjusting state when props change", not an effect.
   const [lastFrame, setLastFrame] = useState(cached);
   if (lastFrame === null && cached !== null) setLastFrame(cached);
   return (
@@ -594,94 +593,6 @@ function BrowserTabDormantPlaceholder(props: {
 }
 
 /**
- * One-line dismissible note for a session that just lost its Electron
- * runtime (`runtime.kind` flip electron -> headless on a revision bump).
- * The tab keeps working, streamed instead of native, but silently loses
- * annotate/find/DevTools/zoom - this is the only surface that says so.
- */
-function BrowserRuntimeDemotionNote(props: {
-  readonly hostLabel: string;
-  readonly onDismiss: () => void;
-}) {
-  return (
-    <div
-      role="status"
-      data-testid="browser-runtime-demotion-note"
-      // muted-fill-ok: this banner carries its own border-b border-border,
-      // so a muted collapse loses the wash and not the band underneath it.
-      className="flex items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-ui-xs text-muted-foreground"
-    >
-      <span className="min-w-0 flex-1">
-        Continuing streamed from {props.hostLabel}
-      </span>
-      <button
-        type="button"
-        aria-label="Dismiss"
-        className="shrink-0 text-muted-foreground hover:text-foreground"
-        onClick={props.onDismiss}
-      >
-        <X className="size-3.5" aria-hidden />
-      </button>
-    </div>
-  );
-}
-
-/**
- * Tracks the electron -> headless transition for one session across
- * revision bumps and whether the reader has dismissed the note for the
- * revision that caused it.
- *
- * Adjusted during render (React's documented "adjusting state when props
- * change") rather than in an effect: an effect would trip
- * `react-hooks/set-state-in-effect`, and would also paint one stale commit
- * before the transition is recorded.
- */
-function useRuntimeDemotionNote(
-  runtimeKind: BrowserSessionInfo["runtime"]["kind"] | null,
-  runtimeRevision: number | null,
-): {
-  readonly visible: boolean;
-  readonly dismiss: () => void;
-} {
-  const [prev, setPrev] = useState<{
-    readonly kind: BrowserSessionInfo["runtime"]["kind"];
-    readonly revision: number;
-  } | null>(null);
-  const [demotedRevision, setDemotedRevision] = useState<number | null>(null);
-
-  if (
-    runtimeKind !== null &&
-    runtimeRevision !== null &&
-    (prev === null ||
-      prev.kind !== runtimeKind ||
-      prev.revision !== runtimeRevision)
-  ) {
-    setPrev({ kind: runtimeKind, revision: runtimeRevision });
-    // Re-promoted back to Electron: the note's premise (streamed instead of
-    // native) no longer holds, so clear it rather than leaving it stuck on
-    // until someone dismisses a note about a demotion that already reversed.
-    if (runtimeKind === "electron") {
-      setDemotedRevision(null);
-    } else if (
-      prev !== null &&
-      prev.kind === "electron" &&
-      prev.revision !== runtimeRevision
-    ) {
-      setDemotedRevision(runtimeRevision);
-    }
-  }
-
-  // Dismissing clears the demotion outright: a LATER demotion sets a new
-  // revision, so there is nothing a separate "dismissed" revision can say that
-  // this cannot.
-  const dismiss = useCallback(() => {
-    setDemotedRevision(null);
-  }, []);
-
-  return { visible: demotedRevision !== null, dismiss };
-}
-
-/**
  * The sessions context this reads is the TILE's host stream: the host surface
  * puts every tile's subtree behind a `BrowserSessionsHostBoundary` for
  * `node.hostId`, so there is no per-tile boundary here.
@@ -700,10 +611,6 @@ export function BrowserTabTile(props: BrowserTabTileProps) {
     props.node.sessionId,
     props.node.tabId,
     props.node.hostId,
-  );
-  const demotionNote = useRuntimeDemotionNote(
-    session?.runtime.kind ?? null,
-    session?.runtime.revision ?? null,
   );
   // Bounded, not latched: once the reader has asked for the tab back, the
   // wake path stays selected for one BROWSER_TAB_REBIND_DEADLINE_MS window -
@@ -941,12 +848,6 @@ export function BrowserTabTile(props: BrowserTabTileProps) {
 
   return (
     <div className="flex h-full w-full min-h-0 flex-col">
-      {demotionNote.visible ? (
-        <BrowserRuntimeDemotionNote
-          hostLabel={reachability.hostLabel}
-          onDismiss={demotionNote.dismiss}
-        />
-      ) : null}
       <div className="min-h-0 flex-1">
         <BrowserTabTileSurface
           {...props}

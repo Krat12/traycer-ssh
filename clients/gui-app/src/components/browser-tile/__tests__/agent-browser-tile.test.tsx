@@ -372,6 +372,7 @@ function liveSessions(): BrowserSessionsState {
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => {},
     openTab: state.openTab,

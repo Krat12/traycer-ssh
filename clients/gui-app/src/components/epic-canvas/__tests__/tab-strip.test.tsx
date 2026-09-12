@@ -237,6 +237,7 @@ function browserSessionsState(
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: () => Promise.reject(new Error("not used")),

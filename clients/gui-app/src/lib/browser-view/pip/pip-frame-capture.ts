@@ -5,7 +5,10 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
+import type {
+  BrowserScreencastServerFrame,
+  BrowserScreencastServerFrameV22,
+} from "@traycer/protocol/host/browser/contracts";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { BrowserViewBridge } from "@traycer-clients/shared/platform/browser-view";
@@ -256,6 +259,19 @@ function usePipFrameOwner(
   return { owned, setOwned };
 }
 
+/**
+ * A frame from either pixel source this module reads.
+ *
+ * The native path relays the desktop's own capture over IPC in the 2.1 shape;
+ * the headless path is a live `browser.screencast` subscription, which parses
+ * with the 2.2 union. The two unions are not assignable to each other in
+ * either direction (2.2 re-declares `complete` with `retryable` and adds the
+ * page-signal kinds), and `applyCaptureFrame` reads only kinds both carry.
+ */
+type PipCaptureServerFrame =
+  | BrowserScreencastServerFrame
+  | BrowserScreencastServerFrameV22;
+
 function startNativePipCapture(input: {
   readonly binding: ElectronTabBinding;
   readonly bridge: BrowserViewBridge;
@@ -343,7 +359,7 @@ function startHeadlessPipCapture(input: {
 function applyCaptureFrame(input: {
   readonly epicId: string;
   readonly selectionId: string;
-  readonly frame: BrowserScreencastServerFrame;
+  readonly frame: PipCaptureServerFrame;
   readonly jpegBytes: Uint8Array | null;
   readonly onMeta: (patch: PipMetaPatch) => void;
   readonly onUrl: (url: string) => void;

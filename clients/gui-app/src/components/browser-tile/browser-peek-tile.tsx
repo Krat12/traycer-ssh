@@ -44,6 +44,7 @@ import {
 import { useStreamAuthRevalidator } from "@/lib/host/stream-auth-revalidator";
 import { cn } from "@/lib/utils";
 import { useScreencastArmedStore } from "@/stores/screencast-armed-store";
+import { browserRefusalMessage } from "@/lib/browser-view/sessions/browser-refusal-copy";
 import { DEFAULT_BROWSER_TILE_URL } from "@/lib/browser-view/browser-tile-defaults";
 
 /**
@@ -79,9 +80,11 @@ export type BrowserPeekNode = Pick<
  * - `ended` - an ordinary cast that stopped.
  * - `native-handoff` - this client is the one placing the native tab, so its
  *   own window is a beat away from showing the page.
- * - `native-elsewhere` - the tab is live in the desktop app on that host and no
- *   surface here can ever show it. Terminal, and said as such rather than
- *   dressed as a handoff that is not coming.
+ * - `native-elsewhere` - the tab is live in the desktop app on that host. No
+ *   longer terminal copy of its own: that desktop mirrors its native tabs to
+ *   remote viewers, so the frame is an ordinary end that the resubscribe
+ *   ladder re-opens (D04, D20) - and a desktop that cannot mirror answers
+ *   `refused`, which says which remedy on which machine.
  */
 export type BrowserPeekCompleteMeaning =
   | "ended"
@@ -146,6 +149,18 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     visible,
   });
   const frameCacheKey = browserPeekFrameKey(node);
+  // The sessions inventory this tile's host publishes: the profile the
+  // toolbar describes, and whether the tab is still listed at all - the
+  // resubscribe ladder's stop condition (D20). "Not listed yet" reads as
+  // listed, so a sessions reconnect (which empties `items` until its next
+  // snapshot) does not cancel a ladder mid-outage.
+  const browserSessions = useMaybeBrowserSessionsContext();
+  const sessionInfo = browserSessions?.items.find(
+    (item) => item.sessionId === node.sessionId,
+  );
+  const tabStillListed =
+    browserSessions?.inventoryReady !== true ||
+    sessionInfo?.tabs.some((item) => item.tabId === node.tabId) === true;
   const session = useScreencastSession({
     client,
     scope: props.scope,
@@ -155,24 +170,22 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
     sessionId: node.sessionId,
     tabId: node.tabId,
     visible,
+    tabStillListed,
     captureDormantSnapshot: (video, wasActivePlane) => {
       snapshotVideoFrameIntoPeekCache(frameCacheKey, video, wasActivePlane);
     },
   });
   // A peeked session can be isolated too; the toolbar has to say so rather
   // than describe saved logins that this session never had.
-  const browserSessions = useMaybeBrowserSessionsContext();
-  const sessionProfile =
-    browserSessions?.items.find((item) => item.sessionId === node.sessionId)
-      ?.profile ?? "primary";
-  const { image, navState, armedEpoch, dialog, readOnly } = session;
+  const sessionProfile = sessionInfo?.profile ?? "primary";
+  const { image, navState, armedEpoch, dialog } = session;
   const viewport = useBrowserViewport({
     hostId: node.hostId,
     sessionId: node.sessionId,
     tabId: node.tabId,
     instanceId: node.instanceId,
     visible,
-    disabled: client === null || readOnly,
+    disabled: client === null,
     pageZoom: 1,
     native: false,
     registrationId: null,
@@ -200,23 +213,27 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
 
   const status = useMemo(
     () =>
-      browserPeekStatus(
-        session.lifecycle,
+      browserPeekStatus({
+        lifecycle: session.lifecycle,
         visible,
-        session.details,
-        props.completeMeans,
-      ),
-    [session.details, session.lifecycle, visible, props.completeMeans],
+        details: session.details,
+        completeMeans: props.completeMeans,
+        hostId: node.hostId,
+      }),
+    [
+      session.details,
+      session.lifecycle,
+      visible,
+      props.completeMeans,
+      node.hostId,
+    ],
   );
 
   const chrome = useScreencastTileChrome({
     profile: sessionProfile,
     navState,
     initialUrl: node.initialUrl,
-    // A `viewer` subscription is refused every nav frame too (H07's
-    // `viewer-passive` list is the whole client-frame set), so the toolbar
-    // reads as the read-only chrome it is instead of silently dropping clicks.
-    disabled: readOnly || client === null,
+    disabled: client === null,
     onNavigateUrl: (url) => {
       session.requestNav({ kind: "navigate", url });
     },
@@ -241,9 +258,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
       chrome.onAddressFocusChange(focused);
     },
   };
-  // The start page is a launcher - pure navigation, which a viewer cannot do.
-  const showStartPage =
-    !readOnly && chrome.controller.url === DEFAULT_BROWSER_TILE_URL;
+  const showStartPage = chrome.controller.url === DEFAULT_BROWSER_TILE_URL;
 
   return (
     <div
@@ -258,7 +273,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
         <BrowserTileToolbarCompact
           controller={controller}
           loading={navState.loading}
-          readOnly={readOnly}
         />
       ) : (
         <ScreencastPeekChromeBar
@@ -272,7 +286,6 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           }}
           loading={navState.loading}
           armed={armedEpoch !== null}
-          readOnly={readOnly}
           status={status}
           onRelease={session.disarm}
         />
@@ -314,12 +327,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 }
 
-/**
- * The pixels and everything that reaches them. A `viewer` subscription gets
- * the pixels alone (H12): the host refuses its every claim and input frame,
- * so an overlay button and an IME input here would be controls that start a
- * gesture nothing finishes - which is what reads as a broken tab.
- */
+/** The pixels and everything that reaches them. */
 function ScreencastPeekSurface(props: {
   readonly session: ScreencastSession;
   readonly overlay: string | null;
@@ -344,20 +352,6 @@ function ScreencastPeekSurface(props: {
     </>
   );
 
-  if (session.readOnly) {
-    return (
-      // `role="img"`: the `<img alt>` underneath is hidden while the video
-      // plane paints, so the surface itself has to carry the label.
-      <div
-        role="img"
-        aria-label="Browser screencast, view only"
-        data-testid="browser-screencast-view"
-        className={SCREENCAST_SURFACE_CLASS}
-      >
-        {pixels}
-      </div>
-    );
-  }
   return (
     <>
       <button
@@ -395,7 +389,6 @@ function ScreencastPeekChromeBar(props: {
   readonly pictureInPicture: BrowserPictureInPictureControl;
   readonly loading: boolean;
   readonly armed: boolean;
-  readonly readOnly: boolean;
   readonly status: BrowserPeekStatus;
   readonly onRelease: () => void;
 }) {
@@ -410,7 +403,6 @@ function ScreencastPeekChromeBar(props: {
           />
         </div>
         <div className="flex shrink-0 items-center gap-2 pr-2">
-          {props.readOnly ? <Badge variant="outline">View only</Badge> : null}
           {props.armed ? (
             <div className="flex shrink-0 items-center gap-1">
               <Badge variant="outline">Controlling</Badge>
@@ -551,12 +543,14 @@ function peekStatusToneClass(tone: BrowserPeekStatus["tone"]): string {
   return "border-border bg-foreground/8 text-muted-foreground";
 }
 
-function browserPeekStatus(
-  lifecycle: ScreencastLifecycle,
-  visible: boolean,
-  details: string | null,
-  completeMeans: BrowserPeekCompleteMeaning,
-): BrowserPeekStatus {
+function browserPeekStatus(input: {
+  readonly lifecycle: ScreencastLifecycle;
+  readonly visible: boolean;
+  readonly details: string | null;
+  readonly completeMeans: BrowserPeekCompleteMeaning;
+  readonly hostId: string;
+}): BrowserPeekStatus {
+  const { lifecycle, visible, details, completeMeans, hostId } = input;
   if (!visible) {
     return {
       label: "Paused off-screen",
@@ -574,6 +568,17 @@ function browserPeekStatus(
       overlay: details,
       tone: "muted",
       Icon: Radio,
+    };
+  }
+  if (lifecycle === "refused") {
+    // Terminal until something changes on the host, so it says which thing
+    // and on which machine (D06) rather than spinning on a retry the hook
+    // deliberately does not schedule for a refusal.
+    return {
+      label: "Unavailable",
+      overlay: details === null ? null : browserRefusalMessage(details, hostId),
+      tone: "bad",
+      Icon: Monitor,
     };
   }
   if (lifecycle === "failed" || lifecycle === "disconnected") {
@@ -595,18 +600,6 @@ function browserPeekStatus(
         overlay: "Handing off to the native tab.",
         tone: "muted",
         Icon: Radio,
-      };
-    }
-    // The same frame, read from a client with no native window of its own to
-    // hand off to. Nothing is in flight and nothing will arrive, so it says so
-    // rather than spinning on a handoff that is happening on another machine.
-    if (completeMeans === "native-elsewhere") {
-      return {
-        label: "Open natively",
-        overlay:
-          "This tab is open in the desktop app on that host, so it can't be streamed here.",
-        tone: "muted",
-        Icon: Monitor,
       };
     }
     return {

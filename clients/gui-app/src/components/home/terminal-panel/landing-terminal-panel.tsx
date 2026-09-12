@@ -96,11 +96,8 @@ import {
   type LandingBrowserViewModel,
 } from "./landing-browser-presentation";
 import { usePaneVisible } from "@/components/epic-tabs/pane-visibility-context";
-import { screencastRoleForShell } from "@/lib/browser-view/sessions/use-screencast-session";
-import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 import {
   landingBrowserCapMessage,
-  landingBrowserViewerMessage,
   useLandingBrowserOpenLink,
   useLandingBrowserOpenTab,
   LANDING_BROWSER_TAB_CAP,
@@ -1530,16 +1527,7 @@ export function LandingTerminalPanel(): ReactNode {
     togglePanel();
   }, [panelOpen, togglePanel]);
 
-  // Whether this SHELL can drive a browser tab, which is what decides whether
-  // the tile it opens is controllable or a "View only" screencast. It is the
-  // shell's own capability and not the device's, so a desktop looking at a
-  // remote host still qualifies - that tab's pixels stream, but its input does
-  // too.
-  const canDriveBrowserTabs =
-    screencastRoleForShell(useRunnerHostOrNull()) === "tile";
-
   const browserOpenTab = useLandingBrowserOpenTab({
-    canDriveTabs: canDriveBrowserTabs,
     hostId: target.hostId,
     browserSessions,
     // Same rule as the terminal arm: replace the placeholder it was picked from
@@ -1585,13 +1573,9 @@ export function LandingTerminalPanel(): ReactNode {
    */
   const browserDisabledReason = useMemo((): string | null => {
     const count = browserOpenTab.tabCount;
-    // First, and above the device's own terms: a shell that can only watch is
-    // refused whatever the device says, and saying "connecting" there would be
-    // a wait that resolves into a card the reader still cannot use.
-    if (!canDriveBrowserTabs) return landingBrowserViewerMessage();
     if (count === null) return LANDING_PANEL_CONNECTING_MESSAGE;
     return count >= LANDING_BROWSER_TAB_CAP ? landingBrowserCapMessage() : null;
-  }, [browserOpenTab.tabCount, canDriveBrowserTabs]);
+  }, [browserOpenTab.tabCount]);
 
   const pickNewTabKind = useCallback(
     (kind: LandingNewTabKind): void => {

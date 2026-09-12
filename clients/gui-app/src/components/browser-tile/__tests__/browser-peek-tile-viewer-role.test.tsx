@@ -21,8 +21,13 @@ const toast = vi.hoisted(() => vi.fn());
 const hookState = vi.hoisted(() => ({
   streamClient: null as FakeStreamClient | null,
   visible: true,
-  // What `screencastRoleForShell` reads: a shell with no `BrowserView` of its
-  // own (the web bundle, the mobile shell) subscribes as a `viewer`.
+  // D01 retired the read-only tier, so `useScreencastSession` no longer reads
+  // `browserView` at all - it hardcodes `role: "tile"` for every shell. This
+  // stays `null` throughout the file (the web bundle / `MobileRunnerHost`
+  // shape) specifically to prove that fact: nothing here should still branch
+  // on it. `useRunnerHostOrNull` is mocked only because
+  // `BrowserTileToolbar`'s unrelated "open in default browser" affordance
+  // still reads it (see the fixture's docstring).
   browserView: null as object | null,
 }));
 
@@ -52,21 +57,6 @@ vi.mock("@/lib/host/stream-auth-revalidator", () =>
   streamAuthRevalidatorModule(),
 );
 
-/** Every client frame the host refuses from a read-only tier (H07). */
-const PASSIVE_FRAME_KINDS = [
-  "arm",
-  "preArm",
-  "disarm",
-  "pointer",
-  "keyboard",
-  "insertText",
-  "dialogResponse",
-  "navigate",
-  "goBack",
-  "goForward",
-  "reload",
-];
-
 function renderTile(): void {
   renderPeekTile(
     <BrowserPeekTile
@@ -95,17 +85,7 @@ function subscribedRole(): unknown {
   return Reflect.get(params, "role");
 }
 
-function refusedFrames(stream: FakeStreamSession): unknown[] {
-  return stream.sentFrames.filter((frame) =>
-    PASSIVE_FRAME_KINDS.includes(String(frame.kind)),
-  );
-}
-
-function readOnlySurface(): HTMLElement {
-  return screen.getByTestId("browser-screencast-view");
-}
-
-describe("BrowserPeekTile viewer role", () => {
+describe("BrowserPeekTile on a shell with no native browser of its own (mobile / plain web)", () => {
   beforeEach(() => {
     hookState.visible = true;
     hookState.browserView = null;
@@ -120,51 +100,19 @@ describe("BrowserPeekTile viewer role", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders no arm or input affordance", () => {
+  it("subscribes as a `tile` and renders the interactive surface, not the retired read-only one", () => {
     renderTile();
 
-    expect(subscribedRole()).toBe("viewer");
-    expect(
-      screen.queryByRole("button", { name: "Browser screencast controls" }),
-    ).toBeNull();
-    expect(screen.queryByRole("textbox", { name: "Browser IME input" })).toBe(
-      null,
-    );
-    expect(
-      screen.getByRole("textbox", { name: "Browser address" }),
-    ).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: "Reload" })).toHaveProperty(
-      "disabled",
-      true,
-    );
-    expect(screen.getByText("View only")).not.toBeNull();
-  });
-
-  it("sends nothing and shows nothing when a gesture lands on the surface", () => {
-    renderTile();
-    const stream = liveStream();
-    const surface = readOnlySurface();
-
-    fireEvent.pointerEnter(surface);
-    fireEvent.pointerDown(surface, { pointerId: 1, clientX: 10, clientY: 10 });
-    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 10, clientY: 10 });
-    fireEvent.click(surface);
-    fireEvent.keyDown(surface, { key: "a" });
-
-    expect(refusedFrames(stream)).toEqual([]);
-    expect(toast).not.toHaveBeenCalled();
-    expect(screen.queryByText("Controlling")).toBeNull();
-  });
-
-  it("keeps the tile role's affordances and its arm claim", () => {
-    hookState.browserView = {};
-    renderTile();
-    const stream = liveStream();
-
+    // The subscription itself declares the controller tier - this is the
+    // wire-level half of D01, mirrored at the hook level by
+    // `use-screencast-session-role.test.ts`.
     expect(subscribedRole()).toBe("tile");
-    const overlay = screen.getByRole("button", {
-      name: "Browser screencast controls",
-    });
+
+    // The interactive affordances render unconditionally now: no shell gets
+    // the pixels-only presentation that used to gate on `browserView`.
+    expect(
+      screen.getByRole("button", { name: "Browser screencast controls" }),
+    ).not.toBeNull();
     expect(
       screen.getByRole("textbox", { name: "Browser IME input" }),
     ).not.toBeNull();
@@ -175,7 +123,22 @@ describe("BrowserPeekTile viewer role", () => {
       "disabled",
       false,
     );
+
+    // The two markers of the retired tier: the badge, and the `role="img"`
+    // surface `ScreencastPeekSurface` used to render in its place. Neither
+    // has anywhere left to come from - `session.readOnly` no longer exists on
+    // the hook's return value - but a regression that resurrected the branch
+    // would make both of these reappear.
     expect(screen.queryByText("View only")).toBeNull();
+    expect(screen.queryByTestId("browser-screencast-view")).toBeNull();
+  });
+
+  it("arms and its overlay gesture reaches the stream, same as a shell with a native browser", () => {
+    renderTile();
+    const stream = liveStream();
+    const overlay = screen.getByRole("button", {
+      name: "Browser screencast controls",
+    });
 
     fireEvent.focus(overlay);
 

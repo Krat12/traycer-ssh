@@ -93,6 +93,7 @@ function Harness(props: {
     sessionId: TAB.sessionId,
     tabId: TAB.tabId,
     visible: true,
+    tabStillListed: true,
     onRequestNewTab: null,
     onRequestCloseTab: null,
     captureDormantSnapshot: () => {},

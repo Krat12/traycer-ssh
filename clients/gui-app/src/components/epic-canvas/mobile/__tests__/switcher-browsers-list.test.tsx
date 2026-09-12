@@ -107,6 +107,7 @@ const sessionsState = vi.hoisted<{ value: BrowserSessionsState }>(() => ({
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: vi.fn(),
     openTab: forwardOpenTab,

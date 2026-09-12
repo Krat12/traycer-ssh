@@ -1,5 +1,5 @@
 import type {
-  BrowserScreencastServerFrame,
+  BrowserScreencastServerFrameV22,
   BrowserVideoPlaneFailureReason,
 } from "@traycer/protocol/host/browser/contracts";
 import type {
@@ -67,7 +67,7 @@ export interface VideoPlaneSession {
    * RTT probe's reply - this session is the only sender of `ping` on the
    * stream); ignores every other frame kind.
    */
-  readonly handleServerFrame: (frame: BrowserScreencastServerFrame) => void;
+  readonly handleServerFrame: (frame: BrowserScreencastServerFrameV22) => void;
   /**
    * One decoded video frame. `metadata` is the `requestVideoFrameCallback`
    * argument, and `null` on the fallback path (a WebView with no per-frame
@@ -158,10 +158,11 @@ export function createVideoPlaneSession(options: {
    * round it negotiates in the background and retry forever. Expiring while
    * hidden therefore parks the window on the return instead of restarting it
    * blind - a re-armed timer would let a viewer that comes back a moment
-   * later wait out most of a second window on a bare loader (a first-attempt
-   * round has the JPEG cast stopped, so there is no plane underneath), and
-   * nothing else bounds a round whose DataChannels opened but whose media
-   * never flowed.
+   * later wait out most of a second window with the two casts overlapping,
+   * and nothing else bounds a round whose DataChannels opened but whose media
+   * never flowed. (Since D10 the host stops the JPEG cast only at `live`, so
+   * there IS a plane underneath a round that never delivers - what the
+   * deadline bounds now is the double capture, not a blank tile.)
    */
   const armDeadline = (): void => {
     const onVisible = (): void => {

@@ -29,6 +29,7 @@ import {
 import { useDesktopWindowId } from "@/lib/windows/desktop-window-id";
 import { toastFromHostError } from "@/lib/host-error-toast";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
+import { useCoarsePointer } from "@/hooks/ui/use-coarse-pointer";
 import {
   confirmBrowserGuestViewport,
   readBrowserGuestViewport,
@@ -121,6 +122,10 @@ export function useBrowserViewport(input: {
     input.pageZoom,
   );
   const paneFocused = usePaneFocused();
+  // What this viewer drives the viewport with (D02): a coarse-pointer Fit
+  // owner is what makes the host render the page phone-shaped. The pointer
+  // class, not which bundle is running - a touch laptop reports `coarse` too.
+  const coarse = useCoarsePointer();
   const desktopWindowId = useDesktopWindowId();
   const readWindowId = useCallback(
     () => desktopWindowId ?? browserTabId(),
@@ -143,6 +148,7 @@ export function useBrowserViewport(input: {
   const actionRevision = useRef(0);
   const activationPending = useRef(false);
   const report = sessions?.reportViewport;
+  const release = sessions?.releaseViewport;
   const supported = state !== null;
   const connectionGeneration = sessions?.connectionGeneration;
   const lifecycle = sessions?.lifecycle;
@@ -203,6 +209,7 @@ export function useBrowserViewport(input: {
           viewerId,
           geometry,
           claim: activationPending.current && document.hasFocus(),
+          pointer: coarse ? "coarse" : "fine",
         });
         activationPending.current = false;
       }
@@ -221,9 +228,31 @@ export function useBrowserViewport(input: {
     viewerId,
     connectionGeneration,
     canChange,
+    coarse,
     expanded,
     paneFocused,
   ]);
+
+  /**
+   * The release, and nothing else, so that it fires when this viewer stops
+   * showing the tab and at no other time.
+   *
+   * Deliberately NOT the measure effect's cleanup: that effect re-runs on
+   * eleven inputs, so an expand, a pane-focus change, a page-zoom change or a
+   * sessions reconnect would release this viewer's own Fit ownership
+   * mid-session - and the next report only re-claims on a deliberate
+   * activation, which a plain re-measure is not.
+   */
+  useEffect(() => {
+    if (release === undefined) return;
+    return () => {
+      release({
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        viewerId,
+      });
+    };
+  }, [release, input.sessionId, input.tabId, viewerId]);
 
   const claim = useCallback(() => {
     const geometry = geometryRef.current;
@@ -234,8 +263,10 @@ export function useBrowserViewport(input: {
       viewerId,
       geometry,
       claim: true,
+      pointer: coarse ? "coarse" : "fine",
     });
   }, [
+    coarse,
     input.sessionId,
     input.tabId,
     input.visible,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
+import type { BrowserScreencastServerFrameV22 } from "@traycer/protocol/host/browser/contracts";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type {
   IStreamSession,
@@ -101,7 +101,7 @@ describe("openPipHeadlessStream", () => {
   it("subscribes as role pip, closes, and forwards jpeg frames", () => {
     const harness = createScreencastClientHarness();
     const received: Array<{
-      readonly frame: BrowserScreencastServerFrame;
+      readonly frame: BrowserScreencastServerFrameV22;
       readonly jpegBytes: Uint8Array | null;
     }> = [];
 
@@ -138,7 +138,7 @@ describe("openPipHeadlessStream", () => {
     ]);
 
     const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff]);
-    const frame: BrowserScreencastServerFrame = {
+    const frame: BrowserScreencastServerFrameV22 = {
       kind: "frame",
       hasBinaryPayload: true,
       sequence: 7,
@@ -176,7 +176,7 @@ describe("openPipHeadlessStream", () => {
     // latency on its measurement, or reaches a consumer that has no arm for
     // it and gets acked as a pixel frame.
     const harness = createScreencastClientHarness();
-    const received: BrowserScreencastServerFrame[] = [];
+    const received: BrowserScreencastServerFrameV22[] = [];
 
     openPipHeadlessStream({
       client: harness.client,

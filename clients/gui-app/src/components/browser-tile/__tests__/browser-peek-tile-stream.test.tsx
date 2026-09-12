@@ -264,6 +264,12 @@ describe("BrowserPeekTile", () => {
         {
           kind: "complete",
           hasBinaryPayload: false,
+          // A bare `complete` now defaults `retryable` to `true` (D20's
+          // backward-compat default for a pre-2.2 host), which would arm the
+          // resubscribe ladder and read as "Reconnecting..." instead of the
+          // terminal state this test pins. `false` is what a real host sends
+          // for a tab that is actually gone, which is what these fixtures mean.
+          retryable: false,
         },
         null,
       );
@@ -297,6 +303,12 @@ describe("BrowserPeekTile", () => {
         {
           kind: "complete",
           hasBinaryPayload: false,
+          // A bare `complete` now defaults `retryable` to `true` (D20's
+          // backward-compat default for a pre-2.2 host), which would arm the
+          // resubscribe ladder and read as "Reconnecting..." instead of the
+          // terminal state this test pins. `false` is what a real host sends
+          // for a tab that is actually gone, which is what these fixtures mean.
+          retryable: false,
         },
         null,
       );
@@ -307,13 +319,14 @@ describe("BrowserPeekTile", () => {
     expect(screen.queryByText("Ended")).toBeNull();
   });
 
-  it("reads a native-elsewhere complete frame as an honest terminal state, not a handoff spinner", () => {
-    // `completeMeans="native-elsewhere"`: a client with no native window of
-    // its own for the session's host (e.g. a viewer-only client, or an
-    // electron-capable client on a DIFFERENT host than the session's) gets the
-    // same `complete` frame for a tab that will never stream here. It must not
-    // read as "Going native" (nothing is arriving) nor as "Ended" (the tab is
-    // not dead, it is just unreachable from this client).
+  it("reads a native-elsewhere complete frame as an ordinary end, now that the desktop mirrors instead of orphaning the tab", () => {
+    // `completeMeans="native-elsewhere"`: the tab is live in the desktop app
+    // on that host. Before D04/D20 that host had no way to hand this client
+    // any pixels, so this frame got its own terminal copy
+    // ("...so it can't be streamed here"). Now the desktop MIRRORS its native
+    // tabs to remote viewers, so this `complete` is the same ordinary end the
+    // resubscribe ladder re-opens - `browserPeekStatus` no longer forks on
+    // `completeMeans` for this arm at all, only for `native-handoff` above.
     renderPeekTile(
       <BrowserPeekTile
         scope={{ kind: "epic", epicId: "epic-1" }}
@@ -332,19 +345,21 @@ describe("BrowserPeekTile", () => {
         {
           kind: "complete",
           hasBinaryPayload: false,
+          // A bare `complete` now defaults `retryable` to `true` (D20's
+          // backward-compat default for a pre-2.2 host), which would arm the
+          // resubscribe ladder and read as "Reconnecting..." instead of the
+          // terminal state this test pins. `false` is what a real host sends
+          // for a tab that is actually gone, which is what these fixtures mean.
+          retryable: false,
         },
         null,
       );
     });
 
-    expect(screen.getByText("Open natively")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "This tab is open in the desktop app on that host, so it can't be streamed here.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText("Ended")).toBeTruthy();
+    expect(screen.getByText("Screencast ended.")).toBeTruthy();
     expect(screen.queryByText("Going native")).toBeNull();
-    expect(screen.queryByText("Ended")).toBeNull();
+    expect(screen.queryByText("Open natively")).toBeNull();
   });
 
   it("ignores callbacks from a replaced screencast subscription", () => {
@@ -387,7 +402,13 @@ describe("BrowserPeekTile", () => {
     const current = liveStream();
     expect(current).not.toBe(retired);
     act(() => {
-      current.emit({ kind: "complete", hasBinaryPayload: false }, null);
+      // `retryable: false` for the same reason as the other fixtures above -
+      // a bare `complete` defaults to retryable and would read as
+      // "Reconnecting..." rather than the terminal "Ended" this test pins.
+      current.emit(
+        { kind: "complete", hasBinaryPayload: false, retryable: false },
+        null,
+      );
       retired.emit(
         {
           kind: "started",

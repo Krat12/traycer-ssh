@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import type { TileController } from "@/components/epic-canvas/renderers/tile-controller";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
-import { Badge } from "@/components/ui/badge";
 import type { BrowserAnnotationSessionController } from "@/hooks/browser/use-browser-annotation-session";
 import { Button } from "@/components/ui/button";
 import {
@@ -112,8 +111,6 @@ export function BrowserTileToolbar(props: {
 export function BrowserTileToolbarCompact(props: {
   readonly controller: TileController;
   readonly loading: boolean;
-  /** A read-only tier says so here: a finger cannot reach a tooltip (H12). */
-  readonly readOnly: boolean;
 }) {
   const url = props.controller.url;
   return (
@@ -133,11 +130,6 @@ export function BrowserTileToolbarCompact(props: {
         </div>
       )}
       <BrowserResponsiveToggle controller={props.controller} />
-      {props.readOnly ? (
-        <Badge variant="outline" className="shrink-0">
-          View only
-        </Badge>
-      ) : null}
       {props.loading && !props.controller.capabilities.reload ? (
         <span role="status" aria-label="Page loading" className="shrink-0">
           <AgentSpinningDots

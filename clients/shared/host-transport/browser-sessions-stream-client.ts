@@ -1,5 +1,5 @@
 import {
-  browserSessionsServerFrameSchema,
+  browserSessionsServerFrameV22Schema,
   type BrowserSessionsClientFrame,
   type BrowserSessionsOpenRequest,
   type BrowserSessionsServerFrame,
@@ -117,6 +117,22 @@ export class BrowserSessionsStreamClient {
         });
       return;
     }
+    // `@2.2` emission, gated on the negotiated minor. Below the 2.1 gate
+    // above, which already refuses every viewport frame on an older line: a
+    // 2.1 host warn-drops `releaseViewport` outright, and its `.strict()`
+    // parse of `reportViewport` would reject the whole frame over the added
+    // `pointer`, taking the Fit report down with the field. `undefined` is
+    // never serialised, so the rebuild is the 2.1 frame exactly.
+    const minor2Supported =
+      version !== null &&
+      (version.major > 2 || (version.major === 2 && version.minor >= 2));
+    if (!minor2Supported) {
+      if (frame.kind === "releaseViewport") return;
+      if (frame.kind === "reportViewport") {
+        this.session.sendClientFrame({ ...frame, pointer: undefined }, null);
+        return;
+      }
+    }
     if (!this.servingFrozenLine()) {
       this.session.sendClientFrame(frame, null);
       return;
@@ -173,12 +189,24 @@ export class BrowserSessionsStreamClient {
       );
       return;
     }
-    const parsed = browserSessionsServerFrameSchema.safeParse(envelope);
+    // The NEWEST union, whatever this session negotiated: it parses a 2.0/2.1
+    // payload unchanged, while the 2.1 union's `.strict()` arms reject a 2.2
+    // addition outright - `viewportState.fitPointer` would drop the whole
+    // viewport frame rather than the one field.
+    const parsed = browserSessionsServerFrameV22Schema.safeParse(envelope);
     if (!parsed.success) {
       this.warnMalformedFrame(envelope, parsed.error.issues);
       return;
     }
-    this.callbacks.onServerFrame(parsed.data);
+    const frame = parsed.data;
+    // The two mirror-lifecycle frames are host->DESKTOP asks and nothing
+    // behind this callback handles one yet (the desktop's mirror source is its
+    // own ticket). Dropped here rather than widened into the callback type,
+    // which is what that ticket does once there is a handler to widen it for.
+    if (frame.kind === "mirrorRequest" || frame.kind === "mirrorRelease") {
+      return;
+    }
+    this.callbacks.onServerFrame(frame);
   }
 
   /**

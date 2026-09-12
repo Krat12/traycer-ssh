@@ -96,10 +96,15 @@ export function hostStreamClientForWithAuthModule(hookState: PeekHookState): {
 }
 
 /**
- * The `tile` control tier. `screencastRoleForShell` reads `browserView` off
- * the runner host and a bare test tree has no `RunnerHostProvider` at all, so
- * without this a peek suite renders the read-only `viewer` presentation (H12)
- * and there is no arm affordance left to drive.
+ * A non-null runner host.
+ *
+ * Every signed-in shell subscribes as an interactive `"tile"` now (D01), so
+ * this no longer decides the screencast's control tier - `useScreencastSession`
+ * dropped its own read of `useRunnerHostOrNull` entirely once the read-only
+ * tier was retired. What still needs it is `BrowserTileToolbar`'s "open in
+ * default browser" affordance (`useRunnerHostOrNull() !== null`), which a bare
+ * test tree - no `RunnerHostProvider` - would otherwise read as absent and
+ * hide the button these suites drive.
  */
 export function tileRoleRunnerHostModule(): {
   useRunnerHostOrNull: () => { browserView: object };

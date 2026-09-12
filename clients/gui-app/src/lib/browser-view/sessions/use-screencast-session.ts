@@ -11,8 +11,7 @@ import type {
   BrowserNavState,
   BrowserScreencastCaptureMode,
   BrowserScreencastClientFrame,
-  BrowserScreencastServerFrame,
-  BrowserScreencastViewerRole,
+  BrowserScreencastServerFrameV22,
 } from "@traycer/protocol/host/browser/contracts";
 import { BrowserScreencastStreamClient } from "@traycer-clients/shared/host-transport/browser-screencast-stream-client";
 import type {
@@ -22,13 +21,11 @@ import type {
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import type { HostResourceScope } from "@traycer/protocol/host/resource-scope";
-import type { IRunnerHost } from "@traycer-clients/shared/platform/runner-host";
 import {
   EMPTY_SCREENCAST_NAV_STATE,
   toastScreencastUnsupportedInteraction,
 } from "@/components/epic-canvas/renderers/use-screencast-tile-chrome";
 import { bytesToBase64 } from "@/lib/composer/image-base64";
-import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 import {
   createScreencastController,
   type ScreencastController,
@@ -71,13 +68,29 @@ const VIEWPORT_DEBOUNCE_MS = 200;
  * and the ended plane's stale one cannot linger.
  */
 const PRESENTED_SEQUENCE_RESET_KINDS: ReadonlySet<
-  BrowserScreencastServerFrame["kind"]
-> = new Set<BrowserScreencastServerFrame["kind"]>([
+  BrowserScreencastServerFrameV22["kind"]
+> = new Set<BrowserScreencastServerFrameV22["kind"]>([
   "started",
   "resized",
   "failed",
   "complete",
 ]);
+
+/**
+ * The resubscribe ladder (D20). A `complete` is a routine event - a runtime
+ * flip, a desktop leaving, a debugger detach - so the viewer re-opens the
+ * subscription instead of leaving a dead tile behind until someone reloads
+ * the app. Bounded in both directions: the delay doubles to a 4s ceiling so a
+ * host that cannot serve this tab is not hammered, and the attempt count caps
+ * so a permanently-gone tab stops costing host ERROR lines. A delivered frame
+ * resets the count, which is what makes the cap a per-outage budget rather
+ * than a lifetime one.
+ */
+const RESUBSCRIBE_BASE_DELAY_MS = 250;
+const RESUBSCRIBE_MAX_DELAY_MS = 4_000;
+const RESUBSCRIBE_MAX_ATTEMPTS = 8;
+/** The loader line while a bump is pending, in place of "Screencast ended.". */
+const RESUBSCRIBING_DETAILS = "Reconnecting…";
 
 // The one re-export left: `ScreencastDialog` is this hook's OUTPUT type, so
 // tiles read it off the session rather than off the controller they never see.
@@ -91,7 +104,8 @@ export type ScreencastLifecycle =
   | "stale"
   | "disconnected"
   | "failed"
-  | "complete";
+  | "complete"
+  | "refused";
 
 type ScreencastViewportInput = Omit<
   Extract<BrowserScreencastClientFrame, { readonly kind: "viewport" }>,
@@ -125,14 +139,6 @@ export interface ScreencastSession {
   readonly details: string | null;
   readonly frameSize: ScreencastFrameSize | null;
   readonly navState: BrowserNavState;
-  /**
-   * This subscription is a `"viewer"`, the tier the host refuses every claim
-   * and every input frame from (`viewer-passive`, H07). A tile reading `true`
-   * must render no arm and no input affordance at all: the alternative is a
-   * control that starts a gesture the host will not finish, which reads as a
-   * broken tab (H12).
-   */
-  readonly readOnly: boolean;
   /** Non-null only while this tile is visible AND the host has armed input. */
   readonly armedEpoch: number | null;
   readonly dialog: ScreencastDialog | null;
@@ -206,6 +212,18 @@ export interface ScreencastSessionOptions {
   readonly tabId: string;
   readonly visible: boolean;
   /**
+   * Whether the host's inventory still lists this tab.
+   *
+   * The resubscribe ladder's stop condition (D20): a `complete` for a tab
+   * that has left `session.info.tabs` - a closed tab, a deleted session - is
+   * terminal whatever it says about being retryable, and retrying it only
+   * buys host ERROR lines and a "Reconnecting…" that never resolves. The
+   * caller reads it off the same inventory `completeMeans` is derived from,
+   * and reads "not listed yet" as listed so a sessions reconnect does not
+   * cancel a ladder mid-outage.
+   */
+  readonly tabStillListed: boolean;
+  /**
    * Called from the `<video>` attach effect's cleanup, before `srcObject` is
    * cleared - the element still has its last decoded frame at that point,
    * whether the teardown is a plane fallback to JPEG, a fresh negotiation
@@ -273,25 +291,6 @@ function scopeEpicId(scope: HostResourceScope): string | null {
 }
 
 /**
- * The control tier a shell may subscribe at. `"tile"` only where the shell
- * owns a native browser of its own - which is exactly the desktop, since
- * `browserView` is the shell's own "I have a real BrowserView" capability and
- * both the web bundle (no runner host at all) and the mobile shell
- * (`MobileRunnerHost.browserView = null`) answer `null`.
- *
- * Everything else is a `"viewer"`: it watches the tab, and the host refuses
- * its `arm` and its input frames outright (security review root cause G). The
- * declaration is what the host acts on, so a modified client can still claim
- * `"tile"` - the tier bounds a cooperating viewer, it does not authorize one.
- */
-export function screencastRoleForShell(
-  runnerHost: Pick<IRunnerHost, "browserView"> | null,
-): BrowserScreencastViewerRole {
-  if (runnerHost === null || runnerHost.browserView === null) return "viewer";
-  return "tile";
-}
-
-/**
  * Headless `browser.screencast` viewer. This hook owns only what a render
  * reads - the frame image, the lifecycle, the armed epoch and the composing
  * flag - plus the transport that feeds them. Everything with its own state
@@ -307,7 +306,6 @@ export function useScreencastSession(
   // A module constant chosen by the shell this bundle booted into, so the
   // reference is stable across renders and safe to depend on below.
   const profile = screencastProfile();
-  const role = screencastRoleForShell(useRunnerHostOrNull());
   const streamRef = useRef<BrowserScreencastStreamClient | null>(null);
   const videoPlaneRef = useRef<VideoPlaneSession | null>(null);
   /**
@@ -435,6 +433,66 @@ export function useScreencastSession(
         setHandoffTokenGeneration((current) => current + 1);
       }),
     [hostId, sessionId, tabId],
+  );
+
+  /**
+   * Bumped by the ladder below, and held in the subscribe effect's deps so a
+   * bump re-opens the subscription. State rather than a ref for exactly that
+   * reason - the re-render IS the resubscribe.
+   */
+  const [resubscribeGeneration, setResubscribeGeneration] = useState(0);
+  /**
+   * The ladder's own bookkeeping, as a ref: the pending timer has to outlive
+   * the subscribe effect that scheduled it (its own bump is what re-runs that
+   * effect), and the attempt count is read from a frame handler rather than
+   * from a render.
+   */
+  const resubscribeRef = useRef<{
+    attempts: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ attempts: 0, timer: null });
+  /** Latest-value read of `tabStillListed`, synced by the passive effect below. */
+  const tabStillListedRef = useRef(options.tabStillListed);
+  const clearResubscribeTimer = useCallback(() => {
+    const pending = resubscribeRef.current.timer;
+    if (pending === null) return;
+    clearTimeout(pending);
+    resubscribeRef.current.timer = null;
+  }, []);
+  /**
+   * Schedules the next subscribe for a `complete` that says one could help,
+   * and answers whether the tile should read "Reconnecting…" instead of
+   * "Screencast ended.". A non-retryable `complete` (tab close, session
+   * delete), a tab that has left the inventory, and a spent attempt budget
+   * all answer `false`.
+   */
+  const scheduleResubscribe = useCallback((retryable: boolean): boolean => {
+    const state = resubscribeRef.current;
+    if (state.timer !== null) return true;
+    if (!retryable || !tabStillListedRef.current) return false;
+    if (state.attempts >= RESUBSCRIBE_MAX_ATTEMPTS) return false;
+    const delay = Math.min(
+      RESUBSCRIBE_MAX_DELAY_MS,
+      RESUBSCRIBE_BASE_DELAY_MS * 2 ** state.attempts,
+    );
+    state.attempts += 1;
+    state.timer = setTimeout(() => {
+      resubscribeRef.current.timer = null;
+      setResubscribeGeneration((current) => current + 1);
+    }, delay);
+    return true;
+  }, []);
+  // A tab that has left the inventory is not coming back, so a bump already
+  // scheduled for it is cancelled rather than spent.
+  useEffect(() => {
+    if (!options.tabStillListed) clearResubscribeTimer();
+  }, [clearResubscribeTimer, options.tabStillListed]);
+  // An unmounting tile has nothing to resubscribe either.
+  useEffect(
+    () => () => {
+      clearResubscribeTimer();
+    },
+    [clearResubscribeTimer],
   );
 
   const refs = useMemo<ScreencastSessionRefs>(
@@ -643,11 +701,16 @@ export function useScreencastSession(
           });
         }
       }
-      handleStreamStatus(status, reason, patchStreamState);
+      handleStreamStatus(
+        status,
+        reason,
+        patchStreamState,
+        resubscribeRef.current.timer !== null,
+      );
     };
 
     const onServerFrame = (
-      frame: BrowserScreencastServerFrame,
+      frame: BrowserScreencastServerFrameV22,
       binaryPayload: Uint8Array | null,
     ): void => {
       if (stream !== null && !isCurrent()) return;
@@ -661,6 +724,10 @@ export function useScreencastSession(
       // willing to send. Same split PiP already uses (pip-headless-stream.ts).
       if (frame.kind === "frame") {
         controller.noteFrameArrived(frame.sequence);
+        // A delivered frame is what makes the attempt budget per-outage
+        // rather than per-lifetime: this subscription produces, so the
+        // ladder starts over from 250ms.
+        resubscribeRef.current.attempts = 0;
       } else if (frame.kind === "viewportEpoch") {
         controller.noteViewportEpoch(frame.epoch);
         patchStreamState({ logicalViewport: frame.logicalViewport });
@@ -711,8 +778,22 @@ export function useScreencastSession(
           });
         }
       }
+      // D20: a `complete` is a routine event, so the ladder - not the reader
+      // - is what re-establishes the pump. A `refused` is the opposite: it
+      // says re-subscribing changes nothing until the host does.
+      let resubscribing = false;
+      if (frame.kind === "complete") {
+        resubscribing = scheduleResubscribe(frame.retryable);
+      } else if (frame.kind === "refused") {
+        clearResubscribeTimer();
+      }
       videoPlane.handleServerFrame(frame);
-      handleScreencastFrame(frame, binaryPayload, patchStreamState);
+      handleScreencastFrame(
+        frame,
+        binaryPayload,
+        patchStreamState,
+        resubscribing,
+      );
       if (frame.kind === "navState") {
         patchStreamState({
           navState: {
@@ -746,7 +827,11 @@ export function useScreencastSession(
       maxHeight: profile.maxHeight,
       quality: profile.quality,
       format: "jpeg",
-      role,
+      // Every signed-in shell subscribes as a controller (D01): the read-only
+      // tier is gone, and a tile is a tile whether the shell has a native
+      // browser of its own or not. `"pip"` - the one passive tier left - is
+      // asked for by the PiP mirror, which opens its own subscription.
+      role: "tile",
       // Read at subscribe time rather than held as a value: in the common
       // order the open that minted it resolved before this tile could mount.
       // `handoffTokenGeneration` in the deps covers the other order - a token
@@ -777,15 +862,17 @@ export function useScreencastSession(
       opened.close();
     };
   }, [
+    clearResubscribeTimer,
     client,
     controller,
     scope,
     handoffTokenGeneration,
+    scheduleResubscribe,
     hostId,
     patchStreamState,
     profile,
     readControlPlaneRttMs,
-    role,
+    resubscribeGeneration,
     sessionId,
     tabId,
     visible,
@@ -827,6 +914,7 @@ export function useScreencastSession(
     requestNewTabRef.current = options.onRequestNewTab;
     requestCloseTabRef.current = options.onRequestCloseTab;
     videoStatsRef.current = videoStats;
+    tabStillListedRef.current = options.tabStillListed;
   });
 
   /**
@@ -969,7 +1057,7 @@ export function useScreencastSession(
 
   useEffect(() => {
     const tile = tileRef.current;
-    if (tile === null || armedEpoch === null || role === "viewer") return;
+    if (tile === null || armedEpoch === null) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       controller.handleTileKeyDown(event);
     };
@@ -987,7 +1075,7 @@ export function useScreencastSession(
       tile.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [armedEpoch, controller, role]);
+  }, [armedEpoch, controller]);
 
   useEffect(() => {
     const button = overlayButtonRef.current;
@@ -1055,7 +1143,6 @@ export function useScreencastSession(
   return {
     refs,
     ...planeView,
-    readOnly: role === "viewer",
     armedEpoch,
     dialog,
     composing,
@@ -1187,6 +1274,7 @@ function handleStreamStatus(
   status: StreamConnectionStatus,
   reason: StreamCloseReason | null,
   patch: (patch: ScreencastStatePatch) => void,
+  resubscribing: boolean,
 ): void {
   if (status === "open") {
     patch({ lifecycle: "waiting", details: null });
@@ -1207,6 +1295,14 @@ function handleStreamStatus(
     patch({ lifecycle: "failed", details: reason.details.reason });
     return;
   }
+  // A close with a bump already scheduled is the ladder's own gap, not a dead
+  // stream - the host usually closes the line right behind the `complete` that
+  // started the ladder, and "Disconnected" for those few hundred milliseconds
+  // describes the wrong thing.
+  if (resubscribing) {
+    patch({ lifecycle: "connecting", details: RESUBSCRIBING_DETAILS });
+    return;
+  }
   patch({
     lifecycle: "disconnected",
     details: "Screencast stream disconnected.",
@@ -1214,9 +1310,10 @@ function handleStreamStatus(
 }
 
 function handleScreencastFrame(
-  frame: BrowserScreencastServerFrame,
+  frame: BrowserScreencastServerFrameV22,
   binaryPayload: Uint8Array | null,
   patch: (patch: ScreencastStatePatch) => void,
+  resubscribing: boolean,
 ): void {
   if (frame.kind === "started" || frame.kind === "resized") {
     patch({
@@ -1246,8 +1343,18 @@ function handleScreencastFrame(
     patch({ lifecycle: "failed", details: frame.reason });
     return;
   }
+  if (frame.kind === "refused") {
+    // The raw reason, not copy: the tile owns the host label the two known
+    // reasons are rendered with, and an unknown one is shown verbatim.
+    patch({ lifecycle: "refused", details: frame.reason });
+    return;
+  }
   if (frame.kind === "complete") {
-    patch({ lifecycle: "complete", details: "Screencast ended." });
+    patch(
+      resubscribing
+        ? { lifecycle: "connecting", details: RESUBSCRIBING_DETAILS }
+        : { lifecycle: "complete", details: "Screencast ended." },
+    );
   }
 }
 
@@ -1305,13 +1412,17 @@ function useScreencastViewportBridge(
  * everything here is one concern, the arm lifecycle.
  */
 function applyScreencastArmFrame(input: {
-  readonly frame: BrowserScreencastServerFrame;
+  readonly frame: BrowserScreencastServerFrameV22;
   readonly controller: ScreencastController;
   readonly onDialogOpened: (dialog: ScreencastDialog) => void;
   readonly onDialogSettled: () => void;
 }): void {
   const { frame, controller } = input;
-  if (frame.kind === "failed" || frame.kind === "complete") {
+  if (
+    frame.kind === "failed" ||
+    frame.kind === "complete" ||
+    frame.kind === "refused"
+  ) {
     controller.clearLocalArm(false);
     return;
   }
@@ -1337,6 +1448,22 @@ function applyScreencastArmFrame(input: {
     controller.clearLocalArm(false);
     return;
   }
+  applyScreencastDialogFrame(input);
+}
+
+/**
+ * The dialog half, split out of {@link applyScreencastArmFrame} rather than
+ * inlined in it: a dialog exists only inside an arm, so the two belong to one
+ * lifecycle, but the arm branches and the dialog branches share no state and
+ * reading either one does not require the other.
+ */
+function applyScreencastDialogFrame(input: {
+  readonly frame: BrowserScreencastServerFrameV22;
+  readonly controller: ScreencastController;
+  readonly onDialogOpened: (dialog: ScreencastDialog) => void;
+  readonly onDialogSettled: () => void;
+}): void {
+  const { frame, controller } = input;
   if (frame.kind === "dialogOpened") {
     const armEpoch = controller.activeArmEpoch();
     const current = controller.activeDialog();

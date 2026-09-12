@@ -653,6 +653,7 @@ function browserSessionsState(
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: () => Promise.reject(new Error("not used in this test")),
@@ -2801,62 +2802,6 @@ describe("<LandingTerminalPanel />", () => {
         .getByTestId("landing-browser-tile-browser-a")
         .getAttribute("data-watched"),
     ).toBe("true");
-  });
-
-  // A shell with no native browser capability can only WATCH a browser tab -
-  // the tile renders "View only" and an independent session has no agent
-  // driving it either - so the card would open a blank page nobody can
-  // navigate. Unlike the cap or the connecting wait, this does not resolve.
-  it("refuses the browser card on a shell that could only watch the tab", async () => {
-    mocks.activeHostId = "host-a";
-    mocks.clientActiveHostId = "host-a";
-    mocks.primaryWorkspacePath = "/workspace/project";
-    mocks.probeData = emptyList("/Users/dev");
-    mocks.freshProbeData = mocks.probeData;
-    mocks.plainAuthorityStatus = "capable";
-    mocks.plainCanMutate = true;
-    // Web / mobile: no native browser capability.
-    mocks.runnerHostHasBrowserView = false;
-    const openTab = vi.fn(() =>
-      Promise.resolve({
-        sessionId: "device-session",
-        tabId: "device-tab",
-        handoffToken: null,
-      }),
-    );
-    mocks.browserSessionsByHost = {
-      "host-a": browserSessionsState({ openTab }),
-    };
-    useLandingPanelStore.getState().setPanelOpen(TEST_LANDING_PAGE_ID, true);
-    render(panelUi());
-
-    const browserCard = await screen.findByTestId(
-      "landing-new-tab-card-browser",
-    );
-    // Disabled with a reason, the same shape the cap and the connecting wait
-    // use - and it stays that way, because a device answering changes nothing.
-    await waitFor(() => {
-      expect(browserCard.getAttribute("aria-disabled")).toBe("true");
-    });
-    expect(
-      screen.getByTestId("landing-new-tab-card-browser-reason").textContent,
-    ).toBe("Browser tabs need the desktop app");
-
-    fireEvent.click(browserCard);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(openTab).not.toHaveBeenCalled();
-    // The chooser is still there to pick a terminal from.
-    expect(useLandingPanelStore.getState().placeholder).not.toBe(null);
-
-    // The Terminal card is untouched: a shell that cannot drive a browser can
-    // still open a shell.
-    expect(
-      screen
-        .getByTestId("landing-new-tab-card-terminal")
-        .getAttribute("aria-disabled"),
-    ).toBeNull();
   });
 
   // The chooser's two cards are two answers to ONE row, and the device takes

@@ -850,6 +850,7 @@ function browserSessionsState(
     viewports: {},
     setViewport: () => Promise.reject(new Error("not implemented")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => {},
     openTab: () => Promise.reject(new Error("not implemented")),

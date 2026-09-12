@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  BrowserScreencastServerFrame,
+  BrowserScreencastServerFrameV22,
   BrowserVideoPlaneFailureReason,
 } from "@traycer/protocol/host/browser/contracts";
 import {
@@ -200,7 +200,7 @@ const openSessions: VideoPlaneSession[] = [];
 function offerFrame(
   negotiationId: number,
   sdp: string,
-): BrowserScreencastServerFrame {
+): BrowserScreencastServerFrameV22 {
   return {
     kind: "sdpOffer",
     hasBinaryPayload: false,
@@ -213,7 +213,7 @@ function offerFrame(
 function iceFrame(
   negotiationId: number,
   candidate: string,
-): BrowserScreencastServerFrame {
+): BrowserScreencastServerFrameV22 {
   return {
     kind: "iceCandidate",
     hasBinaryPayload: false,
@@ -230,7 +230,7 @@ function iceFrame(
  * handler ever runs (ticket 18 - it is why this measurement read null in
  * production while this test was green against the wrong frame).
  */
-function inputPongFrame(): BrowserScreencastServerFrame {
+function inputPongFrame(): BrowserScreencastServerFrameV22 {
   return { kind: "inputPong", hasBinaryPayload: false };
 }
 

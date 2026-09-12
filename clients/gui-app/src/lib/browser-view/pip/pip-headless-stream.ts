@@ -1,4 +1,4 @@
-import type { BrowserScreencastServerFrame } from "@traycer/protocol/host/browser/contracts";
+import type { BrowserScreencastServerFrameV22 } from "@traycer/protocol/host/browser/contracts";
 import { BrowserScreencastStreamClient } from "@traycer-clients/shared/host-transport/browser-screencast-stream-client";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
@@ -25,7 +25,7 @@ export function openPipHeadlessStream(input: {
   readonly maxHeight: number;
   readonly quality: number;
   readonly onFrame: (
-    frame: BrowserScreencastServerFrame,
+    frame: BrowserScreencastServerFrameV22,
     jpegBytes: Uint8Array | null,
   ) => void;
 }): PipHeadlessStreamHandle {

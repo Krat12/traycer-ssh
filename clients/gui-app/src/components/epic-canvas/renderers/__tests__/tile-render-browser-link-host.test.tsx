@@ -141,6 +141,7 @@ function liveSessionsState(hostId: string): BrowserSessionsState {
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: (_sessionId, url) => {

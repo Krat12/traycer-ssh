@@ -3,6 +3,7 @@ import type {
   BrowserViewportState,
   BrowserViewportGeometry,
 } from "@traycer/protocol/host/browser/viewport";
+import type { BrowserViewportPointer } from "@traycer/protocol/host/browser/contracts";
 import type {
   BrowserOpenedTab,
   BrowserSessionInfo,
@@ -30,6 +31,7 @@ import {
   forgetHandoffTokensForSession,
   recordHandoffToken,
 } from "@/lib/browser-view/sessions/screencast-handoff-tokens";
+import { browserRefusalMessage } from "@/lib/browser-view/sessions/browser-refusal-copy";
 import {
   openBrowserSessionsSession,
   type BrowserSessionsSession,
@@ -57,6 +59,25 @@ export interface BrowserSessionsState {
     readonly viewerId: string;
     readonly geometry: BrowserViewportGeometry;
     readonly claim: boolean;
+    /**
+     * What this viewer drives the viewport with (D02). A coarse-pointer Fit
+     * owner is what makes the host render the page phone-shaped, so the class
+     * travels with the geometry rather than being inferred host-side from a
+     * size.
+     */
+    readonly pointer: BrowserViewportPointer;
+  }) => void;
+  /**
+   * "I am no longer showing this tab" (D03). Only the viewer knows its own
+   * `viewerId`, so the release of a Fit claim is its to send - and sending it
+   * is what lets the NEXT viewer's report apply instead of losing to a claim
+   * whose owner has gone. Unacknowledged: releasing a claim nobody holds is a
+   * no-op on the host.
+   */
+  readonly releaseViewport: (input: {
+    readonly sessionId: string;
+    readonly tabId: string;
+    readonly viewerId: string;
   }) => void;
   readonly hostId: string | null;
   readonly lifecycle: BrowserSessionsLifecycle;
@@ -791,10 +812,15 @@ function createBrowserSessionsCoordinator(args: {
       hasBinaryPayload: false,
       ...identity,
       ...geometry,
-      // Pointer-class detection (`matchMedia("(pointer: coarse)")`) is a later
-      // mobile-browser ticket; "fine" is the schema default and matches
-      // today's behavior exactly.
-      pointer: "fine",
+    });
+  };
+
+  const releaseViewport: BrowserSessionsState["releaseViewport"] = (input) => {
+    if (session === null || lifecycle !== "live") return;
+    session.send({
+      kind: "releaseViewport",
+      hasBinaryPayload: false,
+      ...input,
     });
   };
 
@@ -1000,6 +1026,7 @@ function createBrowserSessionsCoordinator(args: {
       viewports: {},
       setViewport,
       reportViewport,
+      releaseViewport,
       errorMessage: null,
       retry: restart,
       openTab,
@@ -1241,7 +1268,11 @@ function handleOpenTabResult(
   const pending = pendingOpens.get(frame.requestId);
   if (pending === undefined) return;
   if (!frame.result.ok) {
-    pending.reject(new Error(frame.result.reason));
+    // The two mirror refusals name a machine and a remedy; every other reason
+    // is the host's own free-form string and passes through unchanged.
+    pending.reject(
+      new Error(browserRefusalMessage(frame.result.reason, hostId)),
+    );
     return;
   }
   const { sessionId, tabId, handoffToken } = frame.result;

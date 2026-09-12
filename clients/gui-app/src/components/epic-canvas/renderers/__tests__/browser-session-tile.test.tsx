@@ -821,41 +821,6 @@ describe("BrowserSessionTile lifecycle projection", () => {
     );
   });
 
-  it("shows a dismissible runtime-demotion note when a session flips electron to headless", () => {
-    harness.binding = binding();
-    harness.items = [session("ready", "electron")];
-    const view = render(
-      <BrowserSessionTile
-        node={NODE}
-        viewTabId="view-1"
-        paneId="pane-1"
-        epicId="epic-1"
-      />,
-    );
-    expect(screen.queryByTestId("browser-runtime-demotion-note")).toBeNull();
-
-    harness.items = [
-      {
-        ...session("ready", "headless"),
-        runtime: { kind: "headless", revision: 2 },
-      },
-    ];
-    view.rerender(
-      <BrowserSessionTile
-        node={NODE}
-        viewTabId="view-1"
-        paneId="pane-1"
-        epicId="epic-1"
-      />,
-    );
-
-    const note = screen.getByTestId("browser-runtime-demotion-note");
-    expect(note.textContent).toContain("Continuing streamed from host-test");
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByTestId("browser-runtime-demotion-note")).toBeNull();
-  });
-
   it("keeps the placeholder's greyed frame stable across a re-render even if the cache changes underneath it", () => {
     harness.items = [session("ready", "headless")];
     reachabilityHarness.status = "unreachable";
@@ -894,53 +859,6 @@ describe("BrowserSessionTile lifecycle projection", () => {
       .getByTestId("browser-session-dormant-placeholder")
       .querySelector("img");
     expect(imgAfter?.getAttribute("src")).toBe("data:image/jpeg;base64,seed");
-  });
-
-  it("clears the runtime-demotion note once the session is re-promoted back to electron", () => {
-    harness.binding = binding();
-    harness.items = [session("ready", "electron")];
-    const view = render(
-      <BrowserSessionTile
-        node={NODE}
-        viewTabId="view-1"
-        paneId="pane-1"
-        epicId="epic-1"
-      />,
-    );
-
-    harness.items = [
-      {
-        ...session("ready", "headless"),
-        runtime: { kind: "headless", revision: 2 },
-      },
-    ];
-    view.rerender(
-      <BrowserSessionTile
-        node={NODE}
-        viewTabId="view-1"
-        paneId="pane-1"
-        epicId="epic-1"
-      />,
-    );
-    expect(screen.getByTestId("browser-runtime-demotion-note")).toBeTruthy();
-
-    harness.binding = binding();
-    harness.items = [
-      {
-        ...session("ready", "electron"),
-        runtime: { kind: "electron", revision: 3 },
-      },
-    ];
-    view.rerender(
-      <BrowserSessionTile
-        node={NODE}
-        viewTabId="view-1"
-        paneId="pane-1"
-        epicId="epic-1"
-      />,
-    );
-
-    expect(screen.queryByTestId("browser-runtime-demotion-note")).toBeNull();
   });
 
   it("binds the boundary, reachability, and the electron binding lookup to the tile's OWN hostId, not the canvas host", () => {

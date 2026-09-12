@@ -234,6 +234,7 @@ function renderHostWithBrowserRouting(): void {
     viewports: {},
     setViewport: () => Promise.reject(new Error("not used")),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: xtermMocks.openTab,
