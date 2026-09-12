@@ -1477,6 +1477,11 @@ void noJarMaterialReachesARenderer;
 export const BROWSER_SESSIONS_UX_CLIENT_FRAME_KINDS = [
   "setViewport",
   "reportViewport",
+  // The `reportViewport` counterpart: a tile giving its Fit ownership back when
+  // it unmounts. Same renderer-held fact as the report it releases, and the
+  // host matches it against the reporting `viewerId`, so it can only drop an
+  // ownership that renderer itself claimed.
+  "releaseViewport",
   "openTab",
   "closeTab",
   "captureTabPreview",

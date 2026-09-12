@@ -57,6 +57,13 @@ const RENDERER_FRAMES: Record<string, Record<string, unknown>> = {
     dpr: 1,
     claim: true,
   },
+  releaseViewport: {
+    kind: "releaseViewport",
+    hasBinaryPayload: false,
+    sessionId: "session-1",
+    tabId: "tab-1",
+    viewerId: "viewer-1",
+  },
   openTab: {
     kind: "openTab",
     hasBinaryPayload: false,

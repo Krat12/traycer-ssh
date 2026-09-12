@@ -113,11 +113,10 @@ export async function dispatchCuratedCdp(
           response.currentIndex,
           "Page.getNavigationHistory.currentIndex",
         ),
-        entries: response.entries.map(
-          (entry): BrowserCdpNavigationEntry =>
-            navigationEntry(
-              requireRecord(entry, "Page.getNavigationHistory.entry"),
-            ),
+        entries: response.entries.map((entry): BrowserCdpNavigationEntry =>
+          navigationEntry(
+            requireRecord(entry, "Page.getNavigationHistory.entry"),
+          ),
         ),
       };
     }

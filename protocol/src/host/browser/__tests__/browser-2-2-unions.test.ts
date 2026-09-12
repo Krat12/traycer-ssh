@@ -130,7 +130,7 @@ describe("the 2.1 unions reject 2.2-only shapes (regression guard for T02's proj
 });
 
 describe("browser.sessions@2.x shared client frames", () => {
-  it("reportViewport without pointer parses to \"fine\"", () => {
+  it('reportViewport without pointer parses to "fine"', () => {
     const parsed = browserSessionsClientFrameSchema.parse({
       kind: "reportViewport",
       hasBinaryPayload: false,

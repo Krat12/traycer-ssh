@@ -9,6 +9,10 @@ import {
   configEnvListResponseSchema,
   configEnvSetRequestSchema,
   configEnvSetResponseSchema,
+  configHostSettingsGetRequestSchema,
+  configHostSettingsResponseSchema,
+  configHostSettingsSetRequestSchema,
+  configHostSettingsSetResponseSchema,
   configLogLevelsGetRequestSchema,
   configLogLevelsResponseSchema,
   configLogLevelsSetRequestSchema,
@@ -156,4 +160,20 @@ export const configLogLevelsSetV10 = defineRpcContract({
   schemaVersion: { major: 1, minor: 0 } as const,
   requestSchema: configLogLevelsSetRequestSchema,
   responseSchema: configLogLevelsSetResponseSchema,
+});
+
+/** Reads the settings owned by the machine running the host (not the client's). */
+export const configHostSettingsGetV10 = defineRpcContract({
+  method: "config.hostSettings.get",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: configHostSettingsGetRequestSchema,
+  responseSchema: configHostSettingsResponseSchema,
+});
+
+/** Writes one host-machine setting; answers with the new effective values. */
+export const configHostSettingsSetV10 = defineRpcContract({
+  method: "config.hostSettings.set",
+  schemaVersion: { major: 1, minor: 0 } as const,
+  requestSchema: configHostSettingsSetRequestSchema,
+  responseSchema: configHostSettingsSetResponseSchema,
 });

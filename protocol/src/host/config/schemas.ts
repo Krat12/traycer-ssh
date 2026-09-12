@@ -243,3 +243,41 @@ export const configLogLevelsSetResponseSchema = configLogLevelsResponseSchema;
 export type ConfigLogLevelsSetResponse = z.infer<
   typeof configLogLevelsSetResponseSchema
 >;
+
+/**
+ * Reads the HOST MACHINE's own settings (`hostSettings` in
+ * `~/.traycer/cli/config.json`). Host-scoped by construction: the answer is
+ * whatever the machine answering this call has on disk, which is why the
+ * desktop's local IPC feature bridge cannot serve it.
+ */
+export const configHostSettingsGetRequestSchema = emptyRequestSchema;
+export type ConfigHostSettingsGetRequest = z.infer<
+  typeof configHostSettingsGetRequestSchema
+>;
+
+/**
+ * `browserVideoPlane` is the STORED choice, `null` meaning "platform default";
+ * `effective` is what the host actually gates on, so a client can render
+ * "Default (off on macOS)" without knowing the host's platform.
+ */
+export const configHostSettingsResponseSchema = z.object({
+  browserVideoPlane: z.boolean().nullable(),
+  effective: z.boolean(),
+});
+export type ConfigHostSettingsResponse = z.infer<
+  typeof configHostSettingsResponseSchema
+>;
+
+/** `null` clears the choice back to the host platform's default. */
+export const configHostSettingsSetRequestSchema = z.object({
+  browserVideoPlane: z.boolean().nullable(),
+});
+export type ConfigHostSettingsSetRequest = z.infer<
+  typeof configHostSettingsSetRequestSchema
+>;
+
+export const configHostSettingsSetResponseSchema =
+  configHostSettingsResponseSchema;
+export type ConfigHostSettingsSetResponse = z.infer<
+  typeof configHostSettingsSetResponseSchema
+>;

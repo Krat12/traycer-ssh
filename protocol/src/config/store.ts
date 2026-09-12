@@ -22,6 +22,7 @@ import {
   type DetectedShell,
   type EnvOverrideValue,
   type EffectiveShellConfig,
+  type HostSettings,
   type LogsConfig,
   type ShellEntry,
 } from "./schema";
@@ -975,6 +976,42 @@ export function readFeatureSettingsSync(): FeatureSettings {
     // Feature gates must remain safe even when config cannot be read.
   }
   return { agentRoles: false, artifactVersioning: false };
+}
+
+/** The host machine's own settings (platform defaults when unset). */
+export async function readHostSettings(): Promise<HostSettings> {
+  return (await readCliConfig()).hostSettings;
+}
+
+/**
+ * Best-effort synchronous read of the host settings block, for host-side gates
+ * that must decide without awaiting. Never throws - a missing, corrupt or
+ * invalid config resolves to `null` (the platform default), which is how the
+ * absence of the block and the absence of the file mean the same thing.
+ */
+export function readHostSettingsSync(): HostSettings {
+  try {
+    const raw = readFileSync(cliConfigPath(), "utf8");
+    const result = parseCliConfig(JSON.parse(raw));
+    if (result.success) return result.data.hostSettings;
+  } catch {
+    // A host gate must never crash on a config read - fall through to default.
+  }
+  return { browserVideoPlane: null };
+}
+
+/**
+ * Persists the remote-viewer video plane choice (`null` = platform default),
+ * preserving the rest of the config.
+ */
+export async function setBrowserVideoPlaneEnabled(
+  value: boolean | null,
+): Promise<void> {
+  const current = await readCliConfig();
+  await writeCliConfig({
+    ...current,
+    hostSettings: { ...current.hostSettings, browserVideoPlane: value },
+  });
 }
 
 /** Enables or disables agent roles while preserving the rest of the config. */

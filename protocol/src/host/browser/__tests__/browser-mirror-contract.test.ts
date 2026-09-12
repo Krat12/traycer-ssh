@@ -48,9 +48,9 @@ describe("browser.mirror@1.0 open request", () => {
   };
 
   it("parses the exact expected shape", () => {
-    expect(browserMirrorOpenRequestSchema.safeParse(VALID_OPEN_REQUEST).success).toBe(
-      true,
-    );
+    expect(
+      browserMirrorOpenRequestSchema.safeParse(VALID_OPEN_REQUEST).success,
+    ).toBe(true);
   });
 
   it("rejects unknown keys", () => {

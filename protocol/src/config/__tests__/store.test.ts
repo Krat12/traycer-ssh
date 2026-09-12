@@ -95,6 +95,7 @@ describe("cli config store", () => {
       envOverrides: { FOO: "bar" },
       logs: { cliLogLevel: "info" as const, hostLogLevel: "info" as const },
       features: { agentRoles: false, artifactVersioning: false },
+      hostSettings: { browserVideoPlane: null },
     };
     await writeCliConfig(cfg);
     expect(await readCliConfig()).toEqual(cfg);
@@ -321,6 +322,7 @@ describe("cli config store", () => {
       envOverrides: {},
       logs: { cliLogLevel: "info", hostLogLevel: "info" },
       features: { agentRoles: false, artifactVersioning: false },
+      hostSettings: { browserVideoPlane: null },
     });
   });
 

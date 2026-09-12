@@ -51,6 +51,30 @@ export const featureSettingsSchema = z
 export type FeatureSettings = z.infer<typeof featureSettingsSchema>;
 
 /**
+ * The `hostSettings` block in `~/.traycer/cli/config.json`: settings that
+ * belong to the MACHINE RUNNING THE HOST, driven over
+ * `config.hostSettings.get` / `.set` so a phone can read and change them.
+ * Deliberately separate from `features` above, which is also read through the
+ * desktop's local IPC bridge - one key there would mean two different
+ * machines' answers.
+ *
+ * `browserVideoPlane` is the WebRTC display plane for remote browser viewers.
+ * `null` means "platform default": off on darwin - where offering video at all
+ * fires the macOS Screen Recording and Local Network prompts - and on
+ * everywhere else.
+ *
+ * Additive and `.default()`-ed, so older config files keep validating without
+ * a `CLI_CONFIG_VERSION` bump; the only compatibility cost is that a
+ * pre-feature CLI or host writer drops the block on its next write, and the
+ * setting then resolves back to the platform default - off on darwin, so it
+ * fails safe.
+ */
+export const hostSettingsSchema = z
+  .object({ browserVideoPlane: z.boolean().nullable().default(null) })
+  .default({ browserVideoPlane: null });
+export type HostSettings = z.infer<typeof hostSettingsSchema>;
+
+/**
  * Zod schema for `~/.traycer/cli/config.json` - the single on-disk source
  * of truth for the user's shell + env-override config, shared by the CLI
  * (`traycer config …`) and the host (terminal PTY spawns, provider-CLI
@@ -113,6 +137,7 @@ export const cliConfigSchema = z.object({
   envOverrides: envOverrideMapSchema.default({}),
   logs: logsConfigSchema,
   features: featureSettingsSchema,
+  hostSettings: hostSettingsSchema,
 });
 
 export type CliConfig = z.infer<typeof cliConfigSchema>;
@@ -172,4 +197,5 @@ export const EMPTY_CLI_CONFIG: CliConfig = {
   envOverrides: {},
   logs: { cliLogLevel: DEFAULT_LOG_LEVEL, hostLogLevel: DEFAULT_LOG_LEVEL },
   features: { agentRoles: false, artifactVersioning: false },
+  hostSettings: { browserVideoPlane: null },
 };

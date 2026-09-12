@@ -346,6 +346,8 @@ import {
   configEnvDeleteV10,
   configEnvListV10,
   configEnvSetV10,
+  configHostSettingsGetV10,
+  configHostSettingsSetV10,
   configLogLevelsGetV10,
   configLogLevelsSetV10,
   configShellAddV10,
@@ -4781,6 +4783,32 @@ const HOST_RPC_REGISTRY_BASE_DEFINITION = {
       versions: {
         0: {
           contract: configLogLevelsSetV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "config.hostSettings.get": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: configHostSettingsGetV10,
+          upgradeFromPreviousVersion: null,
+        },
+      },
+      downgradePathsFromLatest: {},
+    },
+  },
+  "config.hostSettings.set": {
+    degrade: { kind: "unsupported" },
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: configHostSettingsSetV10,
           upgradeFromPreviousVersion: null,
         },
       },
