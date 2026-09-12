@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { BrowserWindowConstructorOptions } from "electron";
 import type {
   BrowserCdpResult,
+  BrowserMirrorParams,
   BrowserStorageState,
   BrowserViewportGeometry,
 } from "@traycer/protocol/host/browser/contracts";
@@ -72,6 +73,11 @@ import {
   type BrowserViewEntryKey,
 } from "./manager/browser-view-entry-registry";
 import { BrowserViewFind } from "./manager/browser-view-find";
+import {
+  BrowserViewMirrorCapture,
+  type BrowserViewMirrorHandle,
+  type BrowserViewMirrorSink,
+} from "./manager/browser-view-mirror-capture";
 import { BrowserViewPipCapture } from "./manager/browser-view-pip-capture";
 import { BrowserViewPopups } from "./manager/browser-view-popups";
 import {
@@ -206,6 +212,7 @@ export class BrowserViewManager {
   readonly find: BrowserViewFind;
   readonly chords: BrowserViewChords;
   readonly pip: BrowserViewPipCapture;
+  readonly mirror: BrowserViewMirrorCapture;
   readonly viewport: BrowserViewViewport;
 
   constructor(options: BrowserViewManagerOptions) {
@@ -253,6 +260,11 @@ export class BrowserViewManager {
     });
     this.pip = new BrowserViewPipCapture({
       debugSessions: this.debugSessions,
+    });
+    this.mirror = new BrowserViewMirrorCapture({
+      debugSessions: this.debugSessions,
+      viewport: this.viewport,
+      now: () => Date.now(),
     });
     this.popups = new BrowserViewPopups({
       createPopupWindowOptions: options.createPopupWindowOptions,
@@ -487,6 +499,7 @@ export class BrowserViewManager {
       return Promise.reject(new Error("The browser tab is unavailable."));
     return this.viewport.apply(entry, input).then((applied) => {
       this.emitStatus(entry);
+      this.mirror.notifyViewportApplied(entry);
       return applied;
     });
   }
@@ -515,6 +528,27 @@ export class BrowserViewManager {
     }
     entry.certificateError = null;
     this.reloadEntry(entry);
+  }
+
+  /**
+   * Become the pixel source for one native tab (D04): the host asked for a
+   * `browser.mirror` and this is the guest behind it. `null` when that exact
+   * incarnation is not live here, which the caller reports as a mirror failure
+   * rather than retrying blind.
+   */
+  async startTabMirror(
+    tab: BrowserViewNativeTabCapability,
+    params: BrowserMirrorParams,
+    sink: BrowserViewMirrorSink,
+  ): Promise<BrowserViewMirrorHandle | null> {
+    const entry = this.findExactNativeEntry(tab);
+    if (entry === null) return null;
+    const handle = await this.mirror.start(entry, params, sink);
+    // One status emission so the mirror opens with a `navState` rather than
+    // waiting for the tab to do something. It is the reading every other
+    // consumer already gets, re-sent.
+    if (handle !== null) this.emitStatus(entry);
+    return handle;
   }
 
   async startPipCapture(
@@ -871,7 +905,11 @@ export class BrowserViewManager {
 
   private handleDownloadChange(change: BrowserSessionDownloadChange): void {
     const entry = this.findEntryByWebContentsId(change.webContentsId);
-    if (entry === null || entry.surface === null) return;
+    if (entry === null) return;
+    // Ahead of the surface gate below: a mirrored tab's download is the remote
+    // viewer's business whether or not a local tile is bound to the guest.
+    this.mirror.notifyUnsupported(entry, "download");
+    if (entry.surface === null) return;
     this.send(
       entry.surface.windowId,
       RunnerHostEvent.browserViewDownloadChange,
@@ -947,6 +985,9 @@ export class BrowserViewManager {
     });
     this.annotations.end(entry, "crash");
     if (this.pip.isCapturing(entry)) this.pip.stop();
+    // A reattach restores the domains and NOT the screencast, so the mirror has
+    // to be told: it restarts it, or fails the mirror explicitly.
+    this.mirror.handleDetached(entry);
   }
 
   private readDebugSnapshot(
@@ -1003,6 +1044,10 @@ export class BrowserViewManager {
     // The same reading, to the process that owns the host stream. It becomes
     // `electronTabState` there (H10); the renderer's copy above is tile chrome.
     for (const listener of this.nativeTabStatusListeners) listener(change);
+    // And, for a mirrored tab, `navState` / `crashed` on its mirror stream -
+    // the host's own driver-event path never fires for an electron session, so
+    // this reading is the only one a remote viewer can get.
+    this.mirror.notifyStatus(entry, change);
   }
 
   /**
@@ -1081,6 +1126,10 @@ export class BrowserViewManager {
 
   private async destroyEntry(entry: BrowserViewEntry): Promise<void> {
     this.viewport.forget(entry);
+    // Terminal for the MIRROR, not for the durable tab: the host suspends the
+    // session when the Electron route goes away and may re-materialize the same
+    // tab id later, but this incarnation's pixels are over.
+    this.mirror.notifyClosed(entry);
     const surface = entry.surface;
     const keyId = surface === null ? null : entryKeyId(surface);
     log.info("[browser-view] view destroy started", {

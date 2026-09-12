@@ -1,20 +1,32 @@
 import type {
   BrowserForgetLedger,
+  BrowserMirrorParams,
   BrowserPrimaryProfileDelta,
 } from "@traycer/protocol/host/browser/contracts";
+import type { BrowserMirrorOpenRequest } from "@traycer/protocol/host/browser/mirror-contracts";
 import type {
   BrowserSessionsStreamEventEnvelope,
   BrowserViewNativeTabCapability,
   BrowserViewNativeTabStatusChange,
 } from "@traycer-clients/shared/platform/browser-view";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
-import type { BrowserSessionsTabPort } from "../browser-sessions-electron-tabs";
+import type {
+  BrowserSessionsTabPort,
+  ElectronTabsMirrorDeps,
+} from "../browser-sessions-electron-tabs";
+import type {
+  BrowserViewMirrorPort,
+  BrowserViewMirrorSink,
+} from "../../browser-view/manager/browser-view-mirror-capture";
 import type {
   BrowserSessionsJarPort,
   BrowserSessionsRegistryDeps,
 } from "../browser-sessions-owner";
 import type { BrowserPrimaryProfileCaptureResult } from "../../browser-view/storage/browser-storage-state";
-import { FakeStreamClient } from "@traycer-clients/shared/host-transport/__testing__/fake-stream-client";
+import {
+  FakeStreamClient,
+  type FakeStreamSession as FakeStreamSessionType,
+} from "@traycer-clients/shared/host-transport/__testing__/fake-stream-client";
 export {
   FakeStreamClient,
   FakeStreamSession,
@@ -246,7 +258,7 @@ export interface TabRecorder {
   readonly cdp: Array<{ readonly tabId: string }>;
   emitStatus: (change: BrowserViewNativeTabStatusChange) => void;
   emitTransferred: (transfer: BrowserViewNativeTabTransfer) => void;
-  readonly port: BrowserSessionsTabPort;
+  readonly port: BrowserSessionsTabPort & BrowserViewMirrorPort;
 }
 
 export function createTabRecorder(): TabRecorder {
@@ -295,6 +307,9 @@ export function createTabRecorder(): TabRecorder {
       },
       applyElectronTabViewport: () =>
         Promise.resolve({ width: 1, height: 1, dpr: 1 }),
+      // No suite here drives a mirror; `browser-mirror-source.test.ts` owns
+      // that flow with its own port.
+      startTabMirror: () => Promise.resolve(null),
       onNativeTabStatusChange: (listener) => {
         statusListeners.add(listener);
         return () => {
@@ -426,4 +441,93 @@ export function createRegistryHarness(): RegistryHarness {
     },
   };
   return harness;
+}
+
+export interface MirrorHandleRecord {
+  readonly acks: number[];
+  readonly params: BrowserMirrorParams[];
+  readonly dialogs: Array<{
+    readonly dialogId: string;
+    readonly accept: boolean;
+    readonly promptText: string | null;
+  }>;
+  stopped: number;
+  /** Where the capture would push frames; the suite drives it by hand. */
+  readonly sink: BrowserViewMirrorSink;
+}
+
+/**
+ * The mirror seam `createElectronTabs` is built with: a native capture that
+ * records what was asked of it, and a stream opener that answers with a
+ * drivable {@link FakeStreamSession}.
+ *
+ * The two live together because that is how the option is shaped - only one of
+ * them is a tab operation, and a suite that stubs one always needs the other.
+ */
+export interface MirrorRecorder {
+  readonly deps: ElectronTabsMirrorDeps;
+  readonly opens: BrowserMirrorOpenRequest[];
+  readonly sessions: FakeStreamSessionType[];
+  readonly starts: Array<{
+    readonly tab: BrowserViewNativeTabCapability;
+    readonly params: BrowserMirrorParams;
+  }>;
+  readonly handles: MirrorHandleRecord[];
+  /**
+   * When true, `startTabMirror` answers `null` - "that exact incarnation is not
+   * live here", which the source reports as a `failed` before closing.
+   */
+  refuseStart: boolean;
+  /** When true, `startTabMirror` rejects instead of answering. */
+  throwOnStart: boolean;
+}
+
+export function createMirrorRecorder(): MirrorRecorder {
+  const client = new FakeStreamClient(true);
+  const recorder: MirrorRecorder = {
+    opens: [],
+    sessions: client.sessions,
+    starts: [],
+    handles: [],
+    refuseStart: false,
+    throwOnStart: false,
+    deps: {
+      tabs: {
+        startTabMirror: (tab, params, sink) => {
+          recorder.starts.push({ tab, params });
+          if (recorder.throwOnStart) {
+            return Promise.reject(new Error("mirror capture exploded"));
+          }
+          if (recorder.refuseStart) return Promise.resolve(null);
+          const record: MirrorHandleRecord = {
+            acks: [],
+            params: [],
+            dialogs: [],
+            stopped: 0,
+            sink,
+          };
+          recorder.handles.push(record);
+          return Promise.resolve({
+            ack: (sequence) => {
+              record.acks.push(sequence);
+            },
+            setParams: (next) => {
+              record.params.push(next);
+            },
+            answerDialog: (dialogId, accept, promptText) => {
+              record.dialogs.push({ dialogId, accept, promptText });
+            },
+            stop: () => {
+              record.stopped += 1;
+            },
+          });
+        },
+      },
+      openStream: (request) => {
+        recorder.opens.push(request);
+        return client.subscribe("browser.mirror", request);
+      },
+    },
+  };
+  return recorder;
 }

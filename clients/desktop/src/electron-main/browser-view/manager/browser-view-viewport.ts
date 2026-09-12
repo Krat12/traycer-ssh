@@ -7,8 +7,10 @@ import type {
   BrowserViewElectronViewport,
   BrowserViewGuestViewportResult,
   BrowserViewGuestViewportRequested,
+  BrowserViewViewportEmulation,
 } from "@traycer-clients/shared/platform/browser-view";
 import { RunnerHostEvent } from "../../../ipc-contracts/ipc-channels";
+import type { BrowserViewWebContents } from "../browser-view-port";
 import type { BrowserViewEntry, BrowserViewSend } from "./browser-view-entry";
 import type { BrowserViewEntryRegistry } from "./browser-view-entry-registry";
 import type { BrowserViewAnnotationHost } from "./browser-view-annotation-host";
@@ -19,6 +21,14 @@ interface ViewportEntry {
   latest: BrowserViewElectronViewport;
   confirmed: BrowserViewElectronViewport | null;
   confirmedZoom: number | null;
+  /**
+   * The device-metrics override that is LIVE on the guest right now, not the
+   * one the latest request asked for. The two differ for the whole middle of
+   * an apply: it clears the override before resizing and re-sends it only
+   * after the resize is confirmed, and a geometry read in between must be read
+   * the un-emulated way.
+   */
+  emulated: BrowserViewViewportEmulation | null;
   work: Promise<void>;
 }
 
@@ -52,6 +62,7 @@ export class BrowserViewViewport {
       latest: input,
       confirmed: null,
       confirmedZoom: null,
+      emulated: null,
       work: Promise.resolve(),
     };
     if (
@@ -71,10 +82,10 @@ export class BrowserViewViewport {
       const before = state.confirmed ?? {
         ...input,
         intent: { mode: "fit" as const },
-        geometry: await this.readGeometry(entry),
+        geometry: await this.readGeometry(entry, state),
       };
       try {
-        const geometry = await this.land(entry, input);
+        const geometry = await this.land(entry, state, input);
         this.requireCurrent(entry, state, input);
         state.confirmed = { ...input, geometry };
         state.confirmedZoom = entry.webContents.getZoomFactor();
@@ -82,7 +93,10 @@ export class BrowserViewViewport {
       } catch (error) {
         if (this.entries.isCurrent(entry)) {
           try {
-            await this.land(entry, { ...before, revision: input.revision });
+            await this.land(entry, state, {
+              ...before,
+              revision: input.revision,
+            });
           } catch {
             state.confirmed = null;
             throw new Error(
@@ -168,11 +182,11 @@ export class BrowserViewViewport {
       return;
     const geometry =
       confirmed.intent.mode === "fixed"
-        ? await this.land(entry, {
+        ? await this.land(entry, state, {
             ...confirmed,
             revision: state.latest.revision,
           })
-        : await this.readGeometry(entry);
+        : await this.readGeometry(entry, state);
     state.confirmed = { ...confirmed, geometry };
     state.confirmedZoom = entry.webContents.getZoomFactor();
   }
@@ -226,15 +240,17 @@ export class BrowserViewViewport {
 
   private land(
     entry: BrowserViewEntry,
+    state: ViewportEntry,
     input: BrowserViewElectronViewport,
   ): Promise<BrowserViewportGeometry> {
     return withinViewportDeadline((signal) =>
-      this.applyNativeGeometry(entry, input, signal),
+      this.applyNativeGeometry(entry, state, input, signal),
     );
   }
 
   private async applyNativeGeometry(
     entry: BrowserViewEntry,
+    state: ViewportEntry,
     input: BrowserViewElectronViewport,
     signal: AbortSignal,
   ): Promise<BrowserViewportGeometry> {
@@ -252,6 +268,7 @@ export class BrowserViewViewport {
       {},
       undefined,
     );
+    state.emulated = null;
     signal.throwIfAborted();
     if (!this.entries.isCurrent(entry))
       throw new Error("The browser tab closed during resize.");
@@ -266,13 +283,17 @@ export class BrowserViewViewport {
         height,
       });
       signal.throwIfAborted();
-      const applied = await this.readGeometry(entry);
+      const applied = await this.readGeometry(entry, state);
       signal.throwIfAborted();
-      if (input.intent.mode === "fit") return applied;
+      if (input.intent.mode === "fit") {
+        await this.applyEmulation(entry, state, input, applied);
+        return applied;
+      }
       if (
         applied.width === input.intent.width &&
         applied.height === input.intent.height
       ) {
+        await this.applyEmulation(entry, state, input, applied);
         return applied;
       }
       width += Math.sign(input.intent.width - applied.width);
@@ -285,18 +306,61 @@ export class BrowserViewViewport {
 
   private readGeometry(
     entry: BrowserViewEntry,
+    state: ViewportEntry,
   ): Promise<BrowserViewportGeometry> {
-    return withinViewportDeadline(async (signal) => {
-      const value = await entry.webContents.executeJavaScript(
-        "({width:innerWidth,height:innerHeight,dpr:Math.round(devicePixelRatio*1000000)/1000000})",
-        false,
-      );
-      signal.throwIfAborted();
-      const parsed = browserViewportGeometrySchema.safeParse(value);
-      if (!parsed.success)
-        throw new Error("The browser did not report a valid viewport.");
-      return parsed.data;
-    });
+    return withinViewportDeadline((signal) =>
+      readGuestViewportGeometry(
+        entry.webContents,
+        state.emulated?.mobile === true,
+        signal,
+      ),
+    );
+  }
+
+  /**
+   * The one `setDeviceMetricsOverride` writer for a guest, issued AFTER the
+   * resize it belongs to has been presented and read back.
+   *
+   * Before, and it would be wiped by the `clearDeviceMetricsOverride` this
+   * method's caller runs on the next resize; from the mirror source instead,
+   * and there would be two writers racing the same override. `width`/`height`/
+   * `deviceScaleFactor` are the geometry the guest actually committed, so the
+   * override changes the layout MODE and nothing about the size.
+   */
+  private async applyEmulation(
+    entry: BrowserViewEntry,
+    state: ViewportEntry,
+    input: BrowserViewElectronViewport,
+    applied: BrowserViewportGeometry,
+  ): Promise<void> {
+    const emulation = input.emulation;
+    if (emulation === null) return;
+    const debug = this.debugSessions.ensure(entry);
+    await debug.sendCommand(
+      "Emulation.setDeviceMetricsOverride",
+      {
+        width: applied.width,
+        height: applied.height,
+        deviceScaleFactor: applied.dpr,
+        mobile: emulation.mobile,
+      },
+      undefined,
+    );
+    state.emulated = emulation;
+    await debug.sendCommand(
+      "Emulation.setTouchEmulationEnabled",
+      { enabled: emulation.touch, maxTouchPoints: 1 },
+      undefined,
+    );
+  }
+
+  /**
+   * The device emulation currently live on a guest, for a reader that has to
+   * measure the page the same way this class does (the mirror's per-frame
+   * geometry). `null` when none is applied.
+   */
+  emulation(entry: BrowserViewEntry): BrowserViewViewportEmulation | null {
+    return this.states.get(entry)?.emulated ?? null;
   }
 
   private present(
@@ -333,6 +397,38 @@ export class BrowserViewViewport {
       }
     });
   }
+}
+
+/**
+ * The guest's own report of its CSS viewport, in the one expression both the
+ * viewport authority and the mirror read it with.
+ *
+ * `mobile` selects `outerWidth`/`outerHeight` over `innerWidth`/`innerHeight`,
+ * and it is not a preference: under
+ * `setDeviceMetricsOverride({ mobile: true })` a page with no viewport meta
+ * gets a wide layout viewport (980 CSS px, or more) that Chromium then scales
+ * down, so `innerWidth` reports the layout width while `outerWidth` still
+ * reports the emulated device width the caller asked for. Reading `inner*`
+ * there would record a viewport nobody requested and make every fixed-size
+ * apply unrepresentable. Same rule as the headless driver's readback.
+ */
+export async function readGuestViewportGeometry(
+  webContents: Pick<BrowserViewWebContents, "executeJavaScript">,
+  mobile: boolean,
+  signal: AbortSignal,
+): Promise<BrowserViewportGeometry> {
+  const edges = mobile
+    ? "width:outerWidth,height:outerHeight"
+    : "width:innerWidth,height:innerHeight";
+  const value = await webContents.executeJavaScript(
+    `({${edges},dpr:Math.round(devicePixelRatio*1000000)/1000000})`,
+    false,
+  );
+  signal.throwIfAborted();
+  const parsed = browserViewportGeometrySchema.safeParse(value);
+  if (!parsed.success)
+    throw new Error("The browser did not report a valid viewport.");
+  return parsed.data;
 }
 
 function withinViewportDeadline<T>(

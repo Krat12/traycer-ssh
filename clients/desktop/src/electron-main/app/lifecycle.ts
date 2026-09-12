@@ -32,6 +32,12 @@ export function trimUnusedChromiumFeatures(): void {
       "AutofillServerCommunication",
     ].join(","),
   );
+  // Belt and braces for the mirror (D09), never its mechanism: this is a
+  // Chromium *for-testing* switch, so nothing may depend on it. What keeps a
+  // minimized or occluded window producing frames is
+  // `setBackgroundThrottling(false)` on the mirrored guest plus the
+  // `capturePage` poller behind the screencast.
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
   // Cap Chromium's HTTP/code disk cache. Without a cap it grows to a
   // percentage of free disk; this app serves its bundle from a single
   // `app://` origin, so 256 MB is generous and bounds the footprint.

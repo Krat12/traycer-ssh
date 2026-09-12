@@ -68,12 +68,28 @@ export interface BrowserViewGuestViewportResult {
   readonly applied: boolean;
 }
 
+/**
+ * Device emulation to apply WITH a native geometry, never on its own.
+ *
+ * The guest's device metrics have exactly one writer - the apply that changes
+ * the guest's size, which clears stale metrics before every resize - so a
+ * second writer would be wiped by the next resize. `mobile` is the layout
+ * flag (`Emulation.setDeviceMetricsOverride`), `touch` the pointer one
+ * (`Emulation.setTouchEmulationEnabled`); the User-Agent is never overridden.
+ */
+export interface BrowserViewViewportEmulation {
+  readonly mobile: boolean;
+  readonly touch: boolean;
+}
+
 export interface BrowserViewElectronViewport extends BrowserViewNativeTabCapability {
   /** Existing sessions stream incarnation; never sent through renderer IPC. */
   readonly connectionId: string;
   readonly revision: number;
   readonly intent: BrowserViewportIntent;
   readonly geometry: BrowserViewportGeometry;
+  /** `null` applies none, which is the pre-emulation behaviour. */
+  readonly emulation: BrowserViewViewportEmulation | null;
 }
 
 export interface BrowserViewAttachSurface extends BrowserViewNativeTabCapability {

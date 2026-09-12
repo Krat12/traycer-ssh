@@ -4,6 +4,9 @@ import type {
   BrowserSessionsServerFrame,
   BrowserViewportGeometry,
 } from "@traycer/protocol/host/browser/contracts";
+import type { BrowserMirrorOpenRequest } from "@traycer/protocol/host/browser/mirror-contracts";
+import type { BrowserSessionsDesktopServerFrame } from "@traycer-clients/shared/host-transport/browser-sessions-stream-client";
+import type { IStreamSession } from "@traycer-clients/shared/host-transport/i-stream-session";
 import {
   browserViewNativeTabKeyId,
   type BrowserViewNativeTabCapability,
@@ -16,7 +19,12 @@ import type {
   BrowserViewEnsureTab,
   BrowserViewNativeTabTransfer,
 } from "../browser-view/browser-view-port";
+import type { BrowserViewMirrorPort } from "../browser-view/manager/browser-view-mirror-capture";
 import { describeLogError, log } from "../app/logger";
+import {
+  openBrowserMirrorSource,
+  type BrowserMirrorSource,
+} from "./browser-mirror-source";
 
 type CreateElectronTabFrame = Extract<
   BrowserSessionsServerFrame,
@@ -34,9 +42,23 @@ type CdpRequestFrame = Extract<
   BrowserSessionsServerFrame,
   { readonly kind: "cdpRequest" }
 >;
+/**
+ * The 2.2 arm, which is what actually arrives: the shared stream client hands
+ * the desktop its `@2.2` frames (see `BrowserSessionsDesktopServerFrame`) so
+ * `emulation` is readable. `null` there is the pre-emulation behaviour a 2.1
+ * host still gets, filled in by the schema's own default.
+ */
 type ElectronViewportRequest = Extract<
-  BrowserSessionsServerFrame,
+  BrowserSessionsDesktopServerFrame,
   { readonly kind: "electronViewportRequest" }
+>;
+type MirrorRequestFrame = Extract<
+  BrowserSessionsDesktopServerFrame,
+  { readonly kind: "mirrorRequest" }
+>;
+type MirrorReleaseFrame = Extract<
+  BrowserSessionsDesktopServerFrame,
+  { readonly kind: "mirrorRelease" }
 >;
 
 /**
@@ -84,6 +106,21 @@ export interface ElectronTabsOptions {
    */
   readonly onTabBound: (capability: BrowserViewNativeTabCapability) => void;
   readonly onTabReleased: (capability: BrowserViewNativeTabCapability) => void;
+  /**
+   * The mirror seam: the native surface a `browser.mirror` captures through,
+   * and the opener for the stream it pumps into.
+   *
+   * Its own option rather than two more methods on {@link BrowserSessionsTabPort}
+   * because only one of the two is a tab operation - the stream opener belongs
+   * to the transport this lifecycle was built with, and keeping the pair
+   * together is what makes the whole feature one seam to stub.
+   */
+  readonly mirror: ElectronTabsMirrorDeps;
+}
+
+export interface ElectronTabsMirrorDeps {
+  readonly tabs: BrowserViewMirrorPort;
+  readonly openStream: (request: BrowserMirrorOpenRequest) => IStreamSession;
 }
 
 interface ElectronTabBirth {
@@ -97,8 +134,24 @@ interface ElectronTabBirth {
   lastStatus: BrowserViewNativeTabStatusChange | null;
 }
 
+/**
+ * What this lifecycle is handed off the sessions stream.
+ *
+ * `electronViewportRequest` is taken from the DESKTOP union rather than the
+ * shared one - they are two arms of the same kind, and only the 2.2 one carries
+ * `emulation`. The owner routes it through the desktop seam for exactly that
+ * reason, so admitting the 2.1 arm here would only make the field unreadable
+ * again.
+ */
+export type ElectronTabsServerFrame =
+  | Exclude<
+      BrowserSessionsServerFrame,
+      { readonly kind: "electronViewportRequest" }
+    >
+  | BrowserSessionsDesktopServerFrame;
+
 export interface ElectronTabs {
-  handleFrame(frame: BrowserSessionsServerFrame): void;
+  handleFrame(frame: ElectronTabsServerFrame): void;
   /**
    * Is the guest behind `tabId` on screen right now? `null` when this stream
    * owns no native guest for it, which is the ordinary answer for a tab that
@@ -161,6 +214,7 @@ export function createElectronTabs(options: ElectronTabsOptions): ElectronTabs {
   const birthByRequestId = new Map<string, ElectronTabBirth>();
   const requestIdByTabKey = new Map<string, string>();
   const releaseByIncarnation = new Map<string, Promise<void>>();
+  const mirrorSourceById = new Map<string, BrowserMirrorSource>();
   let disposeStatusSubscription: (() => void) | null = null;
   let disposeTransferSubscription: (() => void) | null = null;
 
@@ -553,6 +607,10 @@ export function createElectronTabs(options: ElectronTabsOptions): ElectronTabs {
           revision: frame.revision,
           intent: frame.intent,
           geometry: frame.geometry,
+          // Applied by the geometry apply itself, never from here or from the
+          // mirror: the apply clears device metrics before every resize, so a
+          // second writer's override would be wiped by the next one.
+          emulation: frame.emulation,
         });
         return { ok: true, applied };
       } catch (error) {
@@ -578,6 +636,60 @@ export function createElectronTabs(options: ElectronTabsOptions): ElectronTabs {
         result,
       });
     });
+  };
+
+  /**
+   * "Be the pixel source for this tab" (D04). One stream per `mirrorRequest`,
+   * keyed by the host-minted `mirrorId`, on the same client the sessions stream
+   * rides.
+   */
+  const handleMirrorRequest = (frame: MirrorRequestFrame): void => {
+    if (!connected || disposed) return;
+    if (mirrorSourceById.has(frame.mirrorId)) return;
+    const birth = findProvisionedBirthByTabId(
+      birthByRequestId.values(),
+      frame.tabId,
+    );
+    if (
+      birth === null ||
+      birth.create.sessionId !== frame.sessionId ||
+      birth.provisioned?.registrationId !== frame.registrationId
+    ) {
+      // Refused before a stream exists, so there is nowhere to send a `failed`.
+      // The host's own request timeout is the answer, and it counts it.
+      log.warn("[browser-sessions] refused a mirror for an inactive tab", {
+        hostId: options.hostId,
+      });
+      return;
+    }
+    const source = openBrowserMirrorSource(
+      {
+        mirrorId: frame.mirrorId,
+        sessionId: frame.sessionId,
+        tabId: frame.tabId,
+        registrationId: frame.registrationId,
+      },
+      frame.params,
+      { hostId: options.hostId, ...options.mirror },
+      () => {
+        mirrorSourceById.delete(frame.mirrorId);
+      },
+    );
+    mirrorSourceById.set(frame.mirrorId, source);
+  };
+
+  /**
+   * The host has no subscriber left. Closing the stream ends the mirror too, so
+   * this is the ask a desktop can answer before it has one open.
+   */
+  const handleMirrorRelease = (frame: MirrorReleaseFrame): void => {
+    mirrorSourceById.get(frame.mirrorId)?.close();
+    mirrorSourceById.delete(frame.mirrorId);
+  };
+
+  const closeEveryMirror = (): void => {
+    for (const source of Array.from(mirrorSourceById.values())) source.close();
+    mirrorSourceById.clear();
   };
 
   const handleAccepted = (frame: ElectronTabAcceptedFrame): void => {
@@ -621,6 +733,12 @@ export function createElectronTabs(options: ElectronTabsOptions): ElectronTabs {
         case "electronViewportRequest":
           handleViewportFrame(frame);
           return;
+        case "mirrorRequest":
+          handleMirrorRequest(frame);
+          return;
+        case "mirrorRelease":
+          handleMirrorRelease(frame);
+          return;
         default:
           return;
       }
@@ -639,12 +757,14 @@ export function createElectronTabs(options: ElectronTabsOptions): ElectronTabs {
     disconnect: () => {
       connected = false;
       connectionGeneration += 1;
+      closeEveryMirror();
       retireEveryBirth();
     },
     dispose: () => {
       disposed = true;
       connected = false;
       connectionGeneration += 1;
+      closeEveryMirror();
       retireEveryBirth();
       disposeStatusSubscription?.();
       disposeStatusSubscription = null;

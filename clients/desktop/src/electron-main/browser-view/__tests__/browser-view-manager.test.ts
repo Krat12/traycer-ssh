@@ -6,6 +6,9 @@ import type { Mock } from "vitest";
 import { log } from "../../app/logger";
 import { RunnerHostEvent } from "../../../ipc-contracts/ipc-channels";
 import { BrowserViewManager } from "../browser-view-manager";
+import type { BrowserMirrorParams } from "@traycer/protocol/host/browser/contracts";
+import type { BrowserMirrorClientFrame } from "@traycer/protocol/host/browser/mirror-contracts";
+import type { BrowserViewMirrorHandle } from "../manager/browser-view-mirror-capture";
 import { MAX_BROWSER_VIEW_POPUPS } from "../manager/browser-view-popups";
 import type {
   BrowserViewCapturedImage,
@@ -4752,5 +4755,166 @@ describe("reserved chords are matched against the guest's own window", () => {
     // the wrong one of them.
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The manager's half of `browser.mirror` (D04, D19): it owns the guest, so it
+ * is the only thing that can tell a live mirror about a debugger detach, a
+ * download, a crash or a close. The host's own driver-event path never fires
+ * for an electron-placed session, so this reading is the only one a remote
+ * viewer can get.
+ */
+describe("BrowserViewManager native tab mirror", () => {
+  const NATIVE_KEY = {
+    hostId: "host-1",
+    sessionId: "session-1",
+    tabId: "tab-1",
+  } as const;
+  const MIRROR_PARAMS: BrowserMirrorParams = {
+    maxWidth: 900,
+    maxHeight: 1600,
+    quality: 55,
+    everyNthFrame: 1,
+  };
+
+  interface MirrorFixture {
+    readonly harness: Harness;
+    readonly guest: FakeWebContents;
+    readonly handle: BrowserViewMirrorHandle;
+    readonly events: BrowserMirrorClientFrame[];
+    kindsOf(kind: BrowserMirrorClientFrame["kind"]): readonly unknown[];
+  }
+
+  async function mirroredTab(): Promise<MirrorFixture> {
+    const harness = createHarness();
+    const ready = await harness.manager.ensureTab("window-1", {
+      ...NATIVE_KEY,
+      requestedUrl: "https://example.com/",
+      profile: "primary",
+      seedStorageState: null,
+      connectionId: null,
+    });
+    await harness.manager.acceptTab(ready);
+    const guest = requireGuest(harness);
+    const events: BrowserMirrorClientFrame[] = [];
+    const handle = await harness.manager.startTabMirror(
+      { ...NATIVE_KEY, registrationId: ready.registrationId },
+      MIRROR_PARAMS,
+      {
+        frame: (envelope) => events.push(envelope),
+        event: (frame) => events.push(frame),
+      },
+    );
+    if (handle === null) throw new Error("expected the mirror to start");
+    return {
+      harness,
+      guest,
+      handle,
+      events,
+      kindsOf: (kind) => events.filter((frame) => frame.kind === kind),
+    };
+  }
+
+  it("refuses a mirror for an incarnation it is not running", async () => {
+    const harness = createHarness();
+
+    await expect(
+      harness.manager.startTabMirror(
+        { ...NATIVE_KEY, registrationId: "registration-nobody" },
+        MIRROR_PARAMS,
+        { frame: () => undefined, event: () => undefined },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it("opens with the tab's current navState and suppresses background throttling", async () => {
+    const fixture = await mirroredTab();
+
+    // One status emission so the mirror opens with a reading rather than
+    // waiting for the tab to do something.
+    expect(fixture.kindsOf("navState")).toHaveLength(1);
+    expect(fixture.guest.backgroundThrottlingStates).toEqual([false]);
+    expect(
+      fixture.guest.debugger.commands.filter(
+        (command) => command.method === "Page.startScreencast",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("tells the mirror about a debugger detach so it can restart the screencast", async () => {
+    const fixture = await mirroredTab();
+
+    fixture.guest.debugger.emitDetach("target closed");
+    await flushCloseEntry();
+
+    // A reattach restores the domains and NOT the screencast, so without this
+    // notification a mirrored tab freezes on its last frame in silence.
+    expect(
+      fixture.guest.debugger.commands.filter(
+        (command) => command.method === "Page.startScreencast",
+      ),
+    ).toHaveLength(2);
+    expect(fixture.kindsOf("failed")).toEqual([]);
+  });
+
+  it("reports a download as unsupported even for an entry with no bound surface", async () => {
+    const fixture = await mirroredTab();
+
+    fixture.harness.emitDownload({
+      webContentsId: fixture.guest.id,
+      downloadId: "download-1",
+      url: "https://example.com/file.zip",
+      filename: "file.zip",
+      mimeType: "application/zip",
+      totalBytes: 10,
+      receivedBytes: 0,
+      state: "progressing",
+      savePath: null,
+      dangerType: null,
+      canCancel: true,
+    });
+
+    // Ahead of the surface gate: a mirrored tab's download is the remote
+    // viewer's business whether or not a local tile is bound to the guest.
+    expect(fixture.harness.downloads).toEqual([]);
+    expect(fixture.kindsOf("unsupportedInteraction")).toEqual([
+      {
+        kind: "unsupportedInteraction",
+        hasBinaryPayload: false,
+        feature: "download",
+      },
+    ]);
+  });
+
+  it("ends the mirror with tabClosed when the guest is destroyed", async () => {
+    const fixture = await mirroredTab();
+
+    fixture.guest.emit("destroyed");
+    await flushCloseEntry();
+
+    // Terminal for THIS mirror only: the host may re-materialize the same tab
+    // id later, but this incarnation's pixels are over.
+    expect(fixture.kindsOf("tabClosed")).toEqual([
+      { kind: "tabClosed", hasBinaryPayload: false },
+    ]);
+  });
+
+  it("sends crashed once for a dead tab and never a tabClosed behind it", async () => {
+    const fixture = await mirroredTab();
+
+    fixture.guest.emit("render-process-gone", {}, { reason: "crashed" });
+    await flushCloseEntry();
+
+    // At most one terminal frame per mirror: the host counts `failed` and a
+    // crash toward the same per-tab latch, and the teardown that follows a
+    // crash must not be counted as a second event.
+    expect(fixture.kindsOf("crashed")).toEqual([
+      { kind: "crashed", hasBinaryPayload: false },
+    ]);
+    expect(fixture.kindsOf("tabClosed")).toEqual([]);
+    // The teardown that follows restores throttling, the same as an ordinary
+    // release: the suppression lasts exactly as long as the mirror does.
+    expect(fixture.guest.backgroundThrottlingStates).toEqual([false, true]);
   });
 });

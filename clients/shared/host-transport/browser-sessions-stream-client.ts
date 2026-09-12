@@ -3,6 +3,7 @@ import {
   type BrowserSessionsClientFrame,
   type BrowserSessionsOpenRequest,
   type BrowserSessionsServerFrame,
+  type BrowserSessionsServerFrameV22,
 } from "@traycer/protocol/host/browser/contracts";
 import { browserSessionsServerFrameSchemaV10 } from "@traycer/protocol/host/browser/contracts-v1";
 import type { HostResourceScope } from "@traycer/protocol/host/resource-scope";
@@ -21,6 +22,27 @@ import type {
 } from "./i-stream-session";
 import type { IHostStreamClient } from "./host-stream-client";
 
+/**
+ * The `browser.sessions` server frames only an Electron MAIN process can act
+ * on, in their `@2.2` shape.
+ *
+ * Two of them (`mirrorRequest` / `mirrorRelease`) are asks no GUI shell can
+ * answer; the third (`electronViewportRequest`) exists on the 2.1 line too,
+ * but only the 2.2 arm carries `emulation`, and the shared
+ * {@link BrowserSessionsServerFrame} union is the 2.1 one. Handing all three
+ * over together is what lets the desktop read the added field without widening
+ * `onServerFrame` for every shell that does not own a native guest.
+ */
+export type BrowserSessionsDesktopServerFrame = Extract<
+  BrowserSessionsServerFrameV22,
+  {
+    readonly kind:
+      | "mirrorRequest"
+      | "mirrorRelease"
+      | "electronViewportRequest";
+  }
+>;
+
 export interface BrowserSessionsStreamCallbacks {
   /**
    * One validated `browser.sessions` server frame. Handed over whole rather
@@ -37,6 +59,18 @@ export interface BrowserSessionsStreamCallbacks {
     status: StreamConnectionStatus,
     reason: StreamCloseReason | null,
   ) => void;
+  /**
+   * Installed by the Electron main process only. While it is absent the three
+   * {@link BrowserSessionsDesktopServerFrame} kinds keep their pre-mirror
+   * routing exactly: the two mirror asks are dropped (a shell with no native
+   * guest can neither open a `browser.mirror` stream nor need to) and
+   * `electronViewportRequest` goes to `onServerFrame` in its 2.1 shape.
+   *
+   * Optional rather than nullable so no GUI call site has to name a seam it
+   * has nothing to do with - the same shape `IHostStreamClient.isSilentFor?`
+   * uses for "this implementation does not answer that".
+   */
+  readonly onDesktopFrame?: (frame: BrowserSessionsDesktopServerFrame) => void;
 }
 
 export type BrowserSessionsStreamClientOptions = BrowserSessionsOpenRequest & {
@@ -199,12 +233,20 @@ export class BrowserSessionsStreamClient {
       return;
     }
     const frame = parsed.data;
-    // The two mirror-lifecycle frames are host->DESKTOP asks and nothing
-    // behind this callback handles one yet (the desktop's mirror source is its
-    // own ticket). Dropped here rather than widened into the callback type,
-    // which is what that ticket does once there is a handler to widen it for.
-    if (frame.kind === "mirrorRequest" || frame.kind === "mirrorRelease") {
-      return;
+    if (
+      frame.kind === "mirrorRequest" ||
+      frame.kind === "mirrorRelease" ||
+      frame.kind === "electronViewportRequest"
+    ) {
+      const desktopFrame = this.callbacks.onDesktopFrame;
+      if (desktopFrame !== undefined) {
+        desktopFrame(frame);
+        return;
+      }
+      // No desktop seam means no native guest on this shell, so the two mirror
+      // asks are for nobody here. The viewport request still flows below, in
+      // the 2.1 shape the shared union names.
+      if (frame.kind !== "electronViewportRequest") return;
     }
     this.callbacks.onServerFrame(frame);
   }

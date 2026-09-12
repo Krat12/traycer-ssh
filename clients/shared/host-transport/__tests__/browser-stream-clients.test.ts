@@ -32,7 +32,10 @@ import type {
   StreamWebSocketMessageEvent,
 } from "../ws-stream-factory";
 import { BrowserScreencastStreamClient } from "../browser-screencast-stream-client";
-import { BrowserSessionsStreamClient } from "../browser-sessions-stream-client";
+import {
+  BrowserSessionsStreamClient,
+  type BrowserSessionsDesktopServerFrame,
+} from "../browser-sessions-stream-client";
 import { BROWSER_SESSIONS_V1_NO_WINDOW_BINDING_REASON } from "../browser-contracts-v1-bridge";
 import type {
   StreamCloseReason,
@@ -1278,6 +1281,126 @@ describe("browser.sessions against a host serving @1 and @2 (epic scope)", () =>
       desktopWindowId: "window-1",
       mirror: false,
     });
+
+    stream.close();
+  });
+});
+
+/**
+ * The desktop seam (T08). Three `browser.sessions` server frames can only be
+ * acted on by an Electron main process: the two mirror asks, and
+ * `electronViewportRequest` - whose `emulation` field exists on the 2.2 line
+ * only, so the shared 2.1-shaped union the GUI reads cannot carry it.
+ *
+ * `onDesktopFrame` is optional on purpose: while it is absent every one of the
+ * three keeps its pre-mirror routing exactly, which is what stops a GUI shell
+ * from having to name a seam it has nothing to do with.
+ */
+describe("BrowserSessionsStreamClient desktop server frames", () => {
+  const MIRROR_REQUEST = {
+    kind: "mirrorRequest",
+    hasBinaryPayload: false,
+    mirrorId: "mirror-1",
+    sessionId: "browser-session-1",
+    tabId: "browser-tab-1",
+    registrationId: "registration-1",
+    params: {
+      maxWidth: 900,
+      maxHeight: 1600,
+      quality: 55,
+      everyNthFrame: 1,
+    },
+  };
+  const MIRROR_RELEASE = {
+    kind: "mirrorRelease",
+    hasBinaryPayload: false,
+    mirrorId: "mirror-1",
+  };
+  const VIEWPORT_REQUEST = {
+    kind: "electronViewportRequest",
+    hasBinaryPayload: false,
+    requestId: "viewport-1",
+    sessionId: "browser-session-1",
+    tabId: "browser-tab-1",
+    registrationId: "registration-1",
+    revision: 3,
+    intent: { mode: "fixed", width: 390, height: 844 },
+    geometry: { width: 390, height: 844, dpr: 3 },
+    emulation: { mobile: true, touch: true },
+  };
+
+  it("routes all three to the desktop seam and none of them to onServerFrame", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const shellKinds: string[] = [];
+    const desktopFrames: BrowserSessionsDesktopServerFrame[] = [];
+    const stream = new BrowserSessionsStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      callbacks: {
+        onServerFrame: (frame) => {
+          shellKinds.push(frame.kind);
+        },
+        onConnectionStatus: () => undefined,
+        onDesktopFrame: (frame) => {
+          desktopFrames.push(frame);
+        },
+      },
+    });
+
+    completeHandshake(sockets[0]);
+    sockets[0].fireText(MIRROR_REQUEST);
+    sockets[0].fireText(MIRROR_RELEASE);
+    sockets[0].fireText(VIEWPORT_REQUEST);
+
+    expect(desktopFrames.map((frame) => frame.kind)).toEqual([
+      "mirrorRequest",
+      "mirrorRelease",
+      "electronViewportRequest",
+    ]);
+    expect(shellKinds).toEqual([]);
+    // Parsed with the 2.2 union, so the added field is readable rather than
+    // stripped on the way through.
+    const viewport = desktopFrames[2];
+    expect(
+      viewport !== undefined && viewport.kind === "electronViewportRequest"
+        ? viewport.emulation
+        : null,
+    ).toEqual({ mobile: true, touch: true });
+    expect(MIRROR_REQUEST.params).toEqual(
+      desktopFrames[0]?.kind === "mirrorRequest"
+        ? desktopFrames[0].params
+        : null,
+    );
+
+    stream.close();
+  });
+
+  it("drops the two mirror asks and still delivers the viewport request when no desktop seam is installed", () => {
+    const { factory, sockets } = makeFactory();
+    const client = makeClient(factory);
+    const shellFrames: BrowserSessionsServerFrame[] = [];
+    const stream = new BrowserSessionsStreamClient({
+      wsStreamClient: client,
+      scope: { kind: "epic", epicId: "epic-1" },
+      callbacks: {
+        onServerFrame: (frame) => {
+          shellFrames.push(frame);
+        },
+        onConnectionStatus: () => undefined,
+      },
+    });
+
+    completeHandshake(sockets[0]);
+    sockets[0].fireText(MIRROR_REQUEST);
+    sockets[0].fireText(MIRROR_RELEASE);
+    sockets[0].fireText(VIEWPORT_REQUEST);
+
+    // No native guest on this shell, so a mirror ask is for nobody here. The
+    // viewport request still flows, in the 2.1 shape the shared union names.
+    expect(shellFrames.map((frame) => frame.kind)).toEqual([
+      "electronViewportRequest",
+    ]);
 
     stream.close();
   });

@@ -13,8 +13,14 @@ import {
   createElectronTabs,
   type BrowserSessionsTabPort,
   type ElectronTabs,
+  type ElectronTabsMirrorDeps,
 } from "../browser-sessions-electron-tabs";
-import { createTabRecorder } from "./browser-sessions-stream-fixture";
+import type { BrowserSessionsDesktopServerFrame } from "@traycer-clients/shared/host-transport/browser-sessions-stream-client";
+import type { BrowserViewElectronViewport } from "@traycer-clients/shared/platform/browser-view";
+import {
+  createMirrorRecorder,
+  createTabRecorder,
+} from "./browser-sessions-stream-fixture";
 
 vi.mock("../../app/logger", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -62,6 +68,27 @@ function acceptedFrame(
   };
 }
 
+type MirrorRequestFrame = Extract<
+  BrowserSessionsDesktopServerFrame,
+  { readonly kind: "mirrorRequest" }
+>;
+
+function mirrorRequestFrame(
+  mirrorId: string,
+  overrides: Partial<MirrorRequestFrame>,
+): MirrorRequestFrame {
+  return {
+    kind: "mirrorRequest",
+    hasBinaryPayload: false,
+    mirrorId,
+    sessionId: CREATE.sessionId,
+    tabId: CREATE.tabId,
+    registrationId: "registration-1",
+    params: { maxWidth: 900, maxHeight: 1600, quality: 55, everyNthFrame: 1 },
+    ...overrides,
+  };
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   resolve: (value: T) => void;
@@ -85,9 +112,29 @@ interface Harness {
   readonly electronTabs: ElectronTabs;
 }
 
+/**
+ * The mirror seam for the cases that are not about mirroring: it exists, and
+ * nothing reaches it. A `mirrorRequest` for an inactive tab is refused before
+ * either half is touched, which is what makes throwing here safe.
+ */
+const NO_MIRROR: ElectronTabsMirrorDeps = {
+  tabs: { startTabMirror: () => Promise.resolve(null) },
+  openStream: () => {
+    throw new Error("no mirror stream in this suite");
+  },
+};
+
 function setup(
   tabs: BrowserSessionsTabPort,
   connectionId: () => string | null,
+): Harness {
+  return setupWithMirror(tabs, connectionId, NO_MIRROR);
+}
+
+function setupWithMirror(
+  tabs: BrowserSessionsTabPort,
+  connectionId: () => string | null,
+  mirror: ElectronTabsMirrorDeps,
 ): Harness {
   const sent: BrowserSessionsClientFrame[] = [];
   const bound: BrowserViewNativeTabCapability[] = [];
@@ -100,6 +147,7 @@ function setup(
     sendFrame: (frame) => sent.push(frame),
     onTabBound: (capability) => bound.push(capability),
     onTabReleased: (capability) => released.push(capability),
+    mirror,
   });
   activeElectronTabs.add(electronTabs);
   return { sent, bound, released, electronTabs };
@@ -886,6 +934,134 @@ describe("createElectronTabs", () => {
         registrationId: "registration-1",
         viewed: true,
       }),
+    ]);
+  });
+
+  it("handles a mirrorRequest rather than letting the switch's default swallow it", async () => {
+    const recorder = createTabRecorder();
+    const mirror = createMirrorRecorder();
+    const { sent, electronTabs } = setupWithMirror(
+      recorder.port,
+      () => "connection-1",
+      mirror.deps,
+    );
+    electronTabs.handleFrame(CREATE);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    electronTabs.handleFrame(acceptedFrame("registration-1"));
+
+    electronTabs.handleFrame(mirrorRequestFrame("mirror-1", {}));
+    await vi.waitFor(() => expect(mirror.handles).toHaveLength(1));
+
+    // The server-frame switch ends in `default: return;`, so a missing case
+    // compiles cleanly and silently no-ops - which is exactly what a mirror
+    // that never produces a frame would look like from the host.
+    expect(mirror.opens.map((open) => open.mirrorId)).toEqual(["mirror-1"]);
+
+    // One stream per `mirrorId`: a replayed ask must not double the capture.
+    electronTabs.handleFrame(mirrorRequestFrame("mirror-1", {}));
+    await Promise.resolve();
+    expect(mirror.opens).toHaveLength(1);
+    expect(mirror.starts).toHaveLength(1);
+  });
+
+  it("closes the mirror on mirrorRelease and on a dropped connection", async () => {
+    const recorder = createTabRecorder();
+    const mirror = createMirrorRecorder();
+    const { sent, electronTabs } = setupWithMirror(
+      recorder.port,
+      () => "connection-1",
+      mirror.deps,
+    );
+    electronTabs.handleFrame(CREATE);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    electronTabs.handleFrame(acceptedFrame("registration-1"));
+
+    electronTabs.handleFrame(mirrorRequestFrame("mirror-1", {}));
+    await vi.waitFor(() => expect(mirror.handles).toHaveLength(1));
+    electronTabs.handleFrame({
+      kind: "mirrorRelease",
+      hasBinaryPayload: false,
+      mirrorId: "mirror-1",
+    });
+    expect(mirror.handles[0]?.stopped).toBe(1);
+    expect(mirror.sessions[0]?.closed).toBe(true);
+
+    electronTabs.handleFrame(mirrorRequestFrame("mirror-2", {}));
+    await vi.waitFor(() => expect(mirror.handles).toHaveLength(2));
+    // A dropped connection is the end of every mirror on it: the host will ask
+    // again on the next incarnation if a viewer is still attached.
+    electronTabs.disconnect();
+    expect(mirror.handles[1]?.stopped).toBe(1);
+    expect(mirror.sessions[1]?.closed).toBe(true);
+  });
+
+  it("closes every open mirror on dispose", async () => {
+    const recorder = createTabRecorder();
+    const mirror = createMirrorRecorder();
+    const { sent, electronTabs } = setupWithMirror(
+      recorder.port,
+      () => "connection-1",
+      mirror.deps,
+    );
+    electronTabs.handleFrame(CREATE);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    electronTabs.handleFrame(acceptedFrame("registration-1"));
+    electronTabs.handleFrame(mirrorRequestFrame("mirror-1", {}));
+    await vi.waitFor(() => expect(mirror.handles).toHaveLength(1));
+
+    electronTabs.dispose();
+
+    expect(mirror.handles[0]?.stopped).toBe(1);
+    expect(mirror.sessions[0]?.closed).toBe(true);
+  });
+
+  it("forwards electronViewportRequest.emulation verbatim to the viewport apply", async () => {
+    const recorder = createTabRecorder();
+    const applied: BrowserViewElectronViewport[] = [];
+    const tabs: BrowserSessionsTabPort = {
+      ...recorder.port,
+      applyElectronTabViewport: (input) => {
+        applied.push(input);
+        return Promise.resolve({ width: 390, height: 844, dpr: 3 });
+      },
+    };
+    const { sent, electronTabs } = setup(tabs, () => "connection-1");
+    electronTabs.handleFrame(CREATE);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    electronTabs.handleFrame(acceptedFrame("registration-1"));
+    sent.length = 0;
+
+    const emulation = { mobile: true, touch: true };
+    electronTabs.handleFrame({
+      kind: "electronViewportRequest",
+      hasBinaryPayload: false,
+      requestId: "viewport-1",
+      sessionId: "session-1",
+      tabId: "tab-1",
+      registrationId: "registration-1",
+      revision: 4,
+      intent: { mode: "fixed", width: 390, height: 844 },
+      geometry: { width: 390, height: 844, dpr: 3 },
+      emulation,
+    });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    // Handed straight through: the apply is the ONE writer of device metrics,
+    // because it clears them before every resize and a second writer would be
+    // wiped by the next one.
+    expect(applied).toHaveLength(1);
+    expect(applied[0]?.emulation).toBe(emulation);
+    expect(sent).toEqual([
+      {
+        kind: "electronViewportResult",
+        hasBinaryPayload: false,
+        requestId: "viewport-1",
+        sessionId: "session-1",
+        tabId: "tab-1",
+        registrationId: "registration-1",
+        revision: 4,
+        result: { ok: true, applied: { width: 390, height: 844, dpr: 3 } },
+      },
     ]);
   });
 });

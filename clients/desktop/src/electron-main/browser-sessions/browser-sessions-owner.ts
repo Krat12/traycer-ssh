@@ -27,6 +27,7 @@ import {
   type BrowserSessionsStreamKey,
 } from "@traycer-clients/shared/platform/browser-view";
 import { describeLogError, log } from "../app/logger";
+import type { BrowserViewMirrorPort } from "../browser-view/manager/browser-view-mirror-capture";
 import type { BrowserPrimaryProfileCaptureResult } from "../browser-view/storage/browser-storage-state";
 import type { DesktopIdentityAttestation } from "../browser-view/storage/browser-desktop-identity";
 import {
@@ -195,7 +196,13 @@ export interface BrowserSessionsRegistryDeps {
     userId: string,
   ) => BrowserSessionsHostTransport | null;
   readonly jar: BrowserSessionsJarPort;
-  readonly tabs: BrowserSessionsTabPort;
+  /**
+   * One native surface, two roles: the tab lifecycle and - since a co-located
+   * desktop is the pixel source for its own tabs (D04) - the mirror capture.
+   * The `BrowserViewManager` is both, and splitting them into two deps would
+   * only make one object arrive twice.
+   */
+  readonly tabs: BrowserSessionsTabPort & BrowserViewMirrorPort;
   /**
    * The signed-in user main opens a stream FOR - read here, never taken from
    * the renderer: it is half of the relay attach grant's identity, and a
@@ -663,6 +670,14 @@ class BrowserSessionsStream {
       onTabReleased: (capability) => {
         this.emit({ kind: "tabReleased", capability });
       },
+      mirror: {
+        tabs: this.deps.tabs,
+        // The SAME client the sessions stream rides: one connection to the
+        // host, one logical stream per mirror. A fatal error on a mirror is
+        // that session's own terminal close and touches nothing here.
+        openStream: (request) =>
+          transport.wsStreamClient.subscribe("browser.mirror", request),
+      },
     });
     // Unsolicited cookie deltas from the durable `primary` jar. Gated on this
     // connection having sent `electronTabLifecycleReady`: that readiness is
@@ -688,6 +703,14 @@ class BrowserSessionsStream {
         callbacks: {
           onServerFrame: (frame) => {
             this.handleServerFrame(frame);
+          },
+          // The `@2.2` host->desktop frames, in their 2.2 shape: the two mirror
+          // asks, plus `electronViewportRequest` - whose `emulation` field only
+          // exists on that line. Straight to the native lifecycle; none of the
+          // three is renderer-projectable.
+          onDesktopFrame: (frame) => {
+            if (this.disposed) return;
+            this.electronTabs?.handleFrame(frame);
           },
           onConnectionStatus: (status, reason) => {
             this.handleConnectionStatus(status, reason);
@@ -1035,8 +1058,12 @@ class BrowserSessionsStream {
       case "electronTabAccepted":
       case "releaseElectronTab":
       case "cdpRequest":
-      case "electronViewportRequest":
         this.electronTabs?.handleFrame(frame);
+        return;
+      case "electronViewportRequest":
+        // Arrives on `onDesktopFrame` instead, in the 2.2 shape that carries
+        // `emulation`. Named here only so this switch still covers the jar
+        // union it is typed against.
         return;
       case "capturePrimaryProfile":
         if (frame.standing) {
@@ -1120,11 +1147,10 @@ class BrowserSessionsStream {
       // and never deduped across them, so this is the route identity the host
       // elects per scope and echoes back on `BrowserTabInfo.boundWindowId`.
       desktopWindowId: this.windowId,
-      // This desktop does not yet probe `Page.startScreencast` for mirror
-      // production - that lands in a later mobile-browser ticket. `false` is
-      // the schema default and matches today's behavior exactly: never asked
-      // for a `mirrorRequest`.
-      mirror: false,
+      // This desktop captures its own native tabs and pumps them to the host
+      // over `browser.mirror` (D04), so it may be asked for one. A host that
+      // never sees `true` never sends a `mirrorRequest`.
+      mirror: true,
     });
     this.pushForgetLedger("attach");
   }

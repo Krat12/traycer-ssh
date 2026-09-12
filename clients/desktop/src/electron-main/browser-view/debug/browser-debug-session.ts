@@ -22,7 +22,11 @@ interface BrowserDebugSessionOptions {
   readonly onDetached: (reason: string) => void;
 }
 
-interface CdpEvent {
+/**
+ * One raw CDP event off the shared attachment. `sessionId` is `undefined` for
+ * the guest's own target and set for a child (OOPIF) one.
+ */
+export interface BrowserDebugCdpEvent {
   readonly method: string;
   readonly params: Record<string, unknown>;
   readonly sessionId: string | undefined;
@@ -36,6 +40,9 @@ export class BrowserDebugSession {
   private readonly pipCapture: BrowserPipCapture;
   private readonly bindingCalledListeners = new Set<
     (params: Record<string, unknown>) => void
+  >();
+  private readonly cdpEventListeners = new Set<
+    (event: BrowserDebugCdpEvent) => void
   >();
   private readonly messageListener = (...args: unknown[]) => {
     this.handleDebuggerMessage(args);
@@ -105,6 +112,31 @@ export class BrowserDebugSession {
     if (this.isAttached()) this.startListening();
     return () => {
       this.bindingCalledListeners.delete(listener);
+      this.stopListeningIfIdle();
+    };
+  }
+
+  /**
+   * Every raw CDP event this attachment sees, before the telemetry recorder
+   * gets a look at it.
+   *
+   * `onBindingCalled` exists because one event kind had one consumer; the
+   * mirror needs five (`Page.screencastFrame`, `Page.frameResized`,
+   * `Page.javascriptDialogOpening` / `Closed`, `Page.frameNavigated`), and the
+   * telemetry recorder CLAIMS the events it handles by returning `true`, so a
+   * per-kind set would be five near-identical fan-outs all fighting for
+   * position relative to that claim. One set, consulted before it, is the
+   * whole seam.
+   *
+   * Registering one keeps the `message` listener installed even while domains
+   * are disabled - see `stopListeningIfIdle`.
+   */
+  onCdpEvent(listener: (event: BrowserDebugCdpEvent) => void): () => void {
+    if (this.disposed) return () => undefined;
+    this.cdpEventListeners.add(listener);
+    if (this.isAttached()) this.startListening();
+    return () => {
+      this.cdpEventListeners.delete(listener);
       this.stopListeningIfIdle();
     };
   }
@@ -285,6 +317,7 @@ export class BrowserDebugSession {
       }
     }
     this.bindingCalledListeners.clear();
+    this.cdpEventListeners.clear();
   }
 
   private handleDebuggerMessage(args: readonly unknown[]): void {
@@ -294,6 +327,10 @@ export class BrowserDebugSession {
       this.frameRoutes.handleTargetDetached(event.params);
       return;
     }
+    // BEFORE `telemetry.handleEvent` below, which early-`return`s for every
+    // event it claims and drops every event nobody routed - which is what
+    // `Page.screencastFrame` would be.
+    for (const listener of this.cdpEventListeners) listener(event);
     if (event.method === "Page.frameAttached") {
       this.frameRoutes.handleFrameAttached(event.params, event.sessionId);
     } else if (event.method === "Page.frameNavigated") {
@@ -380,7 +417,11 @@ export class BrowserDebugSession {
     if (
       this.enabled ||
       this.enablePromise !== null ||
-      this.bindingCalledListeners.size > 0
+      this.bindingCalledListeners.size > 0 ||
+      // A live mirror is a standing subscription on this attachment: dropping
+      // the `message` listener because the domains went idle would kill it
+      // silently.
+      this.cdpEventListeners.size > 0
     ) {
       return;
     }
@@ -410,7 +451,7 @@ function cdpFailure(
   return { kind: command.kind, ok: false, error: { kind, message, code } };
 }
 
-function readCdpEvent(args: readonly unknown[]): CdpEvent | null {
+function readCdpEvent(args: readonly unknown[]): BrowserDebugCdpEvent | null {
   const method = args[1];
   if (typeof method !== "string") return null;
   const params = recordValue(args[2]) ?? {};
