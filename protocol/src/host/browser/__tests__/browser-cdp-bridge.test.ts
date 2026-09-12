@@ -82,6 +82,20 @@ const COMMANDS: readonly BrowserCdpCommand[] = [
     depth: null,
     pierce: false,
   },
+  { kind: "cdpGetNavigationHistory" },
+  { kind: "cdpNavigateToHistoryEntry", entryId: 1 },
+  { kind: "cdpReload", ignoreCache: false },
+  {
+    kind: "cdpSetTouchEmulationEnabled",
+    enabled: true,
+    maxTouchPoints: 1,
+  },
+  { kind: "cdpSetPageScaleFactor", pageScaleFactor: 1 },
+  {
+    kind: "cdpHandleJavaScriptDialog",
+    accept: true,
+    promptText: null,
+  },
 ];
 
 const SUCCESS_RESULTS: readonly BrowserCdpResult[] = [

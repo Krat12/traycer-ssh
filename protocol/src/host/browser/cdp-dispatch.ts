@@ -14,6 +14,7 @@ import {
   CURATED_CDP_METHOD_BY_KIND,
   type BrowserCdpCommand,
   type BrowserCdpFrameInfo,
+  type BrowserCdpNavigationEntry,
   type BrowserCdpResult,
 } from "@traycer/protocol/host/browser/contracts";
 
@@ -90,8 +91,36 @@ export async function dispatchCuratedCdp(
     case "cdpInsertText":
     case "cdpDispatchKeyEvent":
     case "cdpSetDeviceMetricsOverride":
+    case "cdpNavigateToHistoryEntry":
+    case "cdpReload":
+    case "cdpSetTouchEmulationEnabled":
+    case "cdpSetPageScaleFactor":
+    case "cdpHandleJavaScriptDialog":
       await sendCommand(send, command);
       return { kind: command.kind, ok: true };
+    case "cdpGetNavigationHistory": {
+      const response = requireRecord(
+        await sendCommand(send, command),
+        "Page.getNavigationHistory",
+      );
+      if (!Array.isArray(response.entries)) {
+        throw invalidResponse("Page.getNavigationHistory.entries");
+      }
+      return {
+        kind: command.kind,
+        ok: true,
+        currentIndex: requireNumber(
+          response.currentIndex,
+          "Page.getNavigationHistory.currentIndex",
+        ),
+        entries: response.entries.map(
+          (entry): BrowserCdpNavigationEntry =>
+            navigationEntry(
+              requireRecord(entry, "Page.getNavigationHistory.entry"),
+            ),
+        ),
+      };
+    }
     case "cdpDescribeNode": {
       const response = requireRecord(
         await sendCommand(send, command),
@@ -199,6 +228,22 @@ function describeException(exceptionDetails: Record<string, unknown>): string {
   if ("value" in exception)
     return `${text}: ${JSON.stringify(exception.value)}`;
   return text;
+}
+
+/**
+ * `Page.getNavigationHistory` entries always carry all three, but a `title` is
+ * empty rather than absent for an entry that never committed, so the two
+ * strings are read defensively and an absent one becomes `""` rather than a
+ * malformed-response throw that would blank a working nav bar.
+ */
+function navigationEntry(
+  entry: Record<string, unknown>,
+): BrowserCdpNavigationEntry {
+  return {
+    id: requireNumber(entry.id, "Page.getNavigationHistory.entry.id"),
+    url: requireString(entry.url, "Page.getNavigationHistory.entry.url"),
+    title: nullableString(entry.title) ?? "",
+  };
 }
 
 function flattenFrameTree(

@@ -169,6 +169,9 @@ export type BrowserTabIdentity = z.infer<typeof browserTabIdentitySchema>;
 export const browserOpenedTabSchema = z
   .object({
     ...browserTabIdentitySchema.shape,
+    // DEAD BUT PRESENT: placement demotion is gone, so the host now always
+    // writes `null` here and no client reads it. Kept because dropping a field
+    // from a released 2.x schema throws at module load.
     handoffToken: z.string().nullable(),
   })
   .strict();
@@ -842,28 +845,142 @@ export const browserSessionsServerFrameV20Schema = z.discriminatedUnion(
       .strict(),
   ],
 );
+/**
+ * What kind of pointer a viewport is being driven by. `coarse` is a touch
+ * surface: it is the one fact the host cannot measure and the client cannot
+ * infer from geometry, and it decides touch emulation and hit-target sizing.
+ *
+ * Mirrors the CSS `pointer` media feature's two usable values; `none` is
+ * deliberately absent, because a viewport with no pointer at all reports
+ * nothing and the default (`fine`) is the safe read.
+ */
+export const browserViewportPointerSchema = z.enum(["fine", "coarse"]);
+export type BrowserViewportPointer = z.infer<
+  typeof browserViewportPointerSchema
+>;
+
+/**
+ * The JPEG-pump knobs a `browser.mirror` producer is driven with.
+ *
+ * Lives here rather than in `mirror-contracts.ts` for one mechanical reason:
+ * `mirrorRequest` below needs the VALUE, and the mirror contract needs
+ * `browserScreencastMetadataSchema` and `browserNavStateSchema` from this
+ * module - so owning it there would make the two modules a value-level import
+ * cycle whose zod consts evaluate as `undefined`. `mirror-contracts.ts`
+ * re-exports it, so either import path names the same schema.
+ */
+export const browserMirrorParamsSchema = z
+  .object({
+    maxWidth: z.number().int().positive(),
+    maxHeight: z.number().int().positive(),
+    quality: z.number().int().min(0).max(100),
+    // 1 = every frame. The host raises it to shed load on a slow subscriber
+    // rather than dropping frames after they have already been encoded.
+    everyNthFrame: z.number().int().positive().max(16),
+  })
+  .strict();
+export type BrowserMirrorParams = z.infer<typeof browserMirrorParamsSchema>;
+
+/**
+ * The 2.1 `viewportState` arm, named rather than inline so `@2.2` can `.extend`
+ * it. Extracting it does not change its zod shape, and the 2.1 union below is
+ * still composed from exactly these arms - a 2.2 union built by spreading the
+ * 2.1 union's options and appending an extended `viewportState` would put two
+ * arms with the same `kind` into one discriminated union.
+ */
+const browserSessionsViewportStateV21Schema = browserViewportStateSchema.extend(
+  {
+    kind: z.literal("viewportState"),
+    ...textFrameFields,
+  },
+);
+
+/** The 2.1 `electronViewportRequest` arm; named for the same reason. */
+const browserSessionsElectronViewportRequestV21Schema = z
+  .object({
+    kind: z.literal("electronViewportRequest"),
+    ...requestFrameFields,
+    sessionId: z.string(),
+    tabId: z.string(),
+    registrationId: z.string(),
+    revision: z.number().int().nonnegative(),
+    intent: browserViewportIntentSchema,
+    geometry: browserViewportGeometrySchema,
+  })
+  .strict();
+
 /** Additive 2.1 frames are emitted only to a negotiated 2.1 peer. */
 export const browserSessionsServerFrameSchema = z.discriminatedUnion("kind", [
   ...browserSessionsServerFrameV20Schema.options,
-  browserViewportStateSchema.extend({
-    kind: z.literal("viewportState"),
-    ...textFrameFields,
-  }),
-  z
-    .object({
-      kind: z.literal("electronViewportRequest"),
-      ...requestFrameFields,
-      sessionId: z.string(),
-      tabId: z.string(),
-      registrationId: z.string(),
-      revision: z.number().int().nonnegative(),
-      intent: browserViewportIntentSchema,
-      geometry: browserViewportGeometrySchema,
-    })
-    .strict(),
+  browserSessionsViewportStateV21Schema,
+  browserSessionsElectronViewportRequestV21Schema,
 ]);
 export type BrowserSessionsServerFrame = z.infer<
   typeof browserSessionsServerFrameSchema
+>;
+
+/**
+ * `browser.sessions@2.2` server frames.
+ *
+ * Built from the 2.0 options plus the 2.1 arms EXTENDED plus the 2.2-only
+ * kinds, and never by spreading {@link browserSessionsServerFrameSchema}. A
+ * released `.strict()` parser rejects an added field outright, and `.default()`
+ * only helps a NEW parser read an OLD payload - so every host->client addition
+ * has to live in its own per-minor union and the resolver projects a 2.2 frame
+ * down for an older peer, field by field.
+ */
+export const browserSessionsServerFrameV22Schema = z.discriminatedUnion(
+  "kind",
+  [
+    ...browserSessionsServerFrameV20Schema.options,
+    browserSessionsViewportStateV21Schema.extend({
+      // What pointer the viewport's Fit owner is driving with, `null` when no
+      // owner holds Fit. The host echoes the claim it applied so a second
+      // viewer can see whose pointer class the shared layout is sized for.
+      fitPointer: browserViewportPointerSchema.nullable().default(null),
+    }),
+    browserSessionsElectronViewportRequestV21Schema.extend({
+      // Device emulation to apply with this geometry, `null` to apply none.
+      // A 2.1 desktop never receives the field and keeps applying geometry
+      // alone, which is the pre-emulation behaviour rather than a failure.
+      emulation: z
+        .object({ mobile: z.boolean(), touch: z.boolean() })
+        .strict()
+        .nullable()
+        .default(null),
+    }),
+    z
+      .object({
+        // "Open a `browser.mirror` stream for this tab and pump frames into
+        // it." Host->desktop, and only ever to the desktop that advertised
+        // `mirror` on its `electronTabLifecycleReady`, so a desktop that
+        // cannot produce one never sees the ask. `mirrorId` is HOST-minted:
+        // the mirror open request presenting an id this host did not mint is
+        // refused.
+        kind: z.literal("mirrorRequest"),
+        ...textFrameFields,
+        mirrorId: z.string(),
+        sessionId: z.string(),
+        tabId: z.string(),
+        registrationId: z.string(),
+        params: browserMirrorParamsSchema,
+      })
+      .strict(),
+    z
+      .object({
+        // The host has no subscriber left for that mirror. Closing the stream
+        // ends it too; this frame exists so a desktop that has not yet opened
+        // the stream (or is mid-retry) can drop the request instead of opening
+        // one nobody wants.
+        kind: z.literal("mirrorRelease"),
+        ...textFrameFields,
+        mirrorId: z.string(),
+      })
+      .strict(),
+  ],
+);
+export type BrowserSessionsServerFrameV22 = z.infer<
+  typeof browserSessionsServerFrameV22Schema
 >;
 
 /**
@@ -1037,6 +1154,17 @@ export const browserSessionsClientFrameV20Schema = z.discriminatedUnion(
         // a stream belongs to has to travel again for it: main holds that fact
         // for its own bookkeeping, but the host is the one electing routes.
         desktopWindowId: z.string().nullable().default(null),
+        // Whether this desktop can PRODUCE a `browser.mirror` stream for a
+        // native tab: it probed `Page.startScreencast` on a real `<webview>`
+        // and it knows the frame kinds. Only a subscriber that declared `true`
+        // is ever sent a `mirrorRequest`, so a desktop older than the mirror
+        // (or one whose probe failed) is never asked for something it would
+        // answer with a stream open that never arrives.
+        //
+        // `.default(false)` on a client->host frame is the right tool here -
+        // same as `desktopWindowId` above - because an added field on a
+        // released client union is advisory, and absent must read as "no".
+        mirror: z.boolean().default(false),
       })
       .strict(),
     z
@@ -1200,7 +1328,31 @@ export const browserSessionsClientFrameSchema = z.discriminatedUnion("kind", [
     tabId: z.string(),
     viewerId: z.string().min(1).max(128),
     claim: z.boolean(),
+    // What this viewer is driving the viewport with. Client->host, so
+    // `.default("fine")` is what carries a 2.0/2.1 client: those clients are
+    // the desktop and the browser GUI, and `fine` is exactly what they are.
+    // Emission of a non-default value is gated on the negotiated minor
+    // client-side; the field itself lives on the shared union because an added
+    // client->host field at a released version is advisory, and a 2.2-only
+    // client union would only make this host stricter.
+    pointer: browserViewportPointerSchema.default("fine"),
   }),
+  z
+    .object({
+      // "I am no longer showing this tab." The viewer, not the host, is the
+      // only party that knows its own `viewerId`, so the release of a Fit
+      // claim rides the sessions channel rather than the screencast one -
+      // which also means it survives a screencast stream that died without a
+      // clean close. Unacknowledged: releasing a claim nobody holds is a
+      // no-op, so a duplicate costs nothing and a lost one is swept when the
+      // subscriber detaches.
+      kind: z.literal("releaseViewport"),
+      ...textFrameFields,
+      sessionId: z.string(),
+      tabId: z.string(),
+      viewerId: z.string().min(1).max(128),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("electronViewportResult"),
@@ -1367,6 +1519,43 @@ export const browserSessionsV21 = defineStreamRpcContract({
   clientFrameSchema: browserSessionsClientFrameSchema,
 });
 
+/**
+ * Fit-pointer echo, native device emulation, and the two mirror-lifecycle
+ * frames on the server side; `pointer`, `releaseViewport` and the desktop's
+ * `mirror` capability on the client side.
+ *
+ * The client schema is the SHARED 2.1 union, not a 2.2-only one: an added
+ * client->host variant at a released version is advisory, and forking it would
+ * only make this host stricter about frames a newer client is already gated
+ * from sending. The server schema is per-minor, because that direction is the
+ * one a released `.strict()` parser breaks on.
+ */
+export const browserSessionsV22 = defineStreamRpcContract({
+  method: "browser.sessions",
+  schemaVersion: { major: 2, minor: 2 } as const,
+  openRequestSchema: browserSessionsOpenRequestSchema,
+  serverFrameSchema: browserSessionsServerFrameV22Schema,
+  clientFrameSchema: browserSessionsClientFrameSchema,
+});
+
+/**
+ * The reason a native-placement request is refused because the desktop that
+ * holds the tab predates the mirror (no `mirror` on its
+ * `electronTabLifecycleReady`). Free-form `reason` strings on `openTabResult`
+ * and `actionAck` are the carrier; this constant exists so the host that
+ * writes it and the client that renders copy for it cannot drift.
+ */
+export const BROWSER_DESKTOP_UPDATE_REQUIRED_REASON = "desktop-update-required";
+
+/**
+ * The reason a native-placement request is refused because the desktop DID
+ * advertise `mirror` but its stream is not producing - the consecutive-failure
+ * latch is set. Distinct from {@link BROWSER_DESKTOP_UPDATE_REQUIRED_REASON}
+ * because the remedy differs: one is "update the desktop", the other is "the
+ * mirror is broken right now".
+ */
+export const BROWSER_MIRROR_UNAVAILABLE_REASON = "mirror-unavailable";
+
 /** One site the user's stored primary profile still holds cookies for. */
 export const browserSavedLoginSiteSchema = z
   .object({
@@ -1440,13 +1629,22 @@ export type BrowserScreencastFormat = z.infer<
 /**
  * The subscription's control tier.
  *
- * A tile drives the tab; `"pip"` and `"viewer"` are read-only, routed to the
- * host's restricted client-frame handler, so an `arm` or an input frame from
- * either is refused and traced rather than dispatched. They differ only in
- * what else they cost the host - a `"pip"` mirrors a tile that is already
- * streaming and is never offered its own video round, while a `"viewer"` is a
- * first-class watcher of the tab (viewed state, its own WebRTC round) that
- * simply has no input rights.
+ * Two live tiers: a `"tile"` drives the tab, and `"pip"` is the ONLY passive
+ * one - read-only, routed to the host's restricted client-frame handler, so an
+ * `arm` or an input frame from it is refused and traced rather than dispatched.
+ * A `"pip"` mirrors a tile that is already streaming and is never offered its
+ * own video round.
+ *
+ * `"viewer"` is a LEGACY literal, kept in the enum because a released 2.0/2.1
+ * client may still send it (removing an enum value is breaking - see
+ * `framework/surface-compat.ts`) and because a `.transform()` here would
+ * fingerprint the enum as `{}` and fail `released-baseline-compat.test.ts`. It
+ * described a passive-but-first-class watcher with its own WebRTC round, which
+ * no longer exists as a distinct tier. The host NORMALIZES it to `"tile"` in
+ * the screencast resolver at the `subscribeScreencast` call - that
+ * normalization is resolver-only and must never be added to this schema. Every
+ * host-side type that models a live tier therefore names the narrowed set
+ * rather than this one.
  *
  * NOT AN AUTHORIZATION. The tier is declared by the client and the host
  * applies it verbatim: a modified client sends `"tile"` and drives. Nothing
@@ -1473,11 +1671,11 @@ export const browserScreencastOpenRequestSchema = z
     quality: z.number().int().min(0).max(100),
     format: browserScreencastFormatSchema,
     role: browserScreencastViewerRoleSchema,
-    // The `handoffToken` a successful `openTab` answered this client with, when
-    // this viewer is watching the tab that open produced; `null` for any other
-    // viewer. The host holds the tab's session where the opener can see it
-    // until pixels reach a viewer presenting the token, so a bystander that
-    // picked the tab up from a session update does not release it.
+    // DEAD BUT PRESENT: the host ignores this and every client sends `null`.
+    // It named the placement demotion an `openTab` had performed so the host
+    // could hold that session until pixels reached the opener; demotion is gone
+    // and nothing reads the token. Required on the shared open request of a
+    // released line, so it stays.
     handoffToken: z.string().nullable(),
   })
   .strict();
@@ -1485,7 +1683,7 @@ export type BrowserScreencastOpenRequest = z.infer<
   typeof browserScreencastOpenRequestSchema
 >;
 
-const browserScreencastMetadataSchema = z
+export const browserScreencastMetadataSchema = z
   .object({
     offsetTop: z.number(),
     pageScaleFactor: z.number(),
@@ -1500,7 +1698,7 @@ export type BrowserScreencastMetadata = z.infer<
   typeof browserScreencastMetadataSchema
 >;
 
-const browserScreencastUnsupportedFeatureSchema = z.enum([
+export const browserScreencastUnsupportedFeatureSchema = z.enum([
   "fileUpload",
   "download",
 ]);
@@ -1530,6 +1728,83 @@ export const browserNavStateSchema = z
   })
   .strict();
 export type BrowserNavState = z.infer<typeof browserNavStateSchema>;
+
+/**
+ * The `inputmode` a mobile keyboard should open with, as the HTML attribute's
+ * own vocabulary so a client can set `inputmode` from it verbatim. `null` means
+ * "the page said nothing useful" and the client should leave its default.
+ */
+export const browserEditableInputModeSchema = z.enum([
+  "none",
+  "text",
+  "decimal",
+  "numeric",
+  "tel",
+  "search",
+  "email",
+  "url",
+]);
+export type BrowserEditableInputMode = z.infer<
+  typeof browserEditableInputModeSchema
+>;
+
+/**
+ * The focused editable's box, in CSS pixels relative to the page's VISUAL
+ * viewport (what `getBoundingClientRect` returns), so a client sizing a
+ * keyboard inset does not have to reconcile it against a scroll offset it
+ * measured at a different instant.
+ */
+export const browserEditableFocusRectSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  })
+  .strict();
+export type BrowserEditableFocusRect = z.infer<
+  typeof browserEditableFocusRectSchema
+>;
+
+/**
+ * One editable-focus observation. Exported as a field bundle rather than a
+ * schema because two unions carry it verbatim - the screencast 2.2 server
+ * frame a viewer reads, and the `browser.mirror` client frame a desktop
+ * produces - and the host RELAYS one into the other. A field that drifted
+ * between them would be a silent projection bug rather than a type error.
+ */
+export const browserEditableFocusFields = {
+  focused: z.boolean(),
+  inputMode: browserEditableInputModeSchema.nullable(),
+  multiline: z.boolean(),
+  rect: browserEditableFocusRectSchema.nullable(),
+} as const;
+
+/**
+ * Caps on the two page-derived strings, owned by the contract and obeyed by
+ * `page-scripts.ts` (it interpolates them into its own `slice`). They are
+ * EQUAL bounds on purpose: if the script could return more than the parser
+ * accepts, an ordinary long paragraph would drop the whole frame instead of
+ * arriving truncated.
+ */
+export const BROWSER_DESCRIBED_TEXT_MAX = 2048;
+export const BROWSER_SELECTION_TEXT_MAX = 8192;
+
+/**
+ * What a point in the page turned out to be. Bounded the same way the page
+ * script bounds it, so an untrusted page cannot grow the frame past what the
+ * parser accepts and have the whole frame dropped.
+ */
+export const browserPointDescribedFields = {
+  link: z.string().max(2048).nullable(),
+  image: z.string().max(2048).nullable(),
+  text: z.string().max(BROWSER_DESCRIBED_TEXT_MAX).nullable(),
+} as const;
+
+/** Selected text, bounded to what the selection page script returns. */
+export const browserSelectionTextFields = {
+  text: z.string().max(BROWSER_SELECTION_TEXT_MAX),
+} as const;
 
 /**
  * WebRTC video-plane signaling, ridden on `browser.screencast@1.0` as new
@@ -1622,7 +1897,16 @@ export type BrowserVideoPlaneFailureReason = z.infer<
   typeof browserVideoPlaneFailureReasonSchema
 >;
 
-const browserScreencastSharedServerFrameSchemas = [
+/**
+ * The shared server arms BEFORE `complete`.
+ *
+ * The list is split at that arm because `@2.2` re-declares `complete` with
+ * `retryable`, and a 2.2 union that spread the whole shared list and appended
+ * the new arm would put two `complete`s into one `z.discriminatedUnion`. The
+ * split preserves both halves' order and every arm's zod shape exactly, so the
+ * 2.0 and 2.1 unions below are byte-identical to what they were.
+ */
+const browserScreencastSharedServerFrameSchemasHead = [
   z
     .object({
       kind: z.literal("started"),
@@ -1661,12 +1945,19 @@ const browserScreencastSharedServerFrameSchemas = [
       reason: z.string(),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal("complete"),
-      ...textFrameFields,
-    })
-    .strict(),
+] as const;
+
+/** The 2.0/2.1 `complete` arm: a stream that ended, with nothing said about
+ * whether re-subscribing would help. */
+const browserScreencastCompleteV20Schema = z
+  .object({
+    kind: z.literal("complete"),
+    ...textFrameFields,
+  })
+  .strict();
+
+/** The shared server arms AFTER `complete`; see the head's note. */
+const browserScreencastSharedServerFrameSchemasTail = [
   z
     .object({
       // Answer to every `ping` on this contract, whichever transport carried
@@ -1804,6 +2095,12 @@ const browserScreencastSharedServerFrameSchemas = [
     .strict(),
 ] as const;
 
+const browserScreencastSharedServerFrameSchemas = [
+  ...browserScreencastSharedServerFrameSchemasHead,
+  browserScreencastCompleteV20Schema,
+  ...browserScreencastSharedServerFrameSchemasTail,
+] as const;
+
 const browserViewportEpochV20Schema = z
   .object({
     // The video plane's hit-testing token. A JPEG-plane tile correlates
@@ -1822,15 +2119,105 @@ export const browserScreencastServerFrameV20Schema = z.discriminatedUnion(
   "kind",
   [...browserScreencastSharedServerFrameSchemas, browserViewportEpochV20Schema],
 );
-export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
-  ...browserScreencastSharedServerFrameSchemas,
+/**
+ * The 2.1 `viewportEpoch` arm, named rather than inline so `@2.2` can spread
+ * it without re-deriving it from the 2.0 arm. Extracting it changes nothing
+ * about its zod shape.
+ */
+const browserScreencastViewportEpochV21Schema =
   browserViewportEpochV20Schema.extend({
     // Absent on a 2.0 host; 2.1 hosts always supply logical capture geometry.
     logicalViewport: browserViewportGeometrySchema.nullable().default(null),
-  }),
+  });
+
+export const browserScreencastServerFrameSchema = z.discriminatedUnion("kind", [
+  ...browserScreencastSharedServerFrameSchemas,
+  browserScreencastViewportEpochV21Schema,
 ]);
 export type BrowserScreencastServerFrame = z.infer<
   typeof browserScreencastServerFrameSchema
+>;
+
+/**
+ * `browser.screencast@2.2` server frames.
+ *
+ * Same construction rule as the sessions 2.2 union: the shared arms plus the
+ * 2.1 `viewportEpoch` plus the 2.2-only kinds, built from the SPLIT shared
+ * lists so `complete` can be re-declared with `retryable`. A 2.2 union parses
+ * a 2.0- or 2.1-shaped payload unchanged, which is why both stream clients
+ * parse with this union regardless of what they negotiated; the resolver is
+ * what withholds the 2.2-only kinds and fields from an older peer.
+ */
+export const browserScreencastServerFrameV22Schema = z.discriminatedUnion(
+  "kind",
+  [
+    ...browserScreencastSharedServerFrameSchemasHead,
+    z
+      .object({
+        kind: z.literal("complete"),
+        ...textFrameFields,
+        // Whether re-subscribing could get pixels back. `false` on tab close
+        // and session delete - the tab is gone, so a retry loop would spin
+        // forever; `true` on a runtime flip or a mirror that ended, where the
+        // next subscribe is exactly what re-establishes the pump.
+        //
+        // `.default(true)` preserves the pre-2.2 meaning of a bare `complete`
+        // for a client that parses a 2.0/2.1 frame with this union.
+        retryable: z.boolean().default(true),
+      })
+      .strict(),
+    ...browserScreencastSharedServerFrameSchemasTail,
+    browserScreencastViewportEpochV21Schema,
+    z
+      .object({
+        // The page's editable focus changed (or its box moved). `focused:
+        // false` is the blur, and the remaining fields are then inert - a
+        // client reads `focused` first. Unsolicited and coalesced; the host
+        // emits the LATEST observation rather than a queue.
+        kind: z.literal("editableFocus"),
+        ...textFrameFields,
+        ...browserEditableFocusFields,
+      })
+      .strict(),
+    z
+      .object({
+        // Answers one `describePoint`. Every field is independently nullable:
+        // a point can be a link with no image, an image with no link, or
+        // neither with only surrounding text.
+        kind: z.literal("pointDescribed"),
+        ...requestFrameFields,
+        ...browserPointDescribedFields,
+      })
+      .strict(),
+    z
+      .object({
+        // Answers one `readSelection`. Empty string when nothing is selected -
+        // there is no "no selection" arm, because a cleared selection and an
+        // empty one are the same thing to every reader.
+        kind: z.literal("selectionText"),
+        ...requestFrameFields,
+        ...browserSelectionTextFields,
+      })
+      .strict(),
+    z
+      .object({
+        // This subscription cannot be served, and re-subscribing will not help
+        // until something changes on the host (the desktop holding the tab
+        // predates the mirror, or its mirror is not producing). Distinct from
+        // `failed`, which is a runtime fault, and from `complete`, which is
+        // the shape an older peer gets instead of this frame. The reason is a
+        // free-form string; the two the host writes today are
+        // {@link BROWSER_DESKTOP_UPDATE_REQUIRED_REASON} and
+        // {@link BROWSER_MIRROR_UNAVAILABLE_REASON}.
+        kind: z.literal("refused"),
+        ...textFrameFields,
+        reason: z.string().max(256),
+      })
+      .strict(),
+  ],
+);
+export type BrowserScreencastServerFrameV22 = z.infer<
+  typeof browserScreencastServerFrameV22Schema
 >;
 
 const browserScreencastControlIdentitySchema = {
@@ -2089,6 +2476,89 @@ export const browserScreencastClientFrameSchema = z.discriminatedUnion("kind", [
       probeId: z.number().int().nonnegative(),
     })
     .strict(),
+  // ---------------------------------------------------------------------------
+  // 2.2 page-signal requests.
+  //
+  // On the SHARED client union, not a 2.2-only one: an added client->host
+  // variant at a released version is advisory, and forking the union would only
+  // make this host stricter about frames a 2.2-gated client is the only one
+  // that sends. The real gate is EMISSION - a client sends these only once its
+  // negotiated schema version is >= 2.2, because an older host warn-drops an
+  // unknown kind and the request would simply never be answered.
+  // ---------------------------------------------------------------------------
+  z
+    .object({
+      // "What is at this point?" - the long-press probe. Answered with
+      // `pointDescribed` carrying the same `requestId`.
+      kind: z.literal("describePoint"),
+      ...requestFrameFields,
+      // Normalized [0,1] against the correlated geometry, exactly like
+      // `pointer`, and correlated the same way: a JPEG tile names the frame it
+      // painted, a video tile names the host's viewport epoch. Neither set is
+      // unmappable and the host rejects it.
+      x: z.number(),
+      y: z.number(),
+      castSequence: z.number().int().nonnegative().nullable().default(null),
+      viewportEpoch: z.number().int().nonnegative().nullable().default(null),
+    })
+    .strict(),
+  z
+    .object({
+      // Put the selection on the word at this point, as a long press does on a
+      // touch keyboard. Not answered directly - the reader then expands with
+      // `expandSelection` and takes the text with `readSelection`, so the
+      // round trips are one per gesture rather than one per intermediate
+      // state.
+      kind: z.literal("selectAt"),
+      ...textFrameFields,
+      x: z.number(),
+      y: z.number(),
+      castSequence: z.number().int().nonnegative().nullable().default(null),
+      viewportEpoch: z.number().int().nonnegative().nullable().default(null),
+    })
+    .strict(),
+  z
+    .object({
+      // Grow the live selection to the enclosing unit. `word` is absent: it is
+      // what `selectAt` already leaves behind, so there is no gesture that
+      // asks for it.
+      kind: z.literal("expandSelection"),
+      ...textFrameFields,
+      unit: z.enum(["sentence", "paragraph", "all"]),
+    })
+    .strict(),
+  z
+    .object({
+      // Read the live selection back. Answered with `selectionText`.
+      kind: z.literal("readSelection"),
+      ...requestFrameFields,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("clearSelection"),
+      ...textFrameFields,
+    })
+    .strict(),
+  z
+    .object({
+      // Blur the focused editable, so a mobile client dismissing its IME takes
+      // the page's focus with it instead of leaving a caret nothing is typing
+      // into.
+      kind: z.literal("blurEditable"),
+      ...textFrameFields,
+    })
+    .strict(),
+  z
+    .object({
+      // Visual (pinch) zoom, applied through `Emulation.setPageScaleFactor` -
+      // NOT layout zoom, so the page does not reflow and the tile's geometry
+      // and hit testing stay valid. Double-tap toggles between 1.5 and 1.
+      kind: z.literal("setZoom"),
+      ...textFrameFields,
+      factor: z.number().min(0.25).max(5),
+    })
+    .strict(),
 ]);
 export type BrowserScreencastClientFrame = z.infer<
   typeof browserScreencastClientFrameSchema
@@ -2109,5 +2579,18 @@ export const browserScreencastV21 = defineStreamRpcContract({
   schemaVersion: { major: 2, minor: 1 } as const,
   openRequestSchema: browserScreencastOpenRequestSchema,
   serverFrameSchema: browserScreencastServerFrameSchema,
+  clientFrameSchema: browserScreencastClientFrameSchema,
+});
+
+/**
+ * Page signals (editable focus, point description, selection), an explicit
+ * `refused`, and a `retryable` on `complete`. Client schema is the shared
+ * union - see {@link browserSessionsV22} for why that direction needs no fork.
+ */
+export const browserScreencastV22 = defineStreamRpcContract({
+  method: "browser.screencast",
+  schemaVersion: { major: 2, minor: 2 } as const,
+  openRequestSchema: browserScreencastOpenRequestSchema,
+  serverFrameSchema: browserScreencastServerFrameV22Schema,
   clientFrameSchema: browserScreencastClientFrameSchema,
 });

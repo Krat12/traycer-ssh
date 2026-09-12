@@ -256,6 +256,7 @@ export function projectBrowserSessionsClientFrameToV10(
   switch (frame.kind) {
     case "reportViewport":
     case "electronViewportResult":
+    case "releaseViewport":
       return { kind: "ignored" };
     case "setViewport":
     case "attachTab":

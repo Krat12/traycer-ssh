@@ -642,9 +642,12 @@ import {
   browserSavedLoginSitesV10,
   browserScreencastV20,
   browserScreencastV21,
+  browserScreencastV22,
   browserSessionsV20,
   browserSessionsV21,
+  browserSessionsV22,
 } from "@traycer/protocol/host/browser/contracts";
+import { browserMirrorV10 } from "@traycer/protocol/host/browser/mirror-contracts";
 import {
   browserScreencastV10,
   browserSessionsV10,
@@ -10631,13 +10634,22 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       },
     },
     2: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: browserSessionsV20,
         },
         1: {
           contract: browserSessionsV21,
+        },
+        // `@2.2`: `fitPointer` on `viewportState`, `emulation` on
+        // `electronViewportRequest`, and the `mirrorRequest` / `mirrorRelease`
+        // pair. Additive on both directions, but the SERVER frames live in
+        // their own per-minor union and the resolver projects a 2.2 frame down
+        // field by field for a 2.0/2.1 peer - a released `.strict()` parser
+        // rejects an added field, so `.default()` cannot reach it.
+        2: {
+          contract: browserSessionsV22,
         },
       },
     },
@@ -10652,13 +10664,39 @@ const HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION = {
       },
     },
     2: {
-      latestMinor: 1,
+      latestMinor: 2,
       versions: {
         0: {
           contract: browserScreencastV20,
         },
         1: {
           contract: browserScreencastV21,
+        },
+        // `@2.2`: the page signals a touch client needs (`editableFocus`,
+        // `pointDescribed`, `selectionText`), an explicit `refused`, and
+        // `retryable` on `complete`. Same per-minor server union rule as
+        // `browser.sessions@2.2`.
+        2: {
+          contract: browserScreencastV22,
+        },
+      },
+    },
+  },
+  // The third `browser.*` stream, and the only one a GUI never opens: the
+  // DESKTOP opens it, on the host's own `mirrorRequest`, to pump its native
+  // tab's frames back for fan-out to that tab's screencast subscribers. It is
+  // deliberately exempt from the `browser.*` namespace freeze
+  // (`__tests__/released-stream-surface-compat.test.ts`), because the freeze
+  // guards GUI capability detection by method name and no GUI ever
+  // feature-detects this one. Brand new at `1.0`: a host that lacks it rejects
+  // the open as an unknown method, which is exactly what a desktop that
+  // advertised `mirror` to an older host needs to see.
+  "browser.mirror": {
+    1: {
+      latestMinor: 0,
+      versions: {
+        0: {
+          contract: browserMirrorV10,
         },
       },
     },

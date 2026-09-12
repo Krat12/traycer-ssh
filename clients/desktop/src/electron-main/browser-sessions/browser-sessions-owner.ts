@@ -1120,6 +1120,11 @@ class BrowserSessionsStream {
       // and never deduped across them, so this is the route identity the host
       // elects per scope and echoes back on `BrowserTabInfo.boundWindowId`.
       desktopWindowId: this.windowId,
+      // This desktop does not yet probe `Page.startScreencast` for mirror
+      // production - that lands in a later mobile-browser ticket. `false` is
+      // the schema default and matches today's behavior exactly: never asked
+      // for a `mirrorRequest`.
+      mirror: false,
     });
     this.pushForgetLedger("attach");
   }

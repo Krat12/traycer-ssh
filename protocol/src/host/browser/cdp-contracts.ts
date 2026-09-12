@@ -18,6 +18,18 @@ const browserCdpErrorSchema = z
   .strict();
 export type BrowserCdpError = z.infer<typeof browserCdpErrorSchema>;
 
+/** One `Page.getNavigationHistory` entry, trimmed to what a nav bar reads. */
+const browserCdpNavigationEntrySchema = z
+  .object({
+    id: z.number().int(),
+    url: z.string(),
+    title: z.string(),
+  })
+  .strict();
+export type BrowserCdpNavigationEntry = z.infer<
+  typeof browserCdpNavigationEntrySchema
+>;
+
 const browserCdpFrameInfoSchema = z
   .object({
     frameId: z.string(),
@@ -153,6 +165,51 @@ const cdpDescribeNodeCommandSchema = z
     pierce: z.boolean(),
   })
   .strict();
+const cdpGetNavigationHistoryCommandSchema = z
+  .object({
+    kind: z.literal("cdpGetNavigationHistory"),
+  })
+  .strict();
+const cdpNavigateToHistoryEntryCommandSchema = z
+  .object({
+    kind: z.literal("cdpNavigateToHistoryEntry"),
+    // An `id` from a `cdpGetNavigationHistory` answer on the SAME page - CDP
+    // re-mints entry ids per navigation, so an id from an older answer names
+    // nothing and the call rejects.
+    entryId: z.number().int(),
+  })
+  .strict();
+const cdpReloadCommandSchema = z
+  .object({
+    kind: z.literal("cdpReload"),
+    ignoreCache: z.boolean(),
+  })
+  .strict();
+const cdpSetTouchEmulationEnabledCommandSchema = z
+  .object({
+    kind: z.literal("cdpSetTouchEmulationEnabled"),
+    enabled: z.boolean(),
+    // Null lets CDP pick its own default, the way every other nullable param in
+    // this vocabulary does (`encodeCdpParams` omits a null field).
+    maxTouchPoints: z.number().int().min(1).max(16).nullable(),
+  })
+  .strict();
+const cdpSetPageScaleFactorCommandSchema = z
+  .object({
+    kind: z.literal("cdpSetPageScaleFactor"),
+    // Visual (pinch) scale, not layout zoom. Bounded to the same range the
+    // screencast `setZoom` client frame accepts, so a page cannot be driven to
+    // a scale no viewer could ask for.
+    pageScaleFactor: z.number().min(0.25).max(5),
+  })
+  .strict();
+const cdpHandleJavaScriptDialogCommandSchema = z
+  .object({
+    kind: z.literal("cdpHandleJavaScriptDialog"),
+    accept: z.boolean(),
+    promptText: z.string().max(2048).nullable(),
+  })
+  .strict();
 
 /** Address-free CDP vocabulary shared by every browser runtime. */
 export const browserCdpCommandSchema = z.discriminatedUnion("kind", [
@@ -168,6 +225,12 @@ export const browserCdpCommandSchema = z.discriminatedUnion("kind", [
   cdpDispatchKeyEventCommandSchema,
   cdpSetDeviceMetricsOverrideCommandSchema,
   cdpDescribeNodeCommandSchema,
+  cdpGetNavigationHistoryCommandSchema,
+  cdpNavigateToHistoryEntryCommandSchema,
+  cdpReloadCommandSchema,
+  cdpSetTouchEmulationEnabledCommandSchema,
+  cdpSetPageScaleFactorCommandSchema,
+  cdpHandleJavaScriptDialogCommandSchema,
 ]);
 export type BrowserCdpCommand = z.infer<typeof browserCdpCommandSchema>;
 
@@ -190,6 +253,12 @@ export const CURATED_CDP_METHOD_BY_KIND = {
   cdpDispatchKeyEvent: "Input.dispatchKeyEvent",
   cdpSetDeviceMetricsOverride: "Emulation.setDeviceMetricsOverride",
   cdpDescribeNode: "DOM.describeNode",
+  cdpGetNavigationHistory: "Page.getNavigationHistory",
+  cdpNavigateToHistoryEntry: "Page.navigateToHistoryEntry",
+  cdpReload: "Page.reload",
+  cdpSetTouchEmulationEnabled: "Emulation.setTouchEmulationEnabled",
+  cdpSetPageScaleFactor: "Emulation.setPageScaleFactor",
+  cdpHandleJavaScriptDialog: "Page.handleJavaScriptDialog",
 } as const satisfies Record<BrowserCdpCommand["kind"], string>;
 
 export type CuratedCdpMethod =
@@ -288,6 +357,38 @@ const browserCdpSuccessResultSchema = z.discriminatedUnion("kind", [
       kind: z.literal("cdpDescribeNode"),
       ok: z.literal(true),
       frameId: z.string().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("cdpGetNavigationHistory"),
+      ok: z.literal(true),
+      // `canGoBack`/`canGoForward` are derived from this index against the
+      // entry count; the raw pair is what `cdpNavigateToHistoryEntry` needs.
+      currentIndex: z.number().int().nonnegative(),
+      entries: z.array(browserCdpNavigationEntrySchema),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("cdpNavigateToHistoryEntry"),
+      ok: z.literal(true),
+    })
+    .strict(),
+  z.object({ kind: z.literal("cdpReload"), ok: z.literal(true) }).strict(),
+  z
+    .object({
+      kind: z.literal("cdpSetTouchEmulationEnabled"),
+      ok: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal("cdpSetPageScaleFactor"), ok: z.literal(true) })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("cdpHandleJavaScriptDialog"),
+      ok: z.literal(true),
     })
     .strict(),
 ]);

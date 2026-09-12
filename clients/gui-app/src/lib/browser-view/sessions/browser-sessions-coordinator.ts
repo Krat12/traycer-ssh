@@ -791,6 +791,10 @@ function createBrowserSessionsCoordinator(args: {
       hasBinaryPayload: false,
       ...identity,
       ...geometry,
+      // Pointer-class detection (`matchMedia("(pointer: coarse)")`) is a later
+      // mobile-browser ticket; "fine" is the schema default and matches
+      // today's behavior exactly.
+      pointer: "fine",
     });
   };
 

@@ -670,6 +670,7 @@ describe("BrowserSessionsStreamClient against a @1-only host (epic scope)", () =
       hasBinaryPayload: false,
       coLocatedHostId: "host-1",
       desktopWindowId: "window-1",
+      mirror: false,
     });
 
     expect(sockets[0].textSent).toHaveLength(sentBefore + 1);
@@ -1017,6 +1018,7 @@ describe("browser.sessions against a host serving @1 and @2 (epic scope)", () =>
       hasBinaryPayload: false,
       coLocatedHostId: "host-1",
       desktopWindowId: "window-1",
+      mirror: false,
     });
     expect(sockets[0].textSent).toHaveLength(sentBeforeClientFrames + 2);
     expect(parseSent(sockets[0].textSent[sentBeforeClientFrames])).toEqual({

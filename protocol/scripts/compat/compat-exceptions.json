@@ -480,6 +480,14 @@
       "payload": "response",
       "path": "**.deprecationNotice",
       "reason": "Model-row sunset copy, nullable/.optional() with an in-schema note that absent and null are treated identically downstream (#176). Delivered by cast at same-version; verified safe: consumers normalize `?? null` and render no deprecation badge - exactly 'not deprecated', the pre-feature state."
+    },
+    {
+      "family": "stream",
+      "method": "browser.sessions",
+      "version": "*",
+      "payload": "serverFrame",
+      "path": "**.command.anyOf[*]",
+      "reason": "Curated CDP command kinds grow with capability-gated dispatch call sites (mobile-browser T01 added cdpGetNavigationHistory/cdpNavigateToHistoryEntry/cdpReload/cdpSetTouchEmulationEnabled/cdpSetPageScaleFactor/cdpHandleJavaScriptDialog); a peer that only negotiated browser.sessions@1.0 predates every caller that constructs these commands, so the host never sends them there."
     }
   ]
 }

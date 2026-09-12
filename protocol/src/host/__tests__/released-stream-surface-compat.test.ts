@@ -55,10 +55,20 @@ describe("released stream method-name set is not dropped", () => {
  * line beside the frozen v1.3.0 `@1.0` - never a sibling name.
  */
 describe("browser stream namespace is frozen", () => {
-  it("exposes exactly browser.sessions and browser.screencast", () => {
+  it("exposes exactly browser.sessions, browser.screencast and browser.mirror", () => {
     const browserMethods = Object.keys(hostStreamRpcRegistry)
       .filter((method) => method.startsWith("browser."))
       .sort();
-    expect(browserMethods).toEqual(["browser.screencast", "browser.sessions"]);
+    // `browser.mirror` is the one allowlisted sibling. The rationale above
+    // applies to methods the GUI feature-detects by name; this one is
+    // desktop-only - opened by the Electron main process on the host's own
+    // `mirrorRequest`, and never in a GUI capability check - so a GUI cannot
+    // mistake it for a new browser capability. Nothing else joins this list
+    // without the same argument.
+    expect(browserMethods).toEqual([
+      "browser.mirror",
+      "browser.screencast",
+      "browser.sessions",
+    ]);
   });
 });
