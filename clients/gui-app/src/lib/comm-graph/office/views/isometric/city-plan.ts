@@ -237,10 +237,29 @@ function cityDistrictAgents(work: CityDistrictWork): number {
  *
  * A lot block's plate hangs on its own first row and the smallest block is the
  * two-row door pair, so the nearest plate above the bands sits at
- * `contentBottom - 2`. One gap row put the hospital's plate at `d = 3` and it
- * overprinted: measured, `AGENT-ROOT` over `HOSPITAL` by 2.8 px at 12 agents and
- * `TEAM-5-LEAD` over it by a whole 14 at 309. Two rows make `d = 4`, which
- * clears at 16.8 px whatever the columns do.
+ * `contentBottom - 2`. One gap row puts the hospital's plate at `d = 3`, and two
+ * make it `d = 4`, which clears at 16.8 px whatever the columns do.
+ *
+ * FOUR MEASUREMENTS, and which plate rule was in force matters to each - so they
+ * are attributed rather than pooled, because the first two were taken while the
+ * plates were still sized by their rooms' frontage:
+ *
+ *   frontage plates, one gap row: the suite's own populations red - `AGENT-ROOT`
+ *   over `HOSPITAL` by 2.8 px at 12 agents, `TEAM-5-LEAD` over it by a whole 14
+ *   at 309.
+ *
+ *   frontage plates, two gap rows: still red at the pinned populations -
+ *   `TEAM-5-LEAD` at 309 and `TEAM-19-LEAD` at 1,000, both by 8.4 px. This is
+ *   what makes `CITY_CIVIC_PLATE_TILES` load-bearing and not a second belt.
+ *
+ *   six-tile plates, one gap row: 26 overprints across the sweep, every one the
+ *   same-column pair at 2.8 px - and NONE of them at 12, 309 or 1,000. The shared
+ *   plate case stays green under that mutant; City's own structural clearance case
+ *   is the only guard, which is why it asserts the two rows against the rooms the
+ *   packer placed.
+ *
+ *   six-tile plates, two gap rows - as shipped: zero overprints, in both
+ *   isometric views, across every population in the sweep.
  *
  * Between the bands themselves ONE gap is enough, because both plates are civic
  * and the overhangs cancel: `d = 3` gives `24 * 0.7 = 16.8`.
