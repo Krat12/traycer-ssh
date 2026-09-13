@@ -12,7 +12,10 @@ import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
-import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
+import {
+  ARCHIVE_SIGN_WIDTH_TILES,
+  civicCapacityFor,
+} from "@/lib/comm-graph/office/office-layout";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import {
   OFFICE_CHARACTER_HEIGHT,
@@ -24,6 +27,7 @@ import {
   type OfficeFrame,
   type OfficeLayout,
   type OfficeCivicKind,
+  type OfficeCivicRoom,
   type OfficeRect,
   type OfficeSceneInput,
   type OfficeSpriteName,
@@ -152,6 +156,7 @@ function sceneInputFor(args: {
 
 import {
   CIVIC_KINDS,
+  CIVIC_ROADS_EXPECTED,
   CIVIC_ROOMS_EXPECTED,
 } from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
 
@@ -191,12 +196,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
       // of them.
       expect(withRooms.length).toBeGreaterThan(0);
       const hostsWithRooms = new Set<string | null>();
+      const wantsRoad = CIVIC_ROADS_EXPECTED[viewId];
       for (const floor of withRooms) {
         expect([...floor.civic].map((room) => room.kind).sort()).toEqual(
           [...CIVIC_KINDS].sort(),
         );
         hostsWithRooms.add(floor.hostId);
-        expect(floor.road).not.toBeNull();
+        // A street where the second table says so, and NO street where it does
+        // not - Mission control is one amphitheatre and nothing drives into a
+        // hall. A view without a road may not name a kerb either, so losing a
+        // road cannot pass by having nothing left to misplace.
+        if (wantsRoad) expect(floor.road).not.toBeNull();
+        else {
+          expect(floor.road).toBeNull();
+          for (const room of floor.civic) expect(room.kerbTile).toBeNull();
+        }
       }
       for (const floor of layout.floors) {
         expect(hostsWithRooms.has(floor.hostId)).toBe(true);
@@ -239,16 +253,142 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
       }
     });
 
+    it("hangs one readable plate on each civic room, overprinting nothing", () => {
+      if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
+      const civicSigns = layout.signs.filter((sign) => sign.kind === "civic");
+      const rooms = layout.floors.flatMap((floor) => floor.civic);
+      expect(rooms.length).toBeGreaterThan(0);
+      expect(civicSigns.length).toBe(rooms.length);
+
+      for (const room of rooms) {
+        const plate = civicSigns.find(
+          (sign) => sign.civicRoomId === room.civicRoomId,
+        );
+        // ONE PLATE PER ROOM, carrying the room's id. The id is how the renderer
+        // reads a live counter off the room under the cursor instead of the text
+        // the plan happened to bake in, so a plate without one is a dead label.
+        if (plate === undefined) {
+          throw new Error(`${room.kind} has no plate`);
+        }
+        expect(plate.tile).toEqual(room.signTile);
+        expect(plate.text).toBe(room.name);
+        if (room.kind === "archive") {
+          // WIDER THAN THE ROOM, on purpose: C5's archive is a DOOR, one tile,
+          // and a one-tile plate holds no word. The constant is shared so that
+          // every view's records door is labelled the same width.
+          expect(plate.widthTiles).toBe(ARCHIVE_SIGN_WIDTH_TILES);
+          // Running RIGHTWARDS from the door, and still on the plan.
+          expect(plate.tile.col).toBeGreaterThanOrEqual(0);
+          expect(plate.tile.col + plate.widthTiles).toBeLessThanOrEqual(
+            layout.cols,
+          );
+        } else {
+          expect(plate.widthTiles).toBeGreaterThan(0);
+        }
+      }
+
+      // AND NO PLATE PRINTS OVER ANOTHER. A plate wider than its room is the one
+      // way this layer can reach a neighbour's lettering, so the check is every
+      // civic plate against EVERY sign sharing its row - a host plate and a room
+      // plate are as unreadable under an overprint as another civic one.
+      for (const plate of civicSigns) {
+        for (const other of layout.signs) {
+          if (other === plate) continue;
+          if (other.tile.row !== plate.tile.row) continue;
+          const clear =
+            other.tile.col >= plate.tile.col + plate.widthTiles ||
+            plate.tile.col >= other.tile.col + other.widthTiles;
+          expect(
+            clear,
+            `${plate.kind} "${plate.text}" at ${plate.tile.col},${plate.tile.row} (${String(plate.widthTiles)} wide) overprints ${other.kind} "${other.text}" at ${other.tile.col}`,
+          ).toBe(true);
+        }
+      }
+    });
+
+    /** Every tile of a rect, as the `col,row` keys the sets above are built on. */
+    const tileKeysIn = (bounds: OfficeTileRect): ReadonlyArray<string> => {
+      const keys: string[] = [];
+      for (let row = bounds.row; row < bounds.row + bounds.rows; row += 1) {
+        for (let col = bounds.col; col < bounds.col + bounds.cols; col += 1) {
+          keys.push(`${col},${row}`);
+        }
+      }
+      return keys;
+    };
+
+    /**
+     * A KERB IS A PROMISE, and this is the whole of it.
+     *
+     * C6 says which rooms make it - a vehicle drives to a ward and to a counter,
+     * and to neither a bench nor a records door - and ruling 6 says what it
+     * means: a road tile one step from that room's own door.
+     */
+    const expectKerbPromise = (
+      room: OfficeCivicRoom,
+      roadTiles: ReadonlySet<string>,
+    ): void => {
+      const kerb = room.kerbTile;
+      // Only the two rooms something drives to name one (C6).
+      if (room.kind === "waiting-room" || room.kind === "archive") {
+        expect(kerb).toBeNull();
+        return;
+      }
+      // AND THEY NAME ONE EXACTLY WHEN THERE IS A ROAD TO NAME IT ON. A roadless
+      // hall's rooms carry `null` and are done with it; a view with a street owes
+      // BOTH of them a kerb, so one that quietly dropped its own would otherwise
+      // pass by having nothing left to misplace.
+      if (!CIVIC_ROADS_EXPECTED[viewId]) {
+        expect(kerb).toBeNull();
+        return;
+      }
+      if (kerb === null) throw new Error(`${room.kind} owes a kerb`);
+      // A kerb off the road is a vehicle parked in the flowerbed.
+      expect(roadTiles.has(`${kerb.col},${kerb.row}`)).toBe(true);
+      // AND IT IS NEXT TO ITS OWN DOOR, for both rooms. "Somewhere on the road"
+      // would let an ambulance stop at the far end of the building and unload a
+      // stretcher that walks the length of the floor to the bed, and would let a
+      // courier's parcel cross the lobby to reach the counter it was delivered
+      // for.
+      expect(
+        Math.abs(kerb.col - room.doorTile.col) +
+          Math.abs(kerb.row - room.doorTile.row),
+      ).toBe(1);
+    };
+
     it("walks to every civic seat, its archive door and its kerbs", () => {
       if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
       for (const floor of layout.floors) {
         if (floor.civic.length === 0) continue;
         const road = floor.road;
-        if (road === null) throw new Error("an enrolled storey owes a road");
+        if (road === null && CIVIC_ROADS_EXPECTED[viewId])
+          throw new Error("an enrolled storey owes a road");
         const roadTiles = new Set(
-          road.tiles.map((tile) => `${tile.col},${tile.row}`),
+          (road?.tiles ?? []).map((tile) => `${tile.col},${tile.row}`),
+        );
+        const corridorTiles = new Set(
+          floor.corridorTiles.map((tile) => `${tile.col},${tile.row}`),
         );
         for (const room of floor.civic) {
+          // A DOOR IS NEVER A ROAD TILE. A vehicle stops outside and unloads;
+          // it does not drive through the doorway it is stopping at.
+          expect(
+            roadTiles.has(`${room.doorTile.col},${room.doorTile.row}`),
+          ).toBe(false);
+          // AND NO LANE THROUGH A ROOM SOMEBODY IS LYING OR SITTING IN. Said of
+          // the rooms with seats rather than of all four, because a help desk is
+          // a COUNTER ON THE FRONTAGE: the Floor's stands on its lobby row,
+          // which is that view's road, and its queue forms on the same pavement.
+          // A vehicle passing a counter is furniture it drives past; a vehicle
+          // crossing a bed is not.
+          const seated = room.seatIds.length > 0;
+          for (const key of tileKeysIn(room.bounds)) {
+            if (seated) expect(roadTiles.has(key)).toBe(false);
+            // The stroll half holds for all four, and stands in for the
+            // exclusion each view does in its own plan: put a bay on an aisle
+            // and this fails rather than a walker strolling through the ward.
+            expect(corridorTiles.has(key)).toBe(false);
+          }
           // NOT A TELEPORT. A room an agent cannot walk to is a room the scene
           // would have to drop somebody into, which is the one thing the civic
           // walk must never do.
@@ -262,10 +402,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
               findOfficePath(layout, floor.lobbyTile, seat.chairTile),
             ).not.toBeNull();
           }
-          const kerb = room.kerbTile;
-          if (kerb === null) continue;
-          // A kerb off the road is a vehicle parked in the flowerbed.
-          expect(roadTiles.has(`${kerb.col},${kerb.row}`)).toBe(true);
+          expectKerbPromise(room, roadTiles);
         }
       }
     });

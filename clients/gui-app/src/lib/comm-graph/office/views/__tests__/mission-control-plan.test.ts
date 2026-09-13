@@ -38,17 +38,23 @@ import { MISSION_CONTROL_VIEW } from "@/lib/comm-graph/office/views/mission-cont
 import type {
   OfficeDeskState,
   OfficePlanInput,
+  OfficeProjector,
   OfficeView,
 } from "@/lib/comm-graph/office/views/office-view";
 import {
+  OFFICE_CHARACTER_HEIGHT,
   OFFICE_TILE,
   type OfficeAgentInput,
   type OfficeAgentStatus,
+  type OfficeCharacterPose,
+  type OfficeCivicRoom,
   type OfficeDrawable,
   type OfficeErrandSpot,
   type OfficeFloor,
   type OfficeFrame,
   type OfficeLayout,
+  type OfficePoint,
+  type OfficeRect,
   type OfficeSceneInput,
   type OfficeSeat,
   type OfficeSize,
@@ -79,14 +85,20 @@ const EMPTY_NEEDS: ReadonlyArray<string> = [];
 const EMPTY_ACTIVITY: ReadonlyMap<string, number> = new Map();
 
 /** Measured from `planMissionControl` on triage seed 1; not the ticket estimates. */
+/**
+ * Re-measured for the medbay's two rows: the hall is two rows taller than it was
+ * before it had a ward, so every fit the HEIGHT binds moved. The 309-agent
+ * narrow fit is unchanged because width binds there, which is the check that
+ * these are measurements and not three numbers nudged until green.
+ */
 const PINNED_FIT = {
   agents309: {
-    wide: 0.8413461538461539,
+    wide: 0.8101851851851852,
     narrow: 0.5059523809523809,
   },
   agents1000: {
-    wide: 0.4654255319148936,
-    narrow: 0.2925531914893617,
+    wide: 0.4557291666666667,
+    narrow: 0.2864583333333333,
   },
 } as const;
 
@@ -263,11 +275,20 @@ function emptyUnreservedLastTierCount(layout: OfficeLayout): number {
   return empty;
 }
 
+/**
+ * APPEND-STABILITY IS ABOUT SOMEBODY'S OWN PLACE. A console and the podium are
+ * an agent's seat for as long as it is here, so appending a tier may not move
+ * one; the hall's civic furniture is not, and the medbay is DEFINED as the band
+ * under the last tier, so it moves down with the tier that was just added. That
+ * is the definition working rather than a seat being reshuffled - nobody is
+ * given a bed, the seat book lends one for a crash and takes it back.
+ */
 function expectSeatsUnmoved(previous: OfficeLayout, next: OfficeLayout): void {
   for (const seat of previous.seats.values()) {
     const grown = next.seats.get(seat.seatId);
     expect(grown).toBeDefined();
     if (grown === undefined) continue;
+    if (seat.civicRoomId !== null) continue;
     expect(grown.deskTile).toEqual(seat.deskTile);
     expect(grown.chairTile).toEqual(seat.chairTile);
   }
@@ -277,6 +298,119 @@ function expectOccupantsHold(previous: OfficeLayout, next: OfficeLayout): void {
   for (const desk of previous.desks.values()) {
     expect(next.desks.get(desk.agentId)?.seatId).toBe(desk.seatId);
   }
+}
+
+/** The hall's one ward. */
+function infirmaryOf(layout: OfficeLayout): OfficeCivicRoom {
+  const room = layout.floors[0].civic.find(
+    (candidate) => candidate.kind === "infirmary",
+  );
+  if (room === undefined) throw new Error("the hall plans no infirmary");
+  return room;
+}
+
+/** Its beds, in the order the ward names them. */
+function bedsOf(layout: OfficeLayout): ReadonlyArray<OfficeSeat> {
+  const beds: OfficeSeat[] = [];
+  for (const seatId of infirmaryOf(layout).seatIds) {
+    const seat = layout.seats.get(seatId);
+    if (seat === undefined) throw new Error(`the ward lost ${seatId}`);
+    beds.push(seat);
+  }
+  return beds;
+}
+
+/**
+ * WHERE THE CHARACTER IS, from the frame's own hit regions.
+ *
+ * Not `scene.locate`, which is the camera's target and answers with the SEAT's
+ * rect for a seated agent and the character's own box for a walking one - two
+ * different rulers, so a before-and-after comparison through it would measure
+ * the change of ruler rather than the walk. The character height is what picks
+ * the person's region out of the furniture's.
+ */
+function characterRect(frame: OfficeFrame, agentId: string): OfficeRect {
+  const region = frame.hitRegions.find(
+    (candidate) =>
+      candidate.agentId === agentId &&
+      candidate.rect.height === OFFICE_CHARACTER_HEIGHT,
+  );
+  if (region === undefined) throw new Error(`no character for ${agentId}`);
+  return region.rect;
+}
+
+/** The pose of the character drawn at exactly this rect, or `null` for none. */
+function characterPoseAt(
+  frame: OfficeFrame,
+  rect: OfficeRect,
+): OfficeCharacterPose | null {
+  for (const drawable of frameDrawables(frame)) {
+    if (drawable.kind !== "sprite") continue;
+    if (drawable.sprite.name !== "character") continue;
+    if (drawable.x !== rect.x || drawable.y !== rect.y) continue;
+    return drawable.sprite.pose ?? null;
+  }
+  return null;
+}
+
+/** Generous: this bounds a walk across the hall, it does not describe one. */
+const WALK_TICK_LIMIT = 400;
+
+/**
+ * Tick until this agent's character is standing on one of these seats, and
+ * answer with the seat and the rect it got there at.
+ *
+ * WHICH seat is READ rather than picked, because the seat book hands out the
+ * first free one and the pose would not tell us: an agent holding a bed is drawn
+ * `sit` from the moment it is given, while its body is still in its own chair on
+ * the other side of the hall.
+ */
+function tickOntoASeat(args: {
+  readonly scene: OfficeScene;
+  readonly agentId: string;
+  readonly seats: ReadonlyArray<OfficeSeat>;
+  readonly rectAt: (tile: OfficeTilePos) => OfficeRect;
+}): { readonly seat: OfficeSeat; readonly rect: OfficeRect } {
+  for (let tick = 0; tick < WALK_TICK_LIMIT; tick += 1) {
+    const now = characterRect(args.scene.frame(2, WHOLE_WORLD), args.agentId);
+    const seat = args.seats.find((candidate) => {
+      const seatRect = args.rectAt(candidate.chairTile);
+      return seatRect.x === now.x && seatRect.y === now.y;
+    });
+    if (seat !== undefined) return { seat, rect: now };
+    args.scene.tick(100);
+  }
+  throw new Error(`${args.agentId} never reached one of these seats`);
+}
+
+/**
+ * The one step every seat in a band moved by between two plans.
+ *
+ * ONE step, asserted: a band defined relative to something that moved moves as a
+ * unit, which is the definition working rather than the room being reshuffled.
+ * Also fails if the band starts sliding sideways. A seat missing from `next` is
+ * THE FALSIFIER - a bed that came back under a new id is, to the seat book, the
+ * old one vanishing with somebody in it.
+ */
+function bandStep(
+  before: ReadonlyArray<OfficeSeat>,
+  next: OfficeLayout,
+  projector: OfficeProjector,
+): OfficePoint {
+  let step: OfficePoint | null = null;
+  for (const seat of before) {
+    const after = next.seats.get(seat.seatId);
+    if (after === undefined) {
+      throw new Error(`the band renamed ${seat.seatId}`);
+    }
+    const from = projector.project(seat.chairTile.col, seat.chairTile.row);
+    const to = projector.project(after.chairTile.col, after.chairTile.row);
+    const moved: OfficePoint = { x: to.x - from.x, y: to.y - from.y };
+    if (step === null) step = moved;
+    else expect(moved).toEqual(step);
+  }
+  if (step === null) throw new Error("the band has no seats");
+  return step;
 }
 
 function fitInViewport(layout: OfficeLayout, viewport: OfficeSize): number {
@@ -458,6 +592,170 @@ describe("planMissionControl", () => {
     for (const id of ids) {
       expect(grown.layout.desks.has(id)).toBe(true);
     }
+  });
+
+  /**
+   * RULING 7'S COST, PAID IN A WALK. The medbay is the band under the LAST tier,
+   * so appending a tier moves it down a tier's worth of rows, and an agent lying
+   * in a bed when that happens is the only thing that costs anything. This pins
+   * what it costs: the bed keeps its id, the agent keeps its claim, and it WALKS
+   * to where the bed went.
+   *
+   * A bed is LENT, not owned, which is why the band may move at all where moving
+   * somebody's own console may not - `expectSeatsUnmoved` skips civic seats for
+   * exactly that reason. But "lent" does not license a jump cut: a character
+   * that blinked across the hall is the scene DROPPING somebody into a room,
+   * which is the one thing the civic walk must never do, so the pin is that the
+   * character is still at the old tile the instant the plan changes and takes
+   * more than one tick to reach the new one.
+   *
+   * THE FALSIFIER IS A PLAN THAT RENAMES THE BED on append. A new `seatId` for
+   * the same bed reads to the seat book as the old one vanishing with somebody
+   * in it: the claim ends, the agent goes home to its desk, and the pose at the
+   * ward would be nothing at all.
+   *
+   * Measured through the BAND's common step rather than by naming the bed the
+   * patient took. Every bed moves by the same amount because the ward is defined
+   * relative to the tier, and asserting that is what makes the one step below
+   * sound - it also fails if the ward starts sliding sideways with tier width.
+   */
+  it("walks an agent lying in a bed to the bed's new tile when a tier appends", () => {
+    const epic = makeTestEpic("triage", 40, 1);
+    const prior = planFresh(epic, VIEWPORT_WIDE);
+    const root = rootAgent(epic.agents);
+    const patient = epic.agents.find((agent) => agent.id !== root.id);
+    if (patient === undefined) throw new Error("no agent to put in a bed");
+    const ward = infirmaryOf(prior.layout);
+    const bedsBefore = bedsOf(prior.layout);
+    expect(bedsBefore.length).toBeGreaterThan(0);
+    const desk = prior.layout.desks.get(patient.id);
+    if (desk === undefined) throw new Error(`${patient.id} has no desk`);
+
+    const failing = (
+      statuses: ReadonlyMap<string, OfficeAgentStatus>,
+    ): Map<string, OfficeAgentStatus> => {
+      const next = new Map(statuses);
+      next.set(patient.id, "failure");
+      return next;
+    };
+
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    const priorInput = sceneInputFor(prior.input);
+    scene.sync({ ...priorInput, reducedMotion: true });
+
+    // THE FOOT OFFSET IS MEASURED, NOT ASSUMED. A character's rect is its tile
+    // projected plus however far the painter lifts a body off the floor, and
+    // that is the painter's business - so it is read off a tile the character is
+    // provably at (its own desk, before anything has happened to it) and then
+    // used to say where a bed's tile would draw one.
+    const priorProjector = MISSION_CONTROL_VIEW.painter.projector(prior.layout);
+    const deskRect = characterRect(scene.frame(2, WHOLE_WORLD), patient.id);
+    const deskPoint = priorProjector.project(
+      desk.chairTile.col,
+      desk.chairTile.row,
+    );
+    const foot: OfficePoint = {
+      x: deskRect.x - deskPoint.x,
+      y: deskRect.y - deskPoint.y,
+    };
+    const rectAt = (
+      tile: OfficeTilePos,
+      projector: OfficeProjector,
+    ): OfficeRect => {
+      const point = projector.project(tile.col, tile.row);
+      return {
+        x: point.x + foot.x,
+        y: point.y + foot.y,
+        width: deskRect.width,
+        height: deskRect.height,
+      };
+    };
+
+    // THE CRASH IS ITS OWN SYNC. A status the office has never seen anything
+    // else for is not an agent that CRASHED, and the walk has to start from the
+    // desk it was sitting at.
+    scene.sync({
+      ...priorInput,
+      statusById: failing(priorInput.statusById),
+      reducedMotion: false,
+    });
+
+    const arrival = tickOntoASeat({
+      scene,
+      agentId: patient.id,
+      seats: bedsBefore,
+      rectAt: (tile) => rectAt(tile, priorProjector),
+    });
+    const bed = arrival.seat;
+    const restRect = arrival.rect;
+    expect(scene.whereabouts(patient.id)).toBe(ward.name);
+    expect(characterPoseAt(scene.frame(2, WHOLE_WORLD), restRect)).toBe("sit");
+
+    const empty = emptyUnreservedLastTierCount(prior.layout);
+    const ids: string[] = [];
+    for (let i = 0; i < empty + 1; i += 1) ids.push(`last-tier-fill-${i}`);
+    const grown = growPlan({
+      previous: prior,
+      agents: appendChildren(epic.agents, root, ids),
+      statusById: withIdleStatuses(epic.statusById, ids),
+      arrivals: ids,
+      viewport: VIEWPORT_WIDE,
+    });
+    expect(requireFrozen(grown.layout).tierSeatCounts.length).toBe(
+      requireFrozen(prior.layout).tierSeatCounts.length + 1,
+    );
+    // No uniform shift, so a rect changing below is the BED having moved and not
+    // the whole hall sliding under a re-origined projector - which is also what
+    // lets the offset measured above stay good across the two plans.
+    expect(grown.layout.shiftFromPrevious).toBeNull();
+
+    const grownProjector = MISSION_CONTROL_VIEW.painter.projector(grown.layout);
+    const step = bandStep(bedsBefore, grown.layout, grownProjector);
+    expect(step).not.toEqual({ x: 0, y: 0 });
+
+    const movedBed = grown.layout.seats.get(bed.seatId);
+    if (movedBed === undefined) throw new Error("the ward renamed the bed");
+    const target = rectAt(movedBed.chairTile, grownProjector);
+
+    const grownInput = sceneInputFor(grown.input);
+    scene.sync({
+      ...grownInput,
+      statusById: failing(grownInput.statusById),
+      reducedMotion: false,
+    });
+
+    // STILL WHERE IT WAS. The plan has moved the bed; the character has not
+    // moved, because it is about to walk there.
+    //
+    // Its `whereabouts` is deliberately NOT asserted here: a walking agent is
+    // named by the tile it stands on, and that tile is the bed's OLD one, which
+    // this very append turned into tier floor. "Medbay" comes back below.
+    expect(characterRect(scene.frame(2, WHOLE_WORLD), patient.id)).toEqual(
+      restRect,
+    );
+
+    let ticks = 0;
+    let arrived = 0;
+    while (ticks < WALK_TICK_LIMIT) {
+      scene.tick(100);
+      ticks += 1;
+      const now = characterRect(scene.frame(2, WHOLE_WORLD), patient.id);
+      if (now.x !== target.x || now.y !== target.y) continue;
+      arrived = ticks;
+      break;
+    }
+    expect(characterRect(scene.frame(2, WHOLE_WORLD), patient.id)).toEqual(
+      target,
+    );
+    // IT WALKED. A teleport is there on the first tick.
+    expect(arrived).toBeGreaterThan(1);
+
+    // AND IT IS IN THE BED, still claiming it. A crashed agent in a ward is
+    // drawn the way the nap room draws a sleeper - `sit`, the pose the seated
+    // errands already use - rather than `crash`, which is the DESK pose and
+    // would mean its claim had ended and it had gone home to the monitor.
+    expect(characterPoseAt(scene.frame(2, WHOLE_WORLD), target)).toBe("sit");
+    expect(scene.whereabouts(patient.id)).toBe(ward.name);
   });
 
   it("gives two hosts two host signs and two host bands on one floor", () => {
@@ -1301,7 +1599,9 @@ describe("mission-control cold-review findings", () => {
       expect(this).toBe(receiver);
       visits += 1;
     }, receiver);
-    expect(visits).toBe(13);
+    // A podium, twelve consoles, and the hall's own civic furniture: two medbay
+    // beds and the formula's four gallery seats at this population.
+    expect(visits).toBe(19);
     expect(visits).toBe(layout.seats.size);
   });
 
@@ -1614,7 +1914,16 @@ describe("mission-control cold-review findings", () => {
         { col: 0, row: 8, cols: layout.cols, rows: 3 },
         0,
       );
-      expect(frame).toHaveLength(1);
+      // Tier 0 and the gallery, which begins on the first tier's own top row -
+      // named by fill rather than counted, so the tier half of the claim stays
+      // exactly as strong as it was and the second block cannot be a tier.
+      // Narrowed before reading `fill`: a floor drawable is a union, and only
+      // the block arm carries one - anything else here is a tier drawn as
+      // something other than a block, which this would rather name than skip.
+      const fills = frame.map((drawable) =>
+        drawable.kind === "block" ? drawable.fill : drawable.kind,
+      );
+      expect(fills).toEqual(["storey", "civic"]);
       expect(seen).toEqual([0]);
     }
   });

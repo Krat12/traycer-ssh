@@ -40,6 +40,7 @@ import {
   type OfficeDrawable,
   type OfficeDesk,
   type OfficeErrandSpot,
+  type OfficeCivicKind,
   type OfficeFloor,
   type OfficeFrame,
   type OfficeLayout,
@@ -4130,6 +4131,51 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     return room === undefined ? 0 : room.seatIds.length;
   }
 
+  /**
+   * HOW MANY BEDS THE AGENT AT THIS DESK CAN BE GIVEN, which is not "the beds on
+   * its own floor".
+   *
+   * A view may keep one set of rooms for a whole host - the oblique views put
+   * them on the plaza storey and give every other storey `civic: []` - and the
+   * seat book's own rule is a room of the kind on the agent's floor, else any on
+   * its host. Counting per floor says nought beds for an agent on storey seven,
+   * which would turn every outbreak case into an overflow case wearing an
+   * outbreak name, and would size the freed-bed case's waves from nothing.
+   */
+  function bedsForDesk(layout: OfficeLayout, agentId: string): number {
+    const desk = layout.desks.get(agentId);
+    if (desk === undefined) return 0;
+    const own = infirmarySeatCount(layout, desk.floorIndex);
+    if (own > 0) return own;
+    let count = 0;
+    for (const floor of layout.floors) {
+      if (floor.hostId !== desk.hostId) continue;
+      const room = floor.civic.find((entry) => entry.kind === "infirmary");
+      count += room === undefined ? 0 : room.seatIds.length;
+    }
+    return count;
+  }
+
+  /**
+   * WHAT THIS VIEW CALLS THE ROOM OF THAT KIND.
+   *
+   * `whereabouts` answers with the effective seat's own room name, and each view
+   * names its four in its own words: a plaza has a Dispensary, an amphitheatre a
+   * Medbay. Reading the name back out of the plan is what makes these cases
+   * per-view rather than Floor cases the other five happen to pass, and the
+   * non-empty check is what stops a view that named nothing from passing them
+   * all.
+   */
+  function civicRoomName(layout: OfficeLayout, kind: OfficeCivicKind): string {
+    for (const floor of layout.floors) {
+      const room = floor.civic.find((entry) => entry.kind === kind);
+      if (room === undefined) continue;
+      expect(room.name.length).toBeGreaterThan(0);
+      return room.name;
+    }
+    throw new Error(`${layout.view} plans no ${kind}`);
+  }
+
   function civicSeatCountOnFloor(
     layout: OfficeLayout,
     floorIndex: number,
@@ -5171,7 +5217,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     readonly sawAway: ReadonlySet<string>;
     readonly moved: ReadonlySet<string>;
   } {
-    const room = want === "bed" ? "Infirmary" : "Lounge";
+    const room = civicRoomName(
+      layoutOf(scene),
+      want === "bed" ? "infirmary" : "waiting-room",
+    );
     const sawAway = new Set<string>();
     const moved = new Set<string>();
     for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
@@ -5254,7 +5303,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       expect(moved.has(id), `${id} never changed position`).toBe(true);
       expect(book.civicClaimOf(id)).toBe("bed");
       expect(frame.awayAgentIds.has(id)).toBe(false);
-      expect(scene.whereabouts(id)).toBe("Infirmary");
+      expect(scene.whereabouts(id)).toBe(civicRoomName(layout, "infirmary"));
       const bed = book.effectiveSeat(id);
       if (bed === null || bed.kind !== "bed") {
         throw new Error(`expected ${id} in a bed`);
@@ -5290,8 +5339,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       }),
     );
     const layout = layoutOf(scene);
-    const floorIndex = layout.desks.get(crashed[0])?.floorIndex ?? 0;
-    const beds = infirmarySeatCount(layout, floorIndex);
+    const beds = bedsForDesk(layout, crashed[0]);
     expect(beds).toBeGreaterThan(0);
     expect(crashed.length).toBeGreaterThan(beds);
 
@@ -5347,8 +5395,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       }),
     );
     const layout = layoutOf(scene);
-    const floorIndex = layout.desks.get(subjects[0])?.floorIndex ?? 0;
-    const beds = infirmarySeatCount(layout, floorIndex);
+    const beds = bedsForDesk(layout, subjects[0]);
     expect(subjects.length).toBeGreaterThan(beds + 1);
 
     const firstWave = subjects.slice(subjects.length - beds);
@@ -5469,7 +5516,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     const inLounge = tickUntilSeatedIn(scene, waiters, "lounge");
     if (inLounge === undefined)
       throw new Error("expected someone in the lounge");
-    expect(scene.whereabouts(inLounge)).toBe("Lounge");
+    expect(scene.whereabouts(inLounge)).toBe(
+      civicRoomName(layoutOf(scene), "waiting-room"),
+    );
 
     const loungeHome = layoutOf(scene).desks.get(inLounge);
     if (loungeHome === undefined) throw new Error(`no desk for ${inLounge}`);
@@ -5531,20 +5580,29 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
         cursorMs: 900,
       }),
     );
+    if (path === null) throw new Error("expected a path to the archive door");
     let lastRect: OfficeRect | undefined;
+    let sawArchiveLeg = false;
     for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
       if (!hasCharacter(frameOf(scene), "alpha")) break;
       lastRect = characterRect(frameOf(scene), "alpha");
+      if (rectOnProjectedPath(layout, path, lastRect)) sawArchiveLeg = true;
       scene.tick(100);
     }
     expect(hasCharacter(frameOf(scene), "alpha")).toBe(false);
     if (lastRect === undefined)
       throw new Error("alpha vanished without walking");
-    if (path === null) throw new Error("expected a path to the archive door");
-    // Last seen on the walk to the ARCHIVE door, not the building
-    // entrance: C5 is a records door, and a walk to the lobby instead
-    // would be the pre-civic departure still in force.
-    expect(rectOnProjectedPath(layout, path, lastRect)).toBe(true);
+    // SEEN ON THE WALK TO THE ARCHIVE DOOR, which is what this case is named
+    // for: C5 is a records door, and the pre-civic departure walked to the
+    // lobby instead - a different path, which this would not match.
+    //
+    // Seen at some point rather than seen LAST, because the archive door is not
+    // every view's way out. The Floor punches it beside the entrance, so its
+    // last frame is still on this path; the oblique views put it in the near
+    // outer wall a row above the lane, so an agent reaches it and then walks the
+    // lane to the entrance, and the last frame is on that second leg. Both
+    // walked to the archive; only one of them ends there.
+    expect(sawArchiveLeg).toBe(true);
   });
 
   it("never re-plans on a status flip", (context) => {
@@ -5601,12 +5659,20 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
 
     const claimsOf = (scene: OfficeScene): string => {
       const book = bookOf(scene);
-      const rows = book
-        .knownAgentIds()
-        .map(
-          (id) =>
-            `${id}:${book.civicClaimOf(id) ?? "-"}:${book.effectiveSeat(id)?.seatId ?? "-"}`,
-        );
+      const rows = book.knownAgentIds().map((id) => {
+        const claim = book.civicClaimOf(id);
+        // THE CIVIC CLAIM AND THE SEAT IT IS HELD ON - not the agent's own desk.
+        // An agent with no claim has its HOME seat as its effective seat, and in
+        // an append-stable view the home packing is frozen from first sight: a
+        // scene whose first sync was an outbreak packs its cold agents at desks
+        // and a fresh idle scene puts them in cubbies, so including it here
+        // would assert a reproducibility those views deliberately do not have
+        // (`oblique-plan.test.ts` pins the opposite). The Floor's packing
+        // reproducibility is pinned by `office-plans.test.ts` instead.
+        const seatId =
+          claim === null ? "-" : (book.effectiveSeat(id)?.seatId ?? "-");
+        return `${id}:${claim ?? "-"}:${seatId}`;
+      });
       return rows.join("|");
     };
 
@@ -5797,7 +5863,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       (id) => bookOf(scene).civicClaimOf(id) === "bed",
     );
     if (bedded === undefined) throw new Error("expected a bedded agent");
-    expect(scene.whereabouts(bedded)).toBe("Infirmary");
+    expect(scene.whereabouts(bedded)).toBe(
+      civicRoomName(layoutOf(scene), "infirmary"),
+    );
 
     const waiting = waitingScript({ ...epic, statusById: idle }, 6);
     scene.sync(
@@ -5813,7 +5881,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       .map(([id]) => id)
       .find((id) => bookOf(scene).civicClaimOf(id) === "lounge");
     if (seatedLounge === undefined) throw new Error("expected a lounge sitter");
-    expect(scene.whereabouts(seatedLounge)).toBe("Lounge");
+    expect(scene.whereabouts(seatedLounge)).toBe(
+      civicRoomName(layoutOf(scene), "waiting-room"),
+    );
 
     const queuedId = epic.agents.find(
       (person) =>
@@ -7117,13 +7187,19 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       context.skip("this case is about Mission control specifically");
       return;
     }
-    // Mission control's own plan carries `civic: []` (no help desk at all),
-    // so a real sync would fail the DISPATCH TRIGGER on the missing room
-    // before it ever reached the road check - proving "no civic rooms yet",
-    // not "the gate is the road". A synthetic help desk WITH a real kerbTile
-    // is grafted on here, road left untouched at null, so the only thing
-    // left that can stop the car is the road. The view's own painter never
-    // reads `floor.civic` (only Floor's does), so this is inert for drawing.
+    // THE GATE IS THE ROAD, and this case exists to say so about a view that
+    // has everything else. Mission control plans all four rooms, and its help
+    // desk correctly carries `kerbTile: null` - C6, because nothing drives into
+    // a hall - so a real sync fails the DISPATCH TRIGGER on the missing kerb
+    // before it ever reaches the road check, and a green would mean "no kerb
+    // yet" rather than "no road".
+    //
+    // So its help desk is REPLACED here by a synthetic one with a real kerb,
+    // road left untouched at null. Replaced and not appended: two help desks
+    // would leave the trigger reading whichever the plan lists first, which is
+    // the real one whose kerb is null, and the case would pass for the reason it
+    // is trying to rule out. With a kerb present and a road absent, the road is
+    // the only thing left that can stop the car.
     const withSyntheticHelpDesk: OfficeView = {
       ...view,
       plan: (input) => {
@@ -7153,7 +7229,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         };
         return {
           ...planned,
-          floors: [{ ...floor, civic: [...floor.civic, helpDesk] }],
+          floors: [
+            {
+              ...floor,
+              civic: [
+                ...floor.civic.filter((room) => room.kind !== "help-desk"),
+                helpDesk,
+              ],
+            },
+          ],
         };
       },
     };

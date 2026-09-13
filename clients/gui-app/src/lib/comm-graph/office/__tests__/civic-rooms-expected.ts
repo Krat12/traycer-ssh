@@ -22,8 +22,31 @@ import type {
 
 export const CIVIC_ROOMS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
   floor: true,
-  towers: false,
-  building: false,
+  towers: true,
+  building: true,
+  "mission-control": true,
+  campus: false,
+  city: false,
+};
+
+/**
+ * WHICH ENROLLED VIEWS PLAN A STREET, which is not all of them.
+ *
+ * Four of the five offices are buildings with a way in from outside, and a
+ * vehicle pulls up at their kerbs. Mission control is ONE AMPHITHEATRE: nothing
+ * drives into a hall, so it plans no road and every one of its four rooms names
+ * a null kerb - C6's own reading, and the reason its medbay is marked by a siren
+ * light rather than by an ambulance.
+ *
+ * A SECOND TABLE rather than a tolerated `null`, for the reason the first one
+ * exists: a view that lost its road would otherwise pass by having no kerbs to
+ * misplace, and the whole point of the tables is that the layer can only be
+ * entered, or left, on purpose.
+ */
+export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
+  floor: true,
+  towers: true,
+  building: true,
   "mission-control": false,
   campus: false,
   city: false,
