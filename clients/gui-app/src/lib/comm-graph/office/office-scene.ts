@@ -2498,19 +2498,39 @@ export class OfficeScene {
    *
    * C3, and it is a list for the same reason the reception queue is one -
    * "who started needing this first" is not recoverable from the statuses,
-   * which say only who needs it NOW. Kept per `(floor, kind)` because a bed on
-   * storey two is not a bed storey seven is queueing for, and a chair is not a
-   * bed. Newcomers within a single sync break their tie by id, so the order is
-   * still a function of the data and two runs of the same history agree.
+   * which say only who needs it NOW. Newcomers within a single sync break their
+   * tie by id, so the order is still a function of the data and two runs of the
+   * same history agree.
+   *
+   * KEPT PER `(host, kind)`, WHICH IS THE POOL'S OWN GRANULARITY. A queue only
+   * orders people who are competing, so its key has to match the set they
+   * compete for, and `firstFreeSeat` filters the pool by host and by want and
+   * by nothing else: storey is a PREFERENCE inside that pool ("a room of this
+   * kind on the agent's own storey if there is one, else any on its host"),
+   * never a restriction on it. Two agents on one host with one want therefore
+   * draw from the identical set of beds.
+   *
+   * This was keyed per `(floor, kind)`, which is the same thing only where
+   * every storey has its own ward - the Floor, one host and one storey, where
+   * the two keys are indistinguishable. Wherever one plaza ward serves a
+   * building, three crashers on three storeys formed three one-element queues,
+   * and `civicArrivalOrder` concatenates per-key lists in `characters` order:
+   * arrival order kept inside each key and thrown away across them, so a freed
+   * bed went to whoever sorted first in character order. Keying at the pool's
+   * granularity makes key and pool one-to-one, and C3 holds again.
    */
   private civicOrder = new Map<string, string[]>();
 
   private civicOrderKey(agentId: string, want: OfficeSeatWant): string {
-    return `${this.floorIndexOfAgent(agentId)}/${want}`;
+    // The host of the storey the agent is on - which is what `owningHostOf`
+    // resolves for that agent, so the key names exactly the pool it will be
+    // served from. A real host id is never the empty string, so the `null`
+    // building cannot collide with a named one.
+    return `${this.floorOfAgent(agentId).hostId ?? ""}/${want}`;
   }
 
   /**
-   * WHO WANTS A ROOM, and the order in which they asked - per `(floor, kind)`.
+   * WHO WANTS A ROOM, and the order in which they asked - per `(host, kind)`.
    *
    * C3. "Who started needing this first" is not recoverable from the statuses,
    * which say only who needs one now, so the order is KEPT rather than
