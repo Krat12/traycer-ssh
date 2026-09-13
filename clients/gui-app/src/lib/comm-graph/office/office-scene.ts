@@ -1846,11 +1846,18 @@ export class OfficeScene {
     const outgoingStatuses = this.statusById;
     this.statusById = input.statusById;
     this.openRequestsByReceiver = input.openRequestsByReceiver;
+    // CAPTURED BEFORE `playing` IS OVERWRITTEN, and that is not a style
+    // preference. `this.playing` is assigned on the very next line, so the
+    // natural spelling of this transition - `input.playing && !this.playing` -
+    // beside the reads below is ALWAYS FALSE, and the playback leg of the
+    // settlement would be silently dead while every test still passed.
+    const wasSuppressed = this.motionSuppressed();
     this.playing = input.playing;
-    // All three transitions are read BEFORE the new values are stored, and
-    // none fires on the first sync: there is nothing in flight to end, and no
-    // provisional floor to replace - the first plan is made from whatever this
-    // input carries, settled or not.
+    // Every transition is read BEFORE the new values it compares against are
+    // stored - `wasSuppressed` above the `playing` assignment, these two above
+    // theirs - and none fires on the first sync: there is nothing in flight to
+    // end, and no provisional floor to replace, since the first plan is made
+    // from whatever this input carries, settled or not.
     const motionJustReduced = input.reducedMotion && !this.reducedMotion;
     const rewound = this.cursorRewoundBy(input);
     const settling = input.feedSettled && !this.feedSettled && !firstSync;
@@ -1878,11 +1885,7 @@ export class OfficeScene {
     this.viewport = input.viewport;
     this.agentById = new Map(input.agents.map((agent) => [agent.id, agent]));
     if (!firstSync) {
-      // The flag governs what STARTS; what is already in flight has to be
-      // told. A person who just asked for less motion should not watch the
-      // envelope and the walk they asked to skip play out for another few
-      // seconds.
-      if (motionJustReduced) this.settleMotion();
+      this.settleForStilledMotion(motionJustReduced, wasSuppressed);
       if (rewound) this.dropTransientMotion();
     }
 
@@ -3531,7 +3534,63 @@ export class OfficeScene {
     // on foot, so dropping the vehicle loses information nobody was carrying.
     this.vehicles = [];
     this.paperBalls = [];
+    this.settleWalks(false);
+  }
+
+  /**
+   * What a mode that stills motion owes the walks already in flight.
+   *
+   * The flag governs what STARTS; what is already crossing the floor has to be
+   * told. A person who just asked for less motion should not watch the
+   * envelope and the walk they asked to skip play out for another few seconds.
+   *
+   * AND THE SAME IS TRUE OF PLAYBACK AND A PAUSED CURSOR, which is why the
+   * second trigger is the whole of `motionSuppressed()` and not reduced motion
+   * alone. The gates on `startCivicWalk` and `walkTo` only decide what BEGINS;
+   * a walker already crossing the floor when playback starts was never offered
+   * to them, so it kept walking - and "during playback and at a paused cursor
+   * nobody walks" was false for exactly that agent.
+   *
+   * `settleMotion` is the whole answer and needs no help: it puts a walker on
+   * the LAST TILE OF ITS PATH and runs the arrival branch, and for a seat walk
+   * that tile IS `seat.chairTile`, because that is what the walk pathed to.
+   * Measured against the projected chair rect - it lands on it exactly. A
+   * second instant placement beside it would be a second way to reach the same
+   * two numbers.
+   */
+  private settleForStilledMotion(
+    motionJustReduced: boolean,
+    wasSuppressed: boolean,
+  ): void {
+    if (motionJustReduced) {
+      this.settleMotion();
+      return;
+    }
+    if (this.motionSuppressed() && !wasSuppressed) this.settleCivicWalks();
+  }
+
+  /**
+   * The SEAT walks only, for a mode that suppresses motion without the reader
+   * having asked for less of it.
+   *
+   * Playback and a paused cursor owe the contract "nobody walks" for an agent
+   * the civic pass has placed: a bed or a chair is where its status says it
+   * is, and replaying an hour of history is not an hour of walking. An
+   * ordinary errand is not that - it is ambient life, and what a rewind does
+   * with one is its own business, unchanged here.
+   *
+   * Reduced motion still settles EVERYTHING through `settleMotion`, because
+   * there the reader has asked for no motion at all rather than for a
+   * different clock.
+   */
+  private settleCivicWalks(): void {
+    this.settleWalks(true);
+  }
+
+  /** Teleports walkers to the end of their path and runs the arrival branch. */
+  private settleWalks(civicOnly: boolean): void {
     for (const character of this.characters.values()) {
+      if (civicOnly && character.errand !== "civic-out") continue;
       if (character.pathIndex >= character.path.length) continue;
       const last = character.path[character.path.length - 1];
       character.col = last.col;
