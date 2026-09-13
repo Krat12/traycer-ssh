@@ -437,11 +437,14 @@ export const OBLIQUE_PAINTER: OfficePainter = {
   floor,
   seatProps,
   /**
-   * NOT ASKED. This painter is a `world` one, so the scene's depth-ordered hit
-   * regions do apply to it - but it paints a civic seat ITSELF
-   * (`civicSeatProps`, keyed on `seat.kind`), so its beds and benches carry
-   * their own owned props and their own depth. The isometric painter is the one
-   * that returns nothing for them.
+   * NOT ASKED, and not because of a pass: this IS a `world` painter, so the
+   * scene's depth-ordered hit regions apply to it in full. It paints a civic seat
+   * ITSELF (`civicSeatProps`, keyed on `seat.kind`), so a bed and a chair are
+   * OWNED drawables in the world stream - each one a region at its own depth,
+   * ordered against characters by the same number the frame drew it with. Saying
+   * nothing here leaves the seat's whole box on the owner's props, which is what
+   * it has always sorted by. The isometric painter is the one whose `seatProps`
+   * returns nothing for a civic seat, and so the one that has to answer.
    */
   seatDepth: null,
   spotProps,

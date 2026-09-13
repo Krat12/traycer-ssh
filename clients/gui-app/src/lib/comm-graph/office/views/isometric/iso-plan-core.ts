@@ -1152,6 +1152,15 @@ export class IsoPlanIndex {
   readonly civicByCell: Map<string, IsoIndexedCivic[]>;
   /** The one spot per fixture tile that draws it; the rest only sit at it. */
   readonly drawingSpots: Set<string>;
+  /**
+   * The FIXTURE a seat is, by seat id - for the reader that has a seat and needs
+   * to know its furniture belongs to the courtyard rather than to it.
+   *
+   * Every spot with a seat id is in here, not only the one that draws: the art
+   * exists for both ends of a shared bench, and which of the two dispatched it
+   * is not a fact about either seat.
+   */
+  readonly seatFixtures: Map<string, OfficeErrandSpot>;
   /** The widest and tallest sprite indexed, in TILES, rounded up. */
   propMargin: number;
   /**
@@ -1172,6 +1181,7 @@ export class IsoPlanIndex {
     this.floorsByCell = new Map();
     this.civicByCell = new Map();
     this.drawingSpots = new Set();
+    this.seatFixtures = new Map();
     this.projectorMemo = null;
     this.propMargin = 0;
   }
@@ -1223,7 +1233,11 @@ export function buildIsoIndex(args: IsoIndexArgs): IsoPlanIndex {
     if (tile === null) continue;
     const key = isoTileKey(tile);
     fixtureTiles.add(key);
-    if (ISO_SPOT_FIXTURES[spot.kind] === undefined || drawn.has(key)) continue;
+    if (ISO_SPOT_FIXTURES[spot.kind] === undefined) continue;
+    if (spot.seatId !== null && !index.seatFixtures.has(spot.seatId)) {
+      index.seatFixtures.set(spot.seatId, spot);
+    }
+    if (drawn.has(key)) continue;
     drawn.add(key);
     index.drawingSpots.add(isoSpotKey(spot));
   }
@@ -1300,6 +1314,36 @@ export function readIsoIndex(layout: OfficeLayout): IsoPlanIndex | null {
   if (!("index" in frozen)) return null;
   const index = frozen.index;
   return index instanceof IsoPlanIndex ? index : null;
+}
+
+/**
+ * THE FIXTURE THIS SEAT IS, or `null` for a seat that is not one.
+ *
+ * Campus's courtyard bench is furniture two systems share: a stroll sits at it as
+ * a SPOT, and the waiting room lends the tile in front of it as a SEAT. The art
+ * is the spot's - one bench per `actionTile`, a row behind the tile the body
+ * stands on, drawn by `spotProps` and owned by nobody - so a reader holding only
+ * the seat cannot otherwise tell that the furniture under it is not the seat's
+ * own. A ward bed and a City shelter chair are the other shape: a prop the civic
+ * plan stands on the seat's own tile, and no spot at all.
+ *
+ * The seat id is the whole key. `seatId` is what the plan hands the courtyard for
+ * exactly this pairing, and it is unique across a layout's seats.
+ */
+export function isoSeatFixture(
+  layout: OfficeLayout,
+  seatId: string,
+): OfficeErrandSpot | null {
+  const index = readIsoIndex(layout);
+  if (index !== null) return index.seatFixtures.get(seatId) ?? null;
+  for (const floor of layout.floors) {
+    for (const spot of floor.errandSpots) {
+      if (spot.seatId !== seatId || spot.actionTile === null) continue;
+      if (ISO_SPOT_FIXTURES[spot.kind] === undefined) continue;
+      return spot;
+    }
+  }
+  return null;
 }
 
 /** Whether this spot is the one that DRAWS its fixture. */

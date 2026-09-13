@@ -963,6 +963,34 @@ function selectMap(ref: OfficeSpriteRef): SelectedMap {
   };
 }
 
+/**
+ * Whether this sprite PAINTS the pixel at this offset, or leaves what is behind
+ * it showing through.
+ *
+ * A sprite's box is mostly sky for most of this art - a bench is 32 x 16 of box
+ * over a seat with two legs, a bed 8 px shorter than the box a campus seat
+ * declares - so "is this drawable what the reader sees here" cannot be answered
+ * from a rect. The map is the art's own answer: `.` is the authored hole and
+ * every other letter is a colour the palette resolves (the map guard asserts
+ * that, so a letter is paint).
+ *
+ * Exported for the hit-ordering cases, which have to take their witness point
+ * from a pixel somebody can actually see: a point in the transparent corner of a
+ * box proves nothing about what a click there should name. The same composition
+ * the renderer draws is used, poses, hair and mirroring included.
+ */
+export function officeSpriteOpaqueAt(
+  ref: OfficeSpriteRef,
+  x: number,
+  y: number,
+): boolean {
+  const { map, mirror } = selectMap(ref);
+  if (y < 0 || y >= map.length) return false;
+  const row = map[y];
+  if (x < 0 || x >= row.length) return false;
+  return row[mirror ? row.length - 1 - x : x] !== ".";
+}
+
 // ---- Draw ------------------------------------------------------------ //
 
 export type SpriteSurface = HTMLCanvasElement | OffscreenCanvas;

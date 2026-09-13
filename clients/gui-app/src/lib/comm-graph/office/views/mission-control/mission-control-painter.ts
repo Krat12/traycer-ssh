@@ -609,7 +609,8 @@ export const MISSION_CONTROL_PAINTER: OfficePainter = {
   seatProps: paintSeat,
   /**
    * NOT ASKED: `layered`, like the Floor - the hall's beds and its gallery
-   * benches are placed in draw order and hit in the reverse of it.
+   * benches are hit in the reverse of the order they are drawn in, which needs no
+   * depth from anybody.
    */
   seatDepth: null,
   spotProps: paintSpot,

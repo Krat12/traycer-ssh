@@ -6568,30 +6568,38 @@ export class OfficeScene {
    * at the same depth stays in front here too.
    */
   /**
-   * THE DEPTH OF A SEAT WHOSE FURNITURE THE PLAN OWNS, or `null` where the
-   * question does not arise.
+   * WHERE A SEAT'S BOX SORTS, or `null` for a seat that gets no region at all.
    *
-   * A civic seat's art is a prop the plan stands up, so the painter that returns
-   * nothing for it leaves the occupant's box with no depth of its own - and the
-   * loop below then took whatever prop the owner happened to have, which for a
-   * patient is its DESK. That looked right only while the desk was on screen:
-   * frame a window without the building the patient came from, or hit-test a bed
-   * two tiles wide, and the seat had no region at all. So the occupant of a bed
-   * was unclickable and unhoverable in the one view where the bed is what you
-   * can see - and the borrowed depth was wrong even when it existed, sorting the
-   * box against a desk's neighbours instead of its own.
+   * AN ORDINARY SEAT sorts with the art it drew: the shallowest depth of its own
+   * props, and none means the frame is not drawing that desk, so a region for it
+   * would put hover on something nobody can see.
    *
-   * Asked of the PAINTER because the depth scale is its own, and asked only for
-   * a civic seat: an ordinary desk with no props in this window is a desk the
-   * frame is not drawing, and a hit region for one would put hover on something
-   * nobody can see. A painter that paints its own civic seats answers `null` and
-   * keeps its props' depth.
+   * A CIVIC SEAT's art is furniture the PLAN stands up, so the painter returns
+   * nothing for it (O1) and there is no prop of its own to read. What this used
+   * to fall through to was whatever prop the OWNER happened to have, which for a
+   * patient is its DESK: correct-looking while that desk is on screen, and no
+   * region at all the moment the frame culls the building the patient came from.
+   * So the painter is asked - the depth scale is its own - and its answer is
+   * BELIEVED, `null` included. `null` means the seat's furniture is not its own
+   * (Campus's bench is the courtyard's fixture, drawn for nobody) and the
+   * occupant is hit through its own body; falling back to the desk here would put
+   * the box in front of a character it is painted behind, which is the whole
+   * defect, three districts away from the thing being clicked.
+   *
+   * A painter that answers NOTHING - the oblique one, which paints its own civic
+   * seats - keeps the owner's props, because there its civic art IS its own and
+   * carries its own depth.
    */
-  private civicSeatDepth(seat: OfficeSeat): number | null {
-    if (seat.civicRoomId === null) return null;
+  private seatRegionDepth(
+    seat: OfficeSeat,
+    agentId: string,
+    propFloors: ReadonlyMap<string, number>,
+  ): number | null {
+    const own = propFloors.get(agentId) ?? null;
+    if (seat.civicRoomId === null) return own;
     const answer = this.view.painter.seatDepth;
     const layout = this.layoutOrNull;
-    if (answer === null || layout === null) return null;
+    if (answer === null || layout === null) return own;
     return answer(layout, seat);
   }
 
@@ -6612,8 +6620,8 @@ export class OfficeScene {
     for (const seated of seats) {
       const agentId = seated.agentId;
       if (agentId === null) continue;
-      const depth = this.civicSeatDepth(seated.seat) ?? propFloors.get(agentId);
-      if (depth === undefined) continue;
+      const depth = this.seatRegionDepth(seated.seat, agentId, propFloors);
+      if (depth === null) continue;
       entries.push({
         region: { agentId, rect: this.seatBox(seated.seat) },
         depth,

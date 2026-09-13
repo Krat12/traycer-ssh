@@ -157,29 +157,38 @@ export interface OfficePainter {
     lod: OfficeLod,
   ) => ReadonlyArray<OfficeWorldDrawable>;
   /**
-   * The depth a seat's OWN GROUND is at, for a seat this painter draws no art
-   * for - or `null` from a painter that is never asked.
+   * WHERE THIS SEAT'S OWN ART IS in the frame's order, for a seat this painter
+   * draws no art for: a depth in the world stream,
+   * `OFFICE_FLOOR_PASS_DEPTH` for art the floor pass draws, and `null` for a
+   * seat whose furniture is NOT its own and so has no place of its own in the
+   * order. The whole member is `null` from a painter that is never asked.
    *
    * A civic seat is furniture the PLAN stands up, so `seatProps` returns nothing
    * for one (O1) and the scene's world hit regions had no depth to place the
    * occupant's box at. They took it from whichever prop the owner happened to
    * have, which for a patient means its own DESK: correct-looking while that
    * desk is on screen, and gone the moment the frame culls the building the
-   * patient came from. A bed nobody can click is a bed with no hover card, no
-   * "where" line and no camera target, while the patient is plainly drawn lying
-   * in it.
+   * patient came from. A bed nobody can hit is a bed with no hover card, nothing
+   * for a click to select and no ring when Find matches its occupant - the three
+   * readers that go through the regions - while the patient is plainly drawn
+   * lying in it.
    *
    * It is not the scene's sum to do. The depth scale is the painter's - the
    * isometric one biases per kind and breaks ties on `col + row`, and a number
    * from a different scale would sort the box against the wrong props - so the
-   * painter that knows where a tile lies answers for it.
+   * painter that knows where a tile lies answers for it. And a painter that
+   * answers is BELIEVED: `null` means no region rather than "borrow the owner's
+   * other props", because those props are the desk in another district, which is
+   * the very number this exists to stop the box being sorted against.
    *
-   * `null` for every `layered` painter: their hit regions are built by draw
-   * order rather than depth, so the Floor, both storeyed views and Mission
-   * control were never exposed to this.
+   * `null` for the two `layered` painters - the Floor's and Mission control's
+   * hit regions are built from draw order rather than depth, so neither was ever
+   * exposed to this - and `null` for the oblique one, which is a `world` painter
+   * but paints its civic seats ITSELF, so their art is owned, carries its own
+   * depth, and gets a region per part.
    */
   readonly seatDepth:
-    | ((layout: OfficeLayout, seat: OfficeSeat) => number)
+    | ((layout: OfficeLayout, seat: OfficeSeat) => number | null)
     | null;
   readonly spotProps: (
     layout: OfficeLayout,

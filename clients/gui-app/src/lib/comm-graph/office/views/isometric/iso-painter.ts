@@ -20,6 +20,7 @@
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { isOfficeHotStatus } from "@/lib/comm-graph/office/office-status";
 import {
+  OFFICE_FLOOR_PASS_DEPTH,
   OFFICE_TILE,
   type OfficeAgentStatus,
   type OfficeBlockFill,
@@ -45,6 +46,7 @@ import {
   isoCivicIn,
   isoRoomsIn,
   isoSameProjectorInputs,
+  isoSeatFixture,
   isoSpotDraws,
   isoWithinRect,
   readCityFrozen,
@@ -915,20 +917,59 @@ function paintSpot(
   ];
 }
 
+/** Whether the plan stands a floor-pass prop on this exact tile. */
+function isoPropStandsOn(layout: OfficeLayout, tile: OfficeTilePos): boolean {
+  const window: OfficeTileRect = {
+    col: tile.col,
+    row: tile.row,
+    cols: 1,
+    rows: 1,
+  };
+  // `isoPropsIn` answers with the margin a sprite can hang in from, so the
+  // neighbours it brings back are filtered out here: the question is what stands
+  // on THIS tile, not what leans over it.
+  return isoPropsIn(layout, window).some(
+    (prop) => prop.tile.col === tile.col && prop.tile.row === tile.row,
+  );
+}
+
 /**
- * A SEAT'S OWN TILE, at prop depth: the number the furniture standing on it was
- * drawn with.
+ * WHERE A CIVIC SEAT'S OWN ART IS, for the box the scene hangs on its occupant.
  *
  * This painter is the one that returns nothing from `seatProps` for a civic
- * seat - a bed and a bench are the plan's props, not a workstation - so it is
- * the one the scene has to ask where the occupant's box belongs. `chairTile` is
- * the furniture's own tile for a civic seat (`civicSeat` sets both tiles to it),
- * and `"prop"` is the bias the floor pass gave that sprite, so the box sorts
- * exactly where the bed it covers does rather than at the depth of a desk in
- * another district.
+ * seat - a bed and a bench are the plan's furniture, not a workstation - so it is
+ * the one the scene has to ask. Both answers here are MEASURED from the frames
+ * the two views actually draw, at four agents, and neither is the seat's own tile
+ * at prop depth, which is what this used to fabricate:
+ *
+ *   Campus ward bed      `bed-iso` on the seat's tile, FLOOR pass
+ *   City hospital bed    `bed-iso` on the seat's tile, FLOOR pass
+ *   City shelter chair   `lounge-chair-iso` on the seat's tile, FLOOR pass
+ *   Campus bench         `bench` on the SPOT's action tile, one row behind the
+ *                        seat, in the world stream, owned by NOBODY
+ *
+ * THE FLOOR PASS IS BEHIND EVERYTHING, so the three props answer
+ * `OFFICE_FLOOR_PASS_DEPTH` and a character drawn over a bed wins the pointer at
+ * every pixel of it - which a fabricated prop depth got exactly backwards, since
+ * it put the box in FRONT of the characters the bed is painted behind.
+ *
+ * THE BENCH IS NOT THE SITTER'S, and answers `null`. It is the courtyard's
+ * fixture, drawn once for the row with no owner, and the tile it stands on is a
+ * row behind the seat's - so the seat's declared box is not even where the art
+ * is: at four agents, seat 2's box is `400,64 32x32` while its own bench is drawn
+ * at `416,72 32x16` and the box sits exactly where seat 1's bench is. Answering
+ * the bench's own depth would hand one waiting agent a sprite that two systems
+ * share and that a stroll sits on too, and it would claim the sky above it: the
+ * pixel `430,68`, where a foreground character's torso is the only thing drawn,
+ * is inside the NEIGHBOUR bench's 32 x 16 box, transparent in its art, and 4 px
+ * deeper than the character. A region over furniture nobody owns is a region
+ * nobody should get; the sitter is hit through its own body, exactly as a stroll
+ * on that same bench always was.
  */
-function isoSeatDepth(layout: OfficeLayout, seat: OfficeSeat): number {
-  return tileDepth(projectorFor(layout), seat.chairTile, "prop");
+function isoSeatDepth(layout: OfficeLayout, seat: OfficeSeat): number | null {
+  if (isoSeatFixture(layout, seat.seatId) !== null) return null;
+  if (!isoPropStandsOn(layout, seat.chairTile)) return null;
+  return OFFICE_FLOOR_PASS_DEPTH;
 }
 
 export const ISO_PAINTER: OfficePainter = {

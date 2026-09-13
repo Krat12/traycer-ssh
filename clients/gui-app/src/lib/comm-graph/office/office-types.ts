@@ -1277,6 +1277,24 @@ export interface OfficeWorldDrawable {
   readonly ownerAgentId: string | null;
 }
 
+/**
+ * THE DEPTH OF THE FLOOR PASS: behind everything, because the floor is drawn
+ * before the world stream above and is not sorted into it.
+ *
+ * It is a depth so that a reader who has to ORDER a floor-pass drawable against
+ * that stream - the scene's hit regions, placing the box of a seat whose only art
+ * is a prop the plan stands on the ground - can say where it belongs in the one
+ * scale the two share. Negative infinity rather than a large negative number
+ * because the claim is total: there is no world depth this has to be tuned to
+ * stay under, and a character standing in front of a bed therefore wins the
+ * pointer at every pixel it covers.
+ *
+ * Here rather than beside `OfficePainter`, which is what answers with it: the
+ * painter modules import their vocabulary from this one, and importing a VALUE
+ * from the view registry instead would close a cycle through it.
+ */
+export const OFFICE_FLOOR_PASS_DEPTH = Number.NEGATIVE_INFINITY;
+
 export interface OfficeHitRegion {
   readonly agentId: string;
   readonly rect: OfficeRect;

@@ -947,8 +947,9 @@ export const floorPainter: OfficePainter = {
   floor: floorChunk,
   seatProps: seatPropsOf,
   /**
-   * NOT ASKED: a `layered` painter's hit regions are built from DRAW ORDER,
-   * not depth, so a civic seat here never needed one.
+   * NOT ASKED: this painter's hit regions are built from DRAW ORDER rather than
+   * from depth - `layered` is what says so - so a civic seat here never needed a
+   * depth of its own and the fabrication that class fixes cannot arise.
    */
   seatDepth: null,
   /**
