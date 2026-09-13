@@ -13550,3 +13550,201 @@ describe("towers: an archived agent leaves by its own building's records door", 
     expect(closestToTheirs).toBeGreaterThan(OFFICE_TILE * 4);
   });
 });
+
+/**
+ * Finding 3b - settleCivicWalks keys on `errand === "civic-out"`, but a
+ * feed-settle civic rehome travels as `returning`. Playback and a paused
+ * cursor therefore leave that walker crossing the floor.
+ */
+describe("OfficeScene finding 3b - a civic rehome is settled when motion stills", () => {
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "effectiveSeat");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function chairFootRect(
+    layout: OfficeLayout,
+    tile: OfficeTilePos,
+  ): OfficeRect {
+    const foot = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  function seatHitBox(layout: OfficeLayout, seat: OfficeSeat): OfficeRect {
+    if (seat.hitBox !== null) return seat.hitBox;
+    const origin = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(seat.deskTile.col, seat.deskTile.row);
+    return {
+      x: origin.x,
+      y: origin.y,
+      width: seat.hitTiles.width * OFFICE_TILE,
+      height: seat.hitTiles.height * OFFICE_TILE,
+    };
+  }
+
+  function tickTimes(scene: OfficeScene, steps: number): void {
+    for (let step = 0; step < steps; step += 1) scene.tick(100);
+  }
+
+  interface CivicRehome {
+    readonly scene: OfficeScene;
+    readonly agents: ReadonlyArray<OfficeAgentInput>;
+    readonly visibleAgentIds: ReadonlySet<string>;
+    readonly waiting: Map<string, OfficeAgentStatus>;
+    readonly waiter: string;
+  }
+
+  function civicRehomeInFlight(): CivicRehome {
+    const agents = makeTestEpic("one-team", 12, 9).agents;
+    const visibleAgentIds = new Set(agents.map((person) => person.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((person) => [person.id, "idle"]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        feedSettled: false,
+      }),
+    );
+    const waiter = agents[2].id;
+    const waiting = new Map<string, OfficeAgentStatus>(idle);
+    waiting.set(waiter, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: waiting,
+        feedSettled: true,
+        playing: false,
+      }),
+    );
+    if (bookOf(scene).civicClaimOf(waiter) !== "lounge") {
+      throw new Error(`expected ${waiter} to hold a lounge on the rehome`);
+    }
+    if (!frameOf(scene).awayAgentIds.has(waiter)) {
+      throw new Error(`expected ${waiter} in flight on the rehome`);
+    }
+    tickTimes(scene, 4);
+    if (!frameOf(scene).awayAgentIds.has(waiter)) {
+      throw new Error(`expected ${waiter} still in flight after a few ticks`);
+    }
+    return { scene, agents, visibleAgentIds, waiting, waiter };
+  }
+
+  function expectSeatedInLounge(scene: OfficeScene, waiter: string): void {
+    const lounge = bookOf(scene).effectiveSeat(waiter);
+    if (lounge === null || lounge.kind !== "lounge") {
+      throw new Error(`expected ${waiter} to hold a lounge`);
+    }
+    const chair = chairFootRect(layoutOf(scene), lounge.chairTile);
+    expect(characterRect(frameOf(scene), waiter)).toEqual(chair);
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(false);
+    expect(scene.locate(waiter)).toEqual(seatHitBox(layoutOf(scene), lounge));
+  }
+
+  it("seats a feed-settle civic rehome on its lounge chair when the cursor pauses, on that sync", () => {
+    const floor = civicRehomeInFlight();
+    floor.scene.sync(
+      sceneInput({
+        agents: floor.agents,
+        visibleAgentIds: floor.visibleAgentIds,
+        statusById: floor.waiting,
+        feedSettled: true,
+        cursorMs: 100,
+        playing: false,
+      }),
+    );
+    expectSeatedInLounge(floor.scene, floor.waiter);
+    floor.scene.tick(100);
+    expectSeatedInLounge(floor.scene, floor.waiter);
+  });
+
+  it("seats a feed-settle civic rehome on its lounge chair when playback starts, on that sync", () => {
+    const floor = civicRehomeInFlight();
+    floor.scene.sync(
+      sceneInput({
+        agents: floor.agents,
+        visibleAgentIds: floor.visibleAgentIds,
+        statusById: floor.waiting,
+        feedSettled: true,
+        playing: true,
+      }),
+    );
+    expectSeatedInLounge(floor.scene, floor.waiter);
+    floor.scene.tick(100);
+    expectSeatedInLounge(floor.scene, floor.waiter);
+  });
+
+  it("does not settle an ordinary errand-return walker heading to its desk when playback starts", () => {
+    const agents = makeTestEpic("one-team", 12, 9).agents;
+    const visibleAgentIds = new Set(agents.map((person) => person.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((person) => [person.id, "idle"]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        playing: false,
+      }),
+    );
+    let walker: string | null = null;
+    for (let step = 0; step < 400; step += 1) {
+      scene.tick(100);
+      const away = Array.from(frameOf(scene).awayAgentIds);
+      if (away.length > 0) {
+        walker = away[0];
+        break;
+      }
+    }
+    if (walker === null) throw new Error("nobody started an errand");
+    tickTimes(scene, 30);
+    if (!frameOf(scene).awayAgentIds.has(walker)) {
+      throw new Error(`expected ${walker} still away after the stroll`);
+    }
+    const returning = new Map<string, OfficeAgentStatus>(idle);
+    returning.set(walker, "working");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: returning,
+        playing: false,
+      }),
+    );
+    if (!frameOf(scene).awayAgentIds.has(walker)) {
+      throw new Error(`expected ${walker} on an errand-return`);
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: returning,
+        playing: true,
+      }),
+    );
+    expect(frameOf(scene).awayAgentIds.has(walker)).toBe(true);
+  });
+});
