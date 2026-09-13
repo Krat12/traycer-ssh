@@ -3075,6 +3075,14 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
   context.walkable[archiveDoor.row][archiveDoor.col] = true;
   context.props.push({ sprite: { name: "records-door" }, tile: archiveDoor });
 
+  // The counter's BELL END: one tile past its right edge, clamped inside the
+  // floor. The help desk's door and kerb are both taken from this one column,
+  // which is what keeps them a tile apart on every floor width.
+  const helpDeskBellCol = Math.min(
+    receptionTile.col + RECEPTION_WIDTH_TILES,
+    context.cols - 2,
+  );
+
   const civicBuilds = civicPlans.map((plan) =>
     buildCivicRecord({ plan, hostId: build.hostId, floorIndex, road }),
   );
@@ -3094,9 +3102,23 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
         cols: RECEPTION_WIDTH_TILES,
         rows: 2,
       },
-      // Where somebody steps up to the counter: the tile in front of its left
-      // end, which is inside the queue's own standing room.
-      doorTile: { col: receptionTile.col, row: receptionTile.row - 1 },
+      // Where somebody steps up to the counter: the tile above the BELL END,
+      // directly over the kerb below it. A civic room's door and its kerb are
+      // a pair - K2's shared adjacency case asserts Manhattan distance 1 - and
+      // the counter's left end measured 3 from the bell the kerb sits on. The
+      // bell end is the one tile of this counter that is not the counter
+      // itself, so the door belongs there and the kerb was always right.
+      //
+      // Both columns are the SAME clamped expression on purpose: clamping one
+      // and not the other puts them back out of step on a floor narrow enough
+      // for the clamp to bite.
+      //
+      // At one and two agents this tile is not walkable - but neither was the
+      // left end it replaces, because at those sizes NO tile above the counter
+      // is walkable and the queue stands beside it on the counter's own row
+      // instead. The move is distance 3 -> 1 at every size and a regression at
+      // none.
+      doorTile: { col: helpDeskBellCol, row: receptionTile.row - 1 },
       signTile: receptionTile,
       name: "Front desk",
       seatIds: [],
@@ -3104,10 +3126,7 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       hostId: build.hostId,
       // One tile past the counter's right end - the bell end, where the queue
       // forms - rather than on the counter itself.
-      kerbTile: kerbOnRoad(
-        road,
-        Math.min(receptionTile.col + RECEPTION_WIDTH_TILES, context.cols - 2),
-      ),
+      kerbTile: kerbOnRoad(road, helpDeskBellCol),
     },
     {
       civicRoomId: civicRoomIdOf(build.hostId, floorIndex, "archive"),
