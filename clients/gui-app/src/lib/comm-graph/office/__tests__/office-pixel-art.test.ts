@@ -14,6 +14,7 @@ import {
   type RasterizedSprite,
 } from "@/lib/comm-graph/office/office-pixel-art";
 import { OFFICE_ACCESSORY_MAPS_BY_NAME } from "@/lib/comm-graph/office/office-sprite-maps";
+import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type {
   OfficeAppearance,
   OfficeSpriteName,
@@ -132,6 +133,18 @@ const ALL_SPRITE_NAMES: Readonly<Record<OfficeSpriteName, true>> = {
   "low-table": true,
   "records-door": true,
   "cross-sign": true,
+
+  // ---- K2: the five other views' civic art -------------------------- //
+  "glass-partition": true,
+  "siren-light": true,
+  "siren-light-b": true,
+  "bed-iso": true,
+  "lounge-chair-iso": true,
+  "hospital-roof-cross": true,
+  "bus-shelter": true,
+  "warehouse-door-iso": true,
+  "medbay-bed": true,
+  "gallery-seat": true,
 };
 
 function mapNamed(name: OfficeSpriteName): ReadonlyArray<string> {
@@ -303,6 +316,75 @@ describe("sprite maps", () => {
       ];
     for (const [name, width, height] of expected) {
       expect(officeSpriteSize({ name }), name).toEqual({ width, height });
+    }
+  });
+
+  /**
+   * THE MEDBAY LIGHT IS A PAIR, and a pair whose frames are the same picture is
+   * a light that does not blink.
+   *
+   * Same size, because the sign draws both at one anchor, and DIFFERENT
+   * content, because the whole of the thing is the alternation. Read off the
+   * authored maps rather than the rasterized pixels: a frame that differed only
+   * in a letter both themes resolve to the same colour would pass a pixel
+   * comparison in one theme and fail in the other.
+   */
+  it("gives the medbay light two frames of one size that are not the same picture", () => {
+    const byName = new Map(
+      officeSpriteMaps().map((entry) => [entry.name, entry.map]),
+    );
+    const frameA = byName.get("siren-light");
+    const frameB = byName.get("siren-light-b");
+    expect(frameA).toBeDefined();
+    expect(frameB).toBeDefined();
+    if (frameA === undefined || frameB === undefined) return;
+    expect(officeSpriteSize({ name: "siren-light-b" })).toEqual(
+      officeSpriteSize({ name: "siren-light" }),
+    );
+    expect(frameA.join("\n")).not.toBe(frameB.join("\n"));
+    // Both frames are LIT: a beacon going round shows its lens from both
+    // sides, and a dark frame would read as a bulb switching off. `n` is the
+    // lens colour the cross and the crashed screen already use.
+    expect(frameA.join("")).toContain("n");
+    expect(frameB.join("")).toContain("n");
+  });
+
+  /**
+   * The isometric civic art is drawn at an anchor its PARTNER's size decides,
+   * so a size that disagrees is art drawn somewhere the tile is not.
+   *
+   * - `bed-iso` is drawn where `desk-iso` is drawn (a seat's own tile corner,
+   *   bottom-centre on the diamond);
+   * - `hospital-roof-cross` is laid ON `block-top`, at the same origin, so it
+   *   has to be the same diamond;
+   * - `warehouse-door-iso` stands free on its tile exactly as `door-iso` does;
+   * - `medbay-bed` replaces a console's two tiles on the amphitheatre floor.
+   *
+   * Pinned as EQUALITY against the partner rather than as literal numbers: the
+   * requirement is that the two agree, and a pair of literals can drift apart
+   * while both stay "right".
+   */
+  it("sizes every civic piece as the anchor it is drawn against", () => {
+    const pairs: ReadonlyArray<readonly [OfficeSpriteName, OfficeSpriteName]> =
+      [
+        ["bed-iso", "desk-iso"],
+        ["hospital-roof-cross", "block-top"],
+        ["bus-shelter", "desk-iso"],
+        ["warehouse-door-iso", "door-iso"],
+        ["medbay-bed", "console"],
+      ];
+    for (const [piece, anchor] of pairs) {
+      expect(officeSpriteSize({ name: piece }), piece).toEqual(
+        officeSpriteSize({ name: anchor }),
+      );
+    }
+    // The two one-tile seats are a tile, which is what lets a sitter's own
+    // sprite cover them.
+    for (const name of ["lounge-chair-iso", "gallery-seat"] as const) {
+      expect(officeSpriteSize({ name }), name).toEqual({
+        width: OFFICE_TILE,
+        height: OFFICE_TILE,
+      });
     }
   });
 

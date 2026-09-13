@@ -240,7 +240,30 @@ export type OfficeSpriteName =
   /** The archive's door of filing drawers, in the outer wall beside the entrance. */
   | "records-door"
   /** The red cross that marks the infirmary. */
-  | "cross-sign";
+  | "cross-sign"
+  // ---- K2: the five other views' civic art ---------------------------- //
+  //
+  // One hunk, so K3's own art lands under it without a rebase that has to
+  // interleave two sets of names.
+  /** The dispensary's glazed screen: the plaza sees the ward through it. */
+  | "glass-partition"
+  /** Mission control's medbay light, alternating while a bed is held. */
+  | "siren-light"
+  | "siren-light-b"
+  /** An infirmary bed, seen from the corner. */
+  | "bed-iso"
+  /** A waiting-room chair, seen from the corner. */
+  | "lounge-chair-iso"
+  /** The cross on a City hospital's roof, drawn on the roof diamond. */
+  | "hospital-roof-cross"
+  /** The bus stop's shelter: a roof on two posts, with the bench under it. */
+  | "bus-shelter"
+  /** The warehouse's roller door, standing free on its tile like `door-iso`. */
+  | "warehouse-door-iso"
+  /** A medbay bed on the amphitheatre floor, a console's two tiles wide. */
+  | "medbay-bed"
+  /** A gallery seat in the side aisle, facing the big board. */
+  | "gallery-seat";
 
 /**
  * Names one rasterized sprite. `facing`, `pose` and `appearance` only apply to

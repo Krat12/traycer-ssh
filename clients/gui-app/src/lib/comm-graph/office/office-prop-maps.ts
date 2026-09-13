@@ -2264,3 +2264,277 @@ export const CROSS_SIGN_MAP: SpriteMap = [
   "....OOO..OOO....",
   "................",
 ];
+
+// ---- The civic rooms in the five other views -------------------------- //
+//
+// ONE SECTION, appended whole, so that K3's vehicle art lands under it rather
+// than interleaved through it.
+//
+// The isometric pieces follow `desk-iso`'s anchoring, not their own: a sprite
+// standing on a tile is drawn by `isoPropOrigin`, which lands its BOTTOM CENTRE
+// on the diamond's centre, so a piece meant to cover a tile is a 32-wide
+// diamond with its rise above it and nothing below.
+
+/**
+ * The dispensary's glazed screen: the plaza looks at the ward through it.
+ *
+ * Taller in the glass than `partition`, which is a divider between two desk
+ * clusters and stops at chest height. This one is a full screen, so the beds
+ * behind it read as a room rather than as furniture in the open.
+ */
+export const GLASS_PARTITION_MAP: SpriteMap = [
+  "OOOOOOOOOOOOOOOO",
+  "OMMMMMMMMMMMMMMO",
+  "OMOOOOOOOOOOOOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOvvvvVVvvvvOMO",
+  "OMOvvvVVVVvvvOMO",
+  "OMOvvvVVVVvvvOMO",
+  "OMOvvvvVVvvvvOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOvvvvvvvvvvOMO",
+  "OMOOOOOOOOOOOOMO",
+  "OMMMMMMMMMMMMMMO",
+  "OOOOOOOOOOOOOOOO",
+];
+
+/**
+ * THE MEDBAY LIGHT, FRAME A, and its partner below.
+ *
+ * A beacon rather than a lamp: the lens is lit on ONE side per frame and dark
+ * on the other, so alternating the two reads as a light going round instead of
+ * a bulb switching off. Mission control's medbay sign carries it while a bed is
+ * held, and nothing else does - a vehicle's lights are part of the vehicle's
+ * own art (K3), which is why this pair is 8 px and not a compositing anchor.
+ */
+export const SIREN_LIGHT_MAP: SpriteMap = [
+  "..OOOO..",
+  ".OnnyyO.",
+  "OnnnyyyO",
+  "OnnnyydO",
+  "OnnnyddO",
+  "OnnnddO.",
+  ".OMMMO..",
+  "..OOO...",
+];
+
+/** Frame B: the lens lit on the other side. */
+export const SIREN_LIGHT_B_MAP: SpriteMap = [
+  "..OOOO..",
+  ".OyynnO.",
+  "OyyynnnO",
+  "OdyynnnO",
+  "OddynnnO",
+  ".OddnnnO",
+  "..OMMMO.",
+  "...OOO..",
+];
+
+/**
+ * An infirmary bed, seen from the corner: `desk-iso`'s box with the blanket on
+ * top of it and the pillow at the back corner.
+ *
+ * The occupant is drawn by the scene at its own tile, ON this, which is why
+ * there is no isometric `bed-occupied`: a character lying on the diamond hides
+ * the half of the blanket a turned-down sheet would have shown.
+ */
+export const BED_ISO_MAP: SpriteMap = [
+  "...............bb...............",
+  ".............bbbbbb.............",
+  "...........bbbbbbbbbb...........",
+  ".........bbbbbbbbbbbbbb.........",
+  ".......bbbbbbbvvvvbbbbbbb.......",
+  ".....bbbbbbbvvvvvvvvbbbbbbb.....",
+  "...bbbbbbbvvvvvvvvvvvvbbbbbbb...",
+  ".bbbbbbbvvvvvvvvvvvvvvvvbbbbbbb.",
+  ".OOOOOOvvvvvvvvvvvvvvvvvvOOOOOO.",
+  ".MMMOOOOvvvvvvvvvvvvvvOOOOOMMMM.",
+  ".MMMMMOOOOvvvvvvvvvvOOOOMMMMMMM.",
+  ".MMMMMMMOOOOvvvvvvOOOOMMMMMMMMM.",
+  ".MMMMMMMMMOOOvvvvOOOMMMMMMMMMMM.",
+  ".MMMMMMMMMMMOOvvOOMMMMMMMMMMMMM.",
+  ".MMMMMMMMMMMMMOOMMMMMMMMMMMMMMM.",
+  ".MMMMMMMMMMMMMMMMMMMMMMMMMMMMMM.",
+  ".MMMMMMMMMMMMMMMMMMMMMMMMMMMMMM.",
+  "...MMMMMMMMMMMMMMMMMMMMMMMMMM...",
+  ".....MMMMMMMMMMMMMMMMMMMMMM.....",
+  ".......MMMMMMMMMMMMMMMMMM.......",
+  ".........MMMMMMMMMMMMMM.........",
+  "...........MMMMMMMMMM...........",
+  ".............MMMMMM.............",
+  "...............MM...............",
+];
+
+/**
+ * A waiting-room chair from the corner: the seat diamond, a back on its far
+ * edge, and two legs. One tile, so the sitter's own sprite covers the seat.
+ */
+export const LOUNGE_CHAIR_ISO_MAP: SpriteMap = [
+  "....OOOOOOOO....",
+  "...OXXXXXXXXO...",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "...OOOOOOOOOO...",
+  "..OxxxxxxxxxxO..",
+  ".OxxxxxxxxxxxxO.",
+  "OxxxxxxxxxxxxxxO",
+  "OxxxxxxxxxxxxxxO",
+  ".OxxxxxxxxxxxxO.",
+  "..OxxxxxxxxxxO..",
+  "...OOOOOOOOOO...",
+  "....OWO..OWO....",
+  "....OWO..OWO....",
+  "....OOO..OOO....",
+  "................",
+];
+
+/**
+ * The cross on a City hospital's roof: a red cross clipped to the roof
+ * diamond, drawn OVER `block-top` rather than instead of it, so the building
+ * keeps its own roof and gains a marking.
+ */
+export const HOSPITAL_ROOF_CROSS_MAP: SpriteMap = [
+  "................................",
+  "................................",
+  "................................",
+  "..............nnnn..............",
+  ".............OnnnnO.............",
+  "............OOnnnnOO............",
+  "..........OOnnnnnnnnOO..........",
+  "........OOnnnnnnnnnnnnOO........",
+  "........OOnnnnnnnnnnnnOO........",
+  "..........OOnnnnnnnnOO..........",
+  "............OOnnnnOO............",
+  ".............OnnnnO.............",
+  "..............nnnn..............",
+  "................................",
+  "................................",
+  "................................",
+];
+
+/**
+ * The bus stop: a roof on two posts with a bench under it, one tile.
+ *
+ * The lounge seats it carries are the tiles BESIDE it, not this one - a
+ * shelter somebody stands inside is a shelter that hides them, and the whole
+ * point of the stop is that the wait is visible from the street.
+ */
+export const BUS_SHELTER_MAP: SpriteMap = [
+  "...............mm...............",
+  ".............mmmmmm.............",
+  "...........mmmmmmmmmm...........",
+  ".........mmmmmmmmmmmmmm.........",
+  ".......mmmmmmmmmmmmmmmmmm.......",
+  ".....mmmmmmmmmmmmmmmmmmmmmm.....",
+  "...MMMMMMMMMMMMMMMMMMMMMMMMMM...",
+  ".MMMMMMMMMMMMMMMMMMMMMMMMMMMMMM.",
+  ".OM..........................MO.",
+  ".OM..........................MO.",
+  ".OM..........................MO.",
+  ".OM.....OOOOOOOOOOOOOO.......MO.",
+  ".OM....OwwwwwwwwwwwwwwO......MO.",
+  ".OM....OWWWWWWWWWWWWWWO......MO.",
+  ".OM....OOOOOOOOOOOOOOOO......MO.",
+  ".OM......OWO......OWO........MO.",
+  ".OM......OWO......OWO........MO.",
+  ".OM......OOO......OOO........MO.",
+  ".OM..........................MO.",
+  ".OM..........................MO.",
+  ".OMO........................OMO.",
+  "..OO........................OO..",
+  "................................",
+  "................................",
+];
+
+/**
+ * The warehouse's roller door: slats of metal in a frame, standing free on its
+ * tile exactly as `door-iso` does, so the block it marks reads as a depot
+ * rather than as another stand of offices.
+ */
+export const WAREHOUSE_DOOR_ISO_MAP: SpriteMap = [
+  "OOOOOOOOOOOOOOOO",
+  "OMMMMMMMMMMMMMMO",
+  "OMOOOOOOOOOOOOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOMMMMMMMMMMOMO",
+  "OMOmmmmmmmmmmOMO",
+  "OMOOOOOOOOOOOOMO",
+  "OMmmmmmmmmmmmmMO",
+  "OMMMMMMMMMMMMMMO",
+  "OOOOOOOOOOOOOOOO",
+];
+
+/**
+ * A medbay trolley on the amphitheatre floor, a console's two tiles wide.
+ *
+ * Its own sprite rather than the Floor's `bed` because Mission control's beds
+ * stand in a row facing the console with nothing around them: the rail at the
+ * head end is what stops a row of them reading as a row of tables.
+ */
+export const MEDBAY_BED_MAP: SpriteMap = [
+  "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+  "OmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmO",
+  "OmOMOMOMOMOmOOOOOOOOOOOOOOOOOOmO",
+  "OmOMOMOMOMOmObbbbbbbbbbbbbbbbOmO",
+  "OmOMOMOMOMOmObbbbbbbbbbbbbbbbOmO",
+  "OmOOOOOOOOOmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOqqqqqqqqqqqqqqqqOmO",
+  "OmmmmmmmmmmmOOOOOOOOOOOOOOOOOOmO",
+  "OmMMmmmmmmMMmmmmmmmmmmMMmmmmMMmO",
+  "OmMMmmmmmmMMmmmmmmmmmmMMmmmmMMmO",
+  "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO",
+];
+
+/**
+ * A gallery seat in the side aisle, seen from behind: the amphitheatre's own
+ * seats face the board, so this is a tip-up back and two arms and no cushion
+ * the viewer could see.
+ */
+export const GALLERY_SEAT_MAP: SpriteMap = [
+  "................",
+  "..OOOOOOOOOOOO..",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "..OXXXXXXXXXXO..",
+  "OOOXXXXXXXXXXOOO",
+  "OxOOOOOOOOOOOOxO",
+  "OxxxxxxxxxxxxxxO",
+  "OOOOOOOOOOOOOOOO",
+  "..OMO......OMO..",
+  "..OMO......OMO..",
+  "..OOO......OOO..",
+  "................",
+];

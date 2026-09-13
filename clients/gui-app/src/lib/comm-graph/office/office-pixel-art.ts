@@ -126,6 +126,17 @@ import {
   LOW_TABLE_MAP,
   RECORDS_DOOR_MAP,
   CROSS_SIGN_MAP,
+  // ---- K2: the five other views' civic art -------------------------- //
+  GLASS_PARTITION_MAP,
+  SIREN_LIGHT_MAP,
+  SIREN_LIGHT_B_MAP,
+  BED_ISO_MAP,
+  LOUNGE_CHAIR_ISO_MAP,
+  HOSPITAL_ROOF_CROSS_MAP,
+  BUS_SHELTER_MAP,
+  WAREHOUSE_DOOR_ISO_MAP,
+  MEDBAY_BED_MAP,
+  GALLERY_SEAT_MAP,
 } from "@/lib/comm-graph/office/office-prop-maps";
 import {
   isOfficeSeatedPose,
@@ -410,6 +421,18 @@ const SPRITE_SIZES: Readonly<Record<OfficeSpriteName, OfficeSize>> = {
   "low-table": { width: 32, height: 16 },
   "records-door": { width: 16, height: 16 },
   "cross-sign": { width: 16, height: 16 },
+
+  // ---- K2: the five other views' civic art -------------------------- //
+  "glass-partition": { width: 16, height: 16 },
+  "siren-light": { width: 8, height: 8 },
+  "siren-light-b": { width: 8, height: 8 },
+  "bed-iso": { width: 32, height: 24 },
+  "lounge-chair-iso": { width: 16, height: 16 },
+  "hospital-roof-cross": { width: 32, height: 16 },
+  "bus-shelter": { width: 32, height: 24 },
+  "warehouse-door-iso": { width: 16, height: 32 },
+  "medbay-bed": { width: 32, height: 16 },
+  "gallery-seat": { width: 16, height: 16 },
 };
 
 const PROP_MAPS: Readonly<Record<OfficeSpriteName, SpriteMap>> = {
@@ -519,6 +542,18 @@ const PROP_MAPS: Readonly<Record<OfficeSpriteName, SpriteMap>> = {
   "low-table": LOW_TABLE_MAP,
   "records-door": RECORDS_DOOR_MAP,
   "cross-sign": CROSS_SIGN_MAP,
+
+  // ---- K2: the five other views' civic art -------------------------- //
+  "glass-partition": GLASS_PARTITION_MAP,
+  "siren-light": SIREN_LIGHT_MAP,
+  "siren-light-b": SIREN_LIGHT_B_MAP,
+  "bed-iso": BED_ISO_MAP,
+  "lounge-chair-iso": LOUNGE_CHAIR_ISO_MAP,
+  "hospital-roof-cross": HOSPITAL_ROOF_CROSS_MAP,
+  "bus-shelter": BUS_SHELTER_MAP,
+  "warehouse-door-iso": WAREHOUSE_DOOR_ISO_MAP,
+  "medbay-bed": MEDBAY_BED_MAP,
+  "gallery-seat": GALLERY_SEAT_MAP,
 };
 
 /**
