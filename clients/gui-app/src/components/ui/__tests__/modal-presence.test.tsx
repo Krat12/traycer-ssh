@@ -173,6 +173,59 @@ describe("presentedModalCount", () => {
     expect(count()).toBe(0);
   });
 
+  it("un-presents a Sheet and a Drawer in a background split pane: DOM absent AND count zero", () => {
+    render(
+      <SurfacePresentationBoundary visible focused={false}>
+        <Sheet open>
+          <SheetContent>
+            <SheetTitle>Background sheet</SheetTitle>
+            <SheetDescription>probe</SheetDescription>
+          </SheetContent>
+        </Sheet>
+        <Drawer open>
+          <DrawerContent>
+            <DrawerTitle>Background drawer</DrawerTitle>
+          </DrawerContent>
+        </Drawer>
+      </SurfacePresentationBoundary>,
+    );
+    expect(document.querySelector('[data-slot="sheet-content"]')).toBeNull();
+    expect(document.querySelector('[data-slot="sheet-overlay"]')).toBeNull();
+    expect(document.querySelector('[data-slot="drawer-content"]')).toBeNull();
+    expect(document.querySelector('[data-slot="drawer-overlay"]')).toBeNull();
+    expect(count()).toBe(0);
+  });
+
+  it("un-presents a Sheet and a Drawer in a concealed region, and re-presents (and re-counts) on return", () => {
+    function Wrapped(props: { readonly concealed: boolean }) {
+      return (
+        <PortalConcealmentProvider value={props.concealed}>
+          <Sheet open>
+            <SheetContent>
+              <SheetTitle>Concealed sheet</SheetTitle>
+              <SheetDescription>probe</SheetDescription>
+            </SheetContent>
+          </Sheet>
+          <Drawer open>
+            <DrawerContent>
+              <DrawerTitle>Concealed drawer</DrawerTitle>
+            </DrawerContent>
+          </Drawer>
+        </PortalConcealmentProvider>
+      );
+    }
+    const view = render(<Wrapped concealed />);
+    expect(document.querySelector('[data-slot="sheet-content"]')).toBeNull();
+    expect(document.querySelector('[data-slot="drawer-content"]')).toBeNull();
+    expect(count()).toBe(0);
+    view.rerender(<Wrapped concealed={false} />);
+    expect(document.querySelector('[data-slot="sheet-content"]')).not.toBeNull();
+    expect(document.querySelector('[data-slot="drawer-content"]')).not.toBeNull();
+    expect(count()).toBe(2);
+    view.rerender(<Wrapped concealed />);
+    expect(count()).toBe(0);
+  });
+
   it("counts a Sheet the same way", () => {
     function Probe(props: { readonly open: boolean }) {
       return (

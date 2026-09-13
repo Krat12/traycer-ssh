@@ -2,6 +2,8 @@ import * as React from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 
 import { cn } from "@/lib/utils";
+import { usePaneAwareContentGuard } from "@/components/epic-tabs/pane-visibility-context";
+import { usePortalConcealed } from "@/components/ui/portal-concealment-context";
 import {
   ModalRootPresenceContext,
   PresentedModalRegistration,
@@ -72,14 +74,23 @@ function DrawerContent({
   className,
   children,
   forceMount,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Content>) {
+  // Same un-present rules as `dialog.tsx` / `sheet.tsx`: a background split
+  // pane or a concealed region drops the portal (overlay included) while the
+  // root keeps its open state and vaul's drag/dismiss wiring is untouched.
+  const { paneFocused, handleCloseAutoFocus } =
+    usePaneAwareContentGuard(onCloseAutoFocus);
+  const concealed = usePortalConcealed();
+  if (!paneFocused || concealed) return null;
   return (
     <DrawerPortal data-slot="drawer-portal">
       <DrawerOverlay />
       <DrawerPrimitive.Content
         ref={ref}
         data-slot="drawer-content"
+        onCloseAutoFocus={handleCloseAutoFocus}
         className={cn(
           "group/drawer-content fixed z-50 flex h-auto flex-col bg-popover bg-clip-padding text-popover-foreground shadow-lg",
           "data-[vaul-drawer-direction=top]:inset-x-0 data-[vaul-drawer-direction=top]:top-0 data-[vaul-drawer-direction=top]:mb-24 data-[vaul-drawer-direction=top]:rounded-b-lg data-[vaul-drawer-direction=top]:border-b",
@@ -104,9 +115,6 @@ function DrawerContent({
         forceMount={forceMount}
         {...props}
       >
-        {/* The registration gates itself on concealment and pane focus, so a
-            retained drawer in a hidden region or background split does not
-            count even though this wrapper does not un-present it. */}
         <PresentedModalRegistration forceMount={forceMount === true} />
         <div className="mx-auto mt-3 hidden h-1.5 w-12 shrink-0 rounded-full bg-border group-data-[vaul-drawer-direction=bottom]/drawer-content:block" />
         {children}

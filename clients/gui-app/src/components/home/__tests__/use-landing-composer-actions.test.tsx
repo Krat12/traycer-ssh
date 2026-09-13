@@ -1,4 +1,7 @@
-import { useLandingComposerActions } from "@/components/home/hooks/use-landing-composer-actions";
+import {
+  useLandingComposerActions,
+  type LandingComposerActions,
+} from "@/components/home/hooks/use-landing-composer-actions";
 import type { LandingPlacementTarget } from "@/lib/composer/landing-placement";
 import { useHostClient } from "@/lib/host";
 import { epicDisplayTitle } from "@/lib/display-title";
@@ -2741,7 +2744,7 @@ describe("useLandingComposerActions", () => {
     }
 
     function submitPrompt(
-      result: { current: ReturnType<typeof useLandingComposerActions> },
+      result: { current: LandingComposerActions },
       draftId: string | null,
     ): void {
       act(() => {
@@ -2755,7 +2758,7 @@ describe("useLandingComposerActions", () => {
     }
 
     function launchTerminal(result: {
-      current: ReturnType<typeof useLandingComposerActions>;
+      current: LandingComposerActions;
     }): void {
       act(() => {
         result.current.selectTerminalAgent(
@@ -2935,6 +2938,68 @@ describe("useLandingComposerActions", () => {
       queryClient.clear();
     });
 
+    it("drops a tui-accepted receipt whose create resolves AFTER a reset (sign-out / replay), and retires the attempt", async () => {
+      const createGate = deferred<string | null>();
+      landingMocks.createTerminalAgent.mockReturnValue(createGate.promise);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      launchTerminal(result);
+      await waitFor(() => {
+        expect(landingMocks.createTerminalAgent).toHaveBeenCalledTimes(1);
+      });
+      // The identity boundary (auth-lifecycle-bridge) or a chain end/replay
+      // resets the store while the create is still in flight.
+      act(() => {
+        receipts().reset();
+      });
+      await act(async () => {
+        createGate.resolve("tui-agent-late");
+        await createGate.promise;
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      expect(receipts().dispatchedByAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
+    it("retires the announced attempt on a REFUSED prompt create so a waiter stops waiting", async () => {
+      const draftId = mountFocusedDraft("draft-refused-retire");
+      landingMocks.request.mockImplementation((method) =>
+        method === "epic.create"
+          ? Promise.resolve({
+              roomInfo: null,
+              refusal: {
+                kind: "local-store-unavailable",
+                message: "Traycer can't open this device's local store.",
+                remedy: "Quit the other Traycer on this machine, then rebind.",
+              },
+            })
+          : Promise.resolve({}),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, draftId);
+      expect(Object.keys(receipts().dispatchedByAttemptId)).toHaveLength(1);
+      await waitFor(() => {
+        expect(receipts().dispatchedByAttemptId).toEqual({});
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
     it("emits nothing when the tui-agent create rejects", async () => {
       landingMocks.createTerminalAgent.mockRejectedValue(new Error("no pty"));
       const queryClient = new QueryClient({
@@ -2954,6 +3019,7 @@ describe("useLandingComposerActions", () => {
         await Promise.resolve();
       });
       expect(receipts().byAttemptId).toEqual({});
+      expect(receipts().dispatchedByAttemptId).toEqual({});
       queryClient.clear();
     });
 

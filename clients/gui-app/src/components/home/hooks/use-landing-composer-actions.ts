@@ -490,6 +490,19 @@ export function useLandingComposerActions(
       // that holds the local-first warm slot - any other host cold-opens into
       // a cloud NOT_FOUND until the create host's background connect lands.
       markEpicCreatedThisSession(epicId, activeHostId);
+      // Onboarding receipt correlation (contract 5): announce the exact
+      // draft/host this attempt is about right before the create goes out
+      // (every early return above has been passed), so the tour can decide
+      // relevance now and match the eventual receipt by these ids. Every
+      // exit of the continuation below that is not the foreground acceptance
+      // retires the attempt so a waiting lesson stops waiting.
+      const receipts = useLandingReceiptsStore.getState();
+      const receiptGeneration = receipts.announce({
+        kind: "prompt-accepted",
+        attemptId: attempt.id,
+        draftId: attempt.draftId,
+        hostId: activeHostId,
+      });
 
       void createLandingEpic({
         epicId,
@@ -514,6 +527,7 @@ export function useLandingComposerActions(
         .then((response) => {
           const settlement = draftRuntimeRegistry.settlement(attempt);
           if (settlement.kind === "retired") {
+            receipts.retire(attempt.id);
             discardRetiredLandingEpic({ epicId, chatId });
             draftRuntimeRegistry.complete(attempt);
             return;
@@ -536,6 +550,7 @@ export function useLandingComposerActions(
           // makes resubmitting work. `useEpicCreateForClient.onSuccess` owns
           // the user-facing message.
           if (response.refusal !== undefined) {
+            receipts.retire(attempt.id);
             settleUnlandedLandingEpic({
               epicId,
               chatId,
@@ -580,14 +595,17 @@ export function useLandingComposerActions(
                 // "prompt accepted" the tour may complete on. Refused,
                 // retired and background settlements never reach here. Ids
                 // are the ones captured at dispatch, never re-read.
-                useLandingReceiptsStore.getState().emit({
-                  kind: "prompt-accepted",
-                  attemptId: attempt.id,
-                  draftId: attempt.draftId,
-                  epicId,
-                  tabId,
-                  hostId: activeHostId,
-                });
+                receipts.emit(
+                  {
+                    kind: "prompt-accepted",
+                    attemptId: attempt.id,
+                    draftId: attempt.draftId,
+                    epicId,
+                    tabId,
+                    hostId: activeHostId,
+                  },
+                  receiptGeneration,
+                );
                 // The create continuation can settle after the user opens
                 // Settings / History. Keep the normal underlying transition
                 // from draft to Epic, but carry that foreground overlay onto
@@ -604,6 +622,9 @@ export function useLandingComposerActions(
               },
             });
           } else {
+            // A background settlement is a created epic the tour cannot
+            // complete on (contract 5): retire the attempt.
+            receipts.retire(attempt.id);
             // Content changed after send: keep that later edit. A close
             // during create used to be the same branch because close
             // destroyed the row; now close retains, so `"closed"` must
@@ -617,6 +638,7 @@ export function useLandingComposerActions(
           draftRuntimeRegistry.complete(attempt);
         })
         .catch(() => {
+          receipts.retire(attempt.id);
           // A retired attempt takes the same exit as the success path above:
           // the id-scoped leftovers still have to go, but `markFailed` must
           // not - it would re-insert a handoff entry keyed to an identity the
@@ -680,15 +702,6 @@ export function useLandingComposerActions(
         captureSubmissionPlacement(draftId),
       );
       if (attempt === null) return;
-      // Onboarding receipt correlation (contract 5): announce the exact
-      // draft/host this attempt is about BEFORE any await, so the tour can
-      // decide relevance now and match the eventual receipt by these ids.
-      useLandingReceiptsStore.getState().announce({
-        kind: "prompt-accepted",
-        attemptId: attempt.id,
-        draftId,
-        hostId,
-      });
       const exactArgs = { ...args, draftId };
 
       // The live editor content is hash-only (landing pastes hashes, never
@@ -812,7 +825,8 @@ export function useLandingComposerActions(
       // the concrete host now - the receipt at the end reuses exactly these.
       const receiptAttemptId = uuidv4();
       const receiptDraftId = workspaceContext.draftId;
-      useLandingReceiptsStore.getState().announce({
+      const receipts = useLandingReceiptsStore.getState();
+      const receiptGeneration = receipts.announce({
         kind: "tui-accepted",
         attemptId: receiptAttemptId,
         draftId: receiptDraftId,
@@ -907,6 +921,7 @@ export function useLandingComposerActions(
             // existence reconciler prune the orphan tab. `useEpicCreateForClient.onSuccess`
             // owns the user-facing message and the repair offer.
             if (response.refusal !== undefined) {
+              receipts.retire(receiptAttemptId);
               unmarkEpicCreatedThisSession(epicId);
               return;
             }
@@ -957,15 +972,21 @@ export function useLandingComposerActions(
               // never reach it; a rejected tui-agent create skips it too. The
               // hook resolves with the id only after the create RPC AND the
               // bounded projection wait, which is the "tui accepted" fact.
-              if (typeof tuiAgentId !== "string") return;
-              useLandingReceiptsStore.getState().emit({
-                kind: "tui-accepted",
-                attemptId: receiptAttemptId,
-                draftId: receiptDraftId,
-                epicId,
-                tabId,
-                hostId,
-              });
+              if (typeof tuiAgentId !== "string") {
+                receipts.retire(receiptAttemptId);
+                return;
+              }
+              receipts.emit(
+                {
+                  kind: "tui-accepted",
+                  attemptId: receiptAttemptId,
+                  draftId: receiptDraftId,
+                  epicId,
+                  tabId,
+                  hostId,
+                },
+                receiptGeneration,
+              );
             });
           },
           // Only `epic.create` rejection reaches this arm (a later tui-agent
@@ -974,10 +995,15 @@ export function useLandingComposerActions(
           // A downstream tui-agent failure leaves the marker in place - the epic
           // exists, so it must stay protected until `epic.listTasks` reflects it.
           () => {
+            receipts.retire(receiptAttemptId);
             unmarkEpicCreatedThisSession(epicId);
           },
         )
-        .catch(() => undefined);
+        .catch(() => {
+          // A rejected tui-agent create: the epic exists, the receipt does
+          // not, and the tour must not keep waiting on this attempt.
+          receipts.retire(receiptAttemptId);
+        });
     },
     [createLandingEpic, navigate, terminalAgentCreateFn],
   );

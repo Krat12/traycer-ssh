@@ -43,9 +43,26 @@ interface LandingReceiptsState {
   readonly dispatchedByAttemptId: Readonly<Record<string, LandingAttemptDispatch>>;
   /** Monotonic; lets a subscriber notice a dispatch without diffing maps. */
   readonly dispatchSequence: number;
-  readonly announce: (dispatch: LandingAttemptDispatch) => void;
-  /** Idempotent: a second emit for the same attempt keeps the first. */
-  readonly emit: (receipt: LandingReceipt) => void;
+  /**
+   * Bumped by every `reset`. A create's continuation outlives the identity
+   * or chain that dispatched it, so an emit carries the generation its
+   * `announce` returned and is dropped once a reset has moved past it -
+   * otherwise a deferred create resolving after sign-out would insert a
+   * receipt into the next identity's tour.
+   */
+  readonly generation: number;
+  /** Returns the generation the eventual `emit` must carry. */
+  readonly announce: (dispatch: LandingAttemptDispatch) => number;
+  /**
+   * Idempotent: a second emit for the same attempt keeps the first. Dropped
+   * when `generation` is stale (a reset happened since the announce).
+   */
+  readonly emit: (receipt: LandingReceipt, generation: number) => void;
+  /**
+   * The attempt ended without acceptance (refusal, rejection, retired or
+   * background settlement): drop its dispatch so a waiter stops waiting.
+   */
+  readonly retire: (attemptId: string) => void;
   /** Take a matched receipt out so it cannot complete a second lesson. */
   readonly consume: (attemptId: string) => LandingReceipt | null;
   /** Identity teardown, chain end, replay: nothing pending survives. */
@@ -71,7 +88,8 @@ export const useLandingReceiptsStore = create<LandingReceiptsState>()(
     byAttemptId: {},
     dispatchedByAttemptId: {},
     dispatchSequence: 0,
-    announce: (dispatch) =>
+    generation: 0,
+    announce: (dispatch) => {
       set((state) => ({
         dispatchedByAttemptId: bounded(
           state.dispatchedByAttemptId,
@@ -79,15 +97,24 @@ export const useLandingReceiptsStore = create<LandingReceiptsState>()(
           dispatch,
         ),
         dispatchSequence: state.dispatchSequence + 1,
-      })),
-    emit: (receipt) =>
+      }));
+      return get().generation;
+    },
+    emit: (receipt, generation) =>
       set((state) => {
+        if (generation !== state.generation) return state;
         const byAttemptId = bounded(
           state.byAttemptId,
           receipt.attemptId,
           receipt,
         );
         return byAttemptId === state.byAttemptId ? state : { byAttemptId };
+      }),
+    retire: (attemptId) =>
+      set((state) => {
+        if (!(attemptId in state.dispatchedByAttemptId)) return state;
+        const { [attemptId]: _retired, ...rest } = state.dispatchedByAttemptId;
+        return { dispatchedByAttemptId: rest };
       }),
     consume: (attemptId) => {
       const receipt = get().byAttemptId[attemptId];
@@ -100,7 +127,12 @@ export const useLandingReceiptsStore = create<LandingReceiptsState>()(
       });
       return receipt;
     },
-    reset: () => set({ byAttemptId: {}, dispatchedByAttemptId: {} }),
+    reset: () =>
+      set((state) => ({
+        byAttemptId: {},
+        dispatchedByAttemptId: {},
+        generation: state.generation + 1,
+      })),
   }),
 );
 
