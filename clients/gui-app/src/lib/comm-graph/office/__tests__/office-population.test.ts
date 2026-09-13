@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
+import type { AgentActivityTier } from "@/lib/agent-activity";
+import type { CommGraphEvent } from "@/lib/comm-graph/comm-graph-events";
 import {
   officeArchivedByHost,
   partitionOfficePopulation,
   type OfficePopulation,
   type OfficePopulationInput,
 } from "@/lib/comm-graph/office/office-population";
-import { isOfficeHotStatus } from "@/lib/comm-graph/office/office-status";
+import {
+  isOfficeHotStatus,
+  officeAgentStatuses,
+  officeArchivedAsOf,
+} from "@/lib/comm-graph/office/office-status";
 import {
   makeTestEpic,
   type OfficeTestEpicShape,
@@ -2198,76 +2204,382 @@ describe("partitionOfficePopulation", () => {
   });
 });
 
+/**
+ * HOW THESE CASES WERE PROVEN, stated because the usual proof does not apply.
+ *
+ * `officeArchivedByHost` used to take `(partition, statusById)` and count the
+ * rendered status. It now takes an object and counts the archive MOMENT. So
+ * the base red for these cases is the signature's `TypeError`, not a wrong
+ * number - it says the shape moved, and nothing about whether the count is
+ * right. That is worth saying plainly; four reds dressed up would be worse.
+ *
+ * The behavioural proof is two mutants on the FIXED source: ignoring the
+ * cursor (`archivedAt === null` in place of `officeArchivedAsOf`) kills
+ * "archived after the cursor", and dropping the reveal filter kills "not yet
+ * revealed".
+ *
+ * THE MUTANT OF THE ACTUAL DEFECT - count `paint === "archived"` inside the
+ * fixed function - CANNOT BE WRITTEN, and that is the strongest thing here.
+ * `officeAgentStatuses` needs seven inputs; this function is given four of the
+ * pieces (`agents`, `cursorMs`, `visibleAgentIds`) and has no `events`,
+ * `activityTiers`, `attentionAgentIds` or `failureAgentIds`, and
+ * `OfficePopulation` carries none of them either. The primary case's own
+ * defect is the sharpest instance: an archived sender reads `awaiting` because
+ * of `events`, which is the one missing input that is NOT live-only - it
+ * survives a historical cursor - and it is unreachable from here. The paint is
+ * not merely unread now; it is uncomputable, so the defect class is gone by
+ * construction rather than by vigilance.
+ */
 describe("officeArchivedByHost", () => {
-  it("counts archived agents per host from the partition and the cursor, excluding anyone with no status entry", () => {
+  /**
+   * The archive MOMENT as of the cursor, grouped by the record's own host.
+   * Independent of the status map (the paint) and of the function under test
+   * (which walks the partition). A number written down from one run is not
+   * this: if the fixture's count at the chosen size is zero, the case is
+   * scenery, and `expect(...).toBeGreaterThan(0)` below is what refuses that.
+   */
+  function expectedArchivedByHost(
+    agents: ReadonlyArray<OfficeAgentInput>,
+    visibleAgentIds: ReadonlySet<string>,
+    cursorMs: number | null,
+  ): ReadonlyMap<string | null, number> {
+    const byHost = new Map<string | null, number>();
+    for (const person of agents) {
+      if (!visibleAgentIds.has(person.id)) continue;
+      if (!officeArchivedAsOf(person.archivedAt, cursorMs)) continue;
+      byHost.set(person.hostId, (byHost.get(person.hostId) ?? 0) + 1);
+    }
+    return byHost;
+  }
+
+  const NO_TIERS: ReadonlyMap<string, AgentActivityTier> = new Map();
+  const NO_AGENT_IDS: ReadonlySet<string> = new Set();
+
+  function graphEvent(
+    overrides: Partial<CommGraphEvent> & {
+      readonly id: number;
+      readonly timestamp: number;
+    },
+  ): CommGraphEvent {
+    return {
+      hostId: "host-a",
+      kind: "a2a_message",
+      senderAgentId: "sender",
+      receiverAgentId: "receiver",
+      responseId: "thread-1",
+      inReplyTo: null,
+      expectReply: false,
+      messageText: "hello",
+      noticeReason: null,
+      originKind: null,
+      originChatId: null,
+      originRefId: null,
+      ...overrides,
+    };
+  }
+
+  function deriveStatuses(args: {
+    readonly agents: ReadonlyArray<OfficeAgentInput>;
+    readonly cursorMs: number | null;
+    readonly events: ReadonlyArray<CommGraphEvent>;
+    readonly visibleAgentIds: ReadonlySet<string>;
+    readonly failureAgentIds: ReadonlySet<string>;
+  }): ReadonlyMap<string, OfficeAgentStatus> {
+    return officeAgentStatuses({
+      agents: args.agents,
+      cursorMs: args.cursorMs,
+      events: args.events,
+      visibleAgentIds: args.visibleAgentIds,
+      activityTiers: NO_TIERS,
+      attentionAgentIds: NO_AGENT_IDS,
+      failureAgentIds: args.failureAgentIds,
+    });
+  }
+
+  it("counts an archived unanswered sender on its host at a historical cursor and live", () => {
+    // The request is in the prefix before archival; both cursors sit at or
+    // after the archive moment, so the record is archived as of each. The
+    // historical cursor is the archive moment itself (inclusive, the same
+    // boundary the scene uses) rather than an arbitrary later tick.
+    const REQUEST_AT_MS = 100;
+    const SENDER_ARCHIVED_AT_MS = 500;
+    const HISTORICAL_CURSOR_MS = SENDER_ARCHIVED_AT_MS;
+
+    const sender = agent({
+      id: "sender",
+      hostId: "host-a",
+      archived: true,
+      archivedAt: SENDER_ARCHIVED_AT_MS,
+      createdAt: 0,
+    });
+    const receiver = agent({
+      id: "receiver",
+      hostId: "host-b",
+      createdAt: 1,
+    });
+    const agents = [sender, receiver];
+    const visible = new Set(agents.map((person) => person.id));
+    const events = [
+      graphEvent({
+        id: 1,
+        timestamp: REQUEST_AT_MS,
+        senderAgentId: sender.id,
+        receiverAgentId: receiver.id,
+        expectReply: true,
+      }),
+    ];
+
+    for (const cursorMs of [HISTORICAL_CURSOR_MS, null]) {
+      const statusById = deriveStatuses({
+        agents,
+        cursorMs,
+        events,
+        visibleAgentIds: visible,
+        failureAgentIds: NO_AGENT_IDS,
+      });
+      // The bound: real derivation paints this desk `awaiting` at BOTH
+      // cursors (`awaiting` is event-prefix-derived and outranks `archived`;
+      // live sources are dropped on a historical cursor, but this one is
+      // not a live source). A counter that read the paint would drop it.
+      expect(statusById.get(sender.id), String(cursorMs)).toBe("awaiting");
+      expect(statusById.get(receiver.id), String(cursorMs)).toBe("idle");
+
+      const partition = partitionVerified({
+        agents,
+        statusById,
+        previous: null,
+      });
+      const expected = expectedArchivedByHost(agents, visible, cursorMs);
+      expect(expected.get("host-a"), String(cursorMs)).toBeGreaterThan(0);
+      expect(expected.has("host-b"), String(cursorMs)).toBe(false);
+
+      const tally = officeArchivedByHost({
+        partition,
+        agents,
+        visibleAgentIds: visible,
+        cursorMs,
+      });
+      expect(tally, String(cursorMs)).toEqual(expected);
+    }
+  });
+
+  it("counts an archived agent through a live failure flag, and still after the flag is cleared", () => {
+    const ARCHIVED_AT_MS = 500;
+    const crashed = agent({
+      id: "crashed",
+      hostId: "host-a",
+      archived: true,
+      archivedAt: ARCHIVED_AT_MS,
+      createdAt: 0,
+    });
+    const agents = [crashed];
+    const visible = new Set([crashed.id]);
+    const expected = expectedArchivedByHost(agents, visible, null);
+    expect(expected.get("host-a")).toBeGreaterThan(0);
+
+    const failed = deriveStatuses({
+      agents,
+      cursorMs: null,
+      events: [],
+      visibleAgentIds: visible,
+      failureAgentIds: new Set([crashed.id]),
+    });
+    // Live-only: an unread failure outranks `archived`, so the paint is
+    // `failure`. A counter that read the paint would drop this record.
+    expect(failed.get(crashed.id)).toBe("failure");
+    const partitionFailed = partitionVerified({
+      agents,
+      statusById: failed,
+      previous: null,
+    });
+    const tallyFailed = officeArchivedByHost({
+      partition: partitionFailed,
+      agents,
+      visibleAgentIds: visible,
+      cursorMs: null,
+    });
+    expect(tallyFailed).toEqual(expected);
+
+    // The flag clears; `archivedAt` does not move. The paint becomes
+    // `archived`. The tally must not.
+    const cleared = deriveStatuses({
+      agents,
+      cursorMs: null,
+      events: [],
+      visibleAgentIds: visible,
+      failureAgentIds: NO_AGENT_IDS,
+    });
+    expect(cleared.get(crashed.id)).toBe("archived");
+    const partitionCleared = partitionVerified({
+      agents,
+      statusById: cleared,
+      previous: partitionFailed,
+    });
+    const tallyCleared = officeArchivedByHost({
+      partition: partitionCleared,
+      agents,
+      visibleAgentIds: visible,
+      cursorMs: null,
+    });
+    expect(tallyCleared).toEqual(tallyFailed);
+    expect(tallyCleared).toEqual(expected);
+  });
+
+  it("GUARD: does not count an agent archived after the cursor", () => {
+    const FIRST_ARCHIVED_AT_MS = 400;
+    const SECOND_ARCHIVED_AT_MS = 800;
+    // Sits strictly between the two archive moments: the first record is
+    // already gone, the second is still at its desk.
+    const BETWEEN_ARCHIVES_MS = 600;
+
+    const early = agent({
+      id: "early",
+      hostId: "host-a",
+      archived: true,
+      archivedAt: FIRST_ARCHIVED_AT_MS,
+      createdAt: 0,
+    });
+    const late = agent({
+      id: "late",
+      hostId: "host-a",
+      archived: true,
+      archivedAt: SECOND_ARCHIVED_AT_MS,
+      createdAt: 1,
+    });
+    const agents = [early, late];
+    const visible = new Set(agents.map((person) => person.id));
+    const statusById = deriveStatuses({
+      agents,
+      cursorMs: BETWEEN_ARCHIVES_MS,
+      events: [],
+      visibleAgentIds: visible,
+      failureAgentIds: NO_AGENT_IDS,
+    });
+    // Quiet records, so the paint and the fact agree here: this case
+    // would have been green against a counter that read `status ===
+    // "archived"`. It stays because the cursor-vs-moment split is still
+    // a bound the scene and the sign have to share.
+    expect(statusById.get(early.id)).toBe("archived");
+    expect(statusById.get(late.id)).toBe("idle");
+
+    const expected = expectedArchivedByHost(
+      agents,
+      visible,
+      BETWEEN_ARCHIVES_MS,
+    );
+    expect(expected.get("host-a")).toBe(1);
+
+    const partition = partitionVerified({
+      agents,
+      statusById,
+      previous: null,
+    });
+    const tally = officeArchivedByHost({
+      partition,
+      agents,
+      visibleAgentIds: visible,
+      cursorMs: BETWEEN_ARCHIVES_MS,
+    });
+    expect(tally).toEqual(expected);
+  });
+
+  it("GUARD: does not count an agent the cursor has not revealed, and keys the unattributed host on its own", () => {
     // Measured: two-hosts/200/seed 1 archives 3 on host-a and 5 on
-    // host-b, so both keys are occupied rather than one host's zero
-    // passing as an empty-map coincidence. The extra unattributed
-    // record is this case's own: the fixture never uses `null`.
+    // host-b (the fixture's 4% rate at this size), so both keys are
+    // occupied rather than one host's zero passing as an empty-map
+    // coincidence. The extra unattributed record is this case's own:
+    // the fixture never uses `null`.
     const epic = makeTestEpic("two-hosts", 200, 1);
+    const fixtureArchiveMs = epic.agents.find(
+      (person) => person.archivedAt !== null,
+    )?.archivedAt;
+    if (fixtureArchiveMs === undefined || fixtureArchiveMs === null) {
+      throw new Error("expected two-hosts/200/seed 1 to archive someone");
+    }
     const unattributed = agent({
       id: "unattributed-record",
       hostId: null,
       archived: true,
-      archivedAt: 1_000_000,
+      archivedAt: fixtureArchiveMs,
       createdAt: 10_000,
     });
     const agents = [...epic.agents, unattributed];
-    const statusById = new Map(epic.statusById);
-    statusById.set(unattributed.id, "archived");
+    const revealed = new Set(agents.map((person) => person.id));
+    const statusById = deriveStatuses({
+      agents,
+      cursorMs: null,
+      events: [],
+      visibleAgentIds: revealed,
+      failureAgentIds: NO_AGENT_IDS,
+    });
     const partition = partitionVerified({
       agents,
       statusById,
       previous: null,
     });
 
-    function archivedOn(hostId: string | null): number {
-      let n = 0;
-      for (const person of agents) {
-        if (person.hostId !== hostId) continue;
-        if (statusById.get(person.id) !== "archived") continue;
-        n += 1;
-      }
-      return n;
-    }
+    const expected = expectedArchivedByHost(agents, revealed, null);
+    expect(expected.get("host-a")).toBeGreaterThan(0);
+    expect(expected.get("host-b")).toBeGreaterThan(0);
+    expect(expected.get(null)).toBe(1);
 
-    const onA = archivedOn("host-a");
-    const onB = archivedOn("host-b");
-    const onNull = archivedOn(null);
-    expect(onA).toBeGreaterThan(0);
-    expect(onB).toBeGreaterThan(0);
-    expect(onNull).toBe(1);
-
-    const revealed = new Set(agents.map((person) => person.id));
     const tally = officeArchivedByHost({
       partition,
       agents,
       visibleAgentIds: revealed,
       cursorMs: null,
     });
-    expect(tally.get("host-a")).toBe(onA);
-    expect(tally.get("host-b")).toBe(onB);
-    expect(tally.get(null)).toBe(onNull);
+    expect(tally).toEqual(expected);
 
     const drop = agents.find(
       (person) =>
-        person.hostId === "host-a" && statusById.get(person.id) === "archived",
+        person.hostId === "host-a" &&
+        officeArchivedAsOf(person.archivedAt, null),
     );
     if (drop === undefined) {
       throw new Error("expected an archived agent on host-a");
     }
-    // The reveal filter, which is what "no entry" used to stand in for: an
-    // agent the cursor has not reached is not in anybody's archive yet.
+    // Production `visibleAgentIds` is "agents that exist as of the
+    // cursor"; an archived agent exists (it is a ghosted desk). This
+    // set is every record, then one archived id removed - NOT the
+    // scene-test helper that filters the archived out.
     const hidden = new Set(revealed);
     hidden.delete(drop.id);
-    const after = officeArchivedByHost({
+    const afterHide = officeArchivedByHost({
       partition,
       agents,
       visibleAgentIds: hidden,
       cursorMs: null,
     });
-    expect(after.get("host-a")).toBe(onA - 1);
-    expect(after.get("host-b")).toBe(onB);
-    expect(after.get(null)).toBe(onNull);
+    expect(afterHide).toEqual(expectedArchivedByHost(agents, hidden, null));
+    expect(afterHide.get("host-a")).toBe((expected.get("host-a") ?? 0) - 1);
+    expect(afterHide.get("host-b")).toBe(expected.get("host-b"));
+    expect(afterHide.get(null)).toBe(expected.get(null));
+
+    // One millisecond before the fixture's (uniform) archive moment:
+    // every archived record in this epic is still at its desk.
+    const BEFORE_FIXTURE_ARCHIVE_MS = fixtureArchiveMs - 1;
+    const beforeStatuses = deriveStatuses({
+      agents,
+      cursorMs: BEFORE_FIXTURE_ARCHIVE_MS,
+      events: [],
+      visibleAgentIds: revealed,
+      failureAgentIds: NO_AGENT_IDS,
+    });
+    const beforePartition = partitionVerified({
+      agents,
+      statusById: beforeStatuses,
+      previous: partition,
+    });
+    const before = officeArchivedByHost({
+      partition: beforePartition,
+      agents,
+      visibleAgentIds: revealed,
+      cursorMs: BEFORE_FIXTURE_ARCHIVE_MS,
+    });
+    expect(before).toEqual(
+      expectedArchivedByHost(agents, revealed, BEFORE_FIXTURE_ARCHIVE_MS),
+    );
+    expect(before.size).toBe(0);
   });
 });
