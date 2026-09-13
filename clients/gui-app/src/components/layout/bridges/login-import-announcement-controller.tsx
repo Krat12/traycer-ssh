@@ -10,6 +10,14 @@ import {
 import { useLoginImportAvailable } from "@/hooks/browser/use-login-import-available";
 import { navigateToSettingsSection } from "@/lib/settings-navigation";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import {
+  selectOnboardingSettled,
+  useOnboardingFlowStore,
+} from "@/stores/onboarding/onboarding-flow-store";
+import {
+  selectOnboardingBusy,
+  useOnboardingPresenceStore,
+} from "@/stores/onboarding/onboarding-presence-store";
 import { useBrowserFocusStore } from "@/stores/settings/browser-focus-store";
 import { useSystemTabModalApiPublished } from "@/stores/tabs/system-tab-modal-bridge";
 import {
@@ -23,6 +31,15 @@ const LOGIN_IMPORT_ANNOUNCEMENT_TOAST_ID = "traycer-login-import-announcement";
  * Tells a signed-in user that this release can import their browser logins -
  * once, ever, per install.
  *
+ * For EVERY signed-in capable user, a fresh one included: nothing in the
+ * first run shows browser login import any more (it is a lesson on
+ * Settings ▸ Onboarding, which this toast's action opens the way to), so
+ * the toast is the one announcement of it. What a fresh user gets instead
+ * of an exemption is a wait: the toast holds until the onboarding flow is
+ * SETTLED - welcome modal done or skipped AND the tour chain completed or
+ * skipped; a paused chain still holds - and until neither the welcome modal
+ * nor a tour is on screen.
+ *
  * The toast shows on the first launch where ALL of these hold, and showing
  * it claims the `login-import` announcement (`feature-announcements-store`)
  * so it never shows again - in this window or another:
@@ -32,10 +49,12 @@ const LOGIN_IMPORT_ANNOUNCEMENT_TOAST_ID = "traycer-login-import-announcement";
  *   the Settings row is disabled, and a toast leading to a disabled row is
  *   worse than none);
  * - the user is signed in;
- *   TODO(onboarding-revamp T3): hold while the welcome modal / a tour is up.
- *   The old first-run tour used to gate this (a fresh user met the feature
- *   as a tour act, and a replay held the toast); until the welcome modal
- *   and the new tours re-gate it, a fresh user gets the toast too;
+ * - the onboarding flow is settled (`selectOnboardingSettled`), which a
+ *   legacy-migrated install is from the start;
+ * - neither the welcome modal nor a tour has the screen
+ *   (`selectOnboardingBusy`). Held, not dropped - and, once up, a tour
+ *   taking the screen takes the toast down, since a toast over a spotlight
+ *   is noise;
  * - the window narrator does not own the frame with the app gated behind
  *   its dialog, where a toast renders dead (`pointer-events: none`) and
  *   could never be dismissed - the same predicate the app-update toast
@@ -47,12 +66,14 @@ const LOGIN_IMPORT_ANNOUNCEMENT_TOAST_ID = "traycer-login-import-announcement";
  * The primary action arms the one-shot intent BEFORE navigating, so the row
  * that mounts on the General section finds it armed and opens the dialog;
  * "Later" just dismisses - the announcement is consumed either way. A gate
- * that closes while the toast is up - saving off, sign-out - dismisses it,
- * since it is permanent otherwise; see the effect.
+ * that closes while the toast is up - saving off, sign-out, the flow taking
+ * the screen - dismisses it, since it is permanent otherwise; see the effect.
  */
 export function LoginImportAnnouncementController(): null {
   const available = useLoginImportAvailable();
   const signedIn = useAuthStore((state) => state.status === "signed-in");
+  const onboardingSettled = useOnboardingFlowStore(selectOnboardingSettled);
+  const onboardingBusy = useOnboardingPresenceStore(selectOnboardingBusy);
   const consumed = useFeatureAnnouncementsStore((state) =>
     isFeatureAnnouncementConsumed(state.consumed, "login-import"),
   );
@@ -82,19 +103,20 @@ export function LoginImportAnnouncementController(): null {
 
   useEffect(() => {
     // The toast is permanent, so a gate that closes after it is up takes it
-    // down: saving turned off (the row its action leads to is disabled) or
-    // a sign-out. Not the narrator: that gate is transient, and a toast
-    // under its dialog is inert rather than wrong - it comes back live when
-    // the dialog goes, the same standing the app-update toast has. Gone is
-    // gone: the id is claimed, so nothing re-shows it.
-    // TODO(onboarding-revamp T3): hold while the welcome modal / a tour is up.
-    if (shownRef.current && (!available || !signedIn)) {
+    // down: saving turned off (the row its action leads to is disabled), a
+    // sign-out, or the onboarding flow taking the screen (a replayed tour's
+    // spotlight, and a toast over it is noise). Not the narrator: that gate
+    // is transient, and a toast under its dialog is inert rather than wrong
+    // - it comes back live when the dialog goes, the same standing the
+    // app-update toast has. Gone is gone: the id is claimed, so nothing
+    // re-shows it.
+    if (shownRef.current && (!available || !signedIn || onboardingBusy)) {
       shownRef.current = false;
       toast.dismiss(LOGIN_IMPORT_ANNOUNCEMENT_TOAST_ID);
       return;
     }
-    if (consumed || !available || !signedIn) return;
-    if (narrated || !settingsReachable) return;
+    if (consumed || !available || !signedIn || !onboardingSettled) return;
+    if (onboardingBusy || narrated || !settingsReachable) return;
     // A claim, not a consume: `consumed` above is this window's copy, and a
     // second window restored alongside this one holds its own. The claim
     // re-reads the install's record, so of two windows that both get here
@@ -121,7 +143,16 @@ export function LoginImportAnnouncementController(): null {
         cancel: null,
       },
     );
-  }, [available, claim, consumed, narrated, settingsReachable, signedIn]);
+  }, [
+    available,
+    claim,
+    consumed,
+    narrated,
+    onboardingBusy,
+    onboardingSettled,
+    settingsReachable,
+    signedIn,
+  ]);
 
   return null;
 }

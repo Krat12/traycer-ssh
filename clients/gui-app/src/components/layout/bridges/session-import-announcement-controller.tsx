@@ -15,6 +15,14 @@ import {
 } from "@/lib/host/stream-runtime-context";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import {
+  selectOnboardingSettled,
+  useOnboardingFlowStore,
+} from "@/stores/onboarding/onboarding-flow-store";
+import {
+  selectOnboardingBusy,
+  useOnboardingPresenceStore,
+} from "@/stores/onboarding/onboarding-presence-store";
+import {
   isFeatureAnnouncementConsumed,
   useFeatureAnnouncementsStore,
 } from "@/stores/settings/feature-announcements-store";
@@ -41,10 +49,15 @@ const SESSION_IMPORT_ANNOUNCEMENT_TOAST_ID =
  *   that predates the feature hides the row, so a toast leading to nothing
  *   would be worse than none);
  * - the user is signed in;
- *   TODO(onboarding-revamp T3): hold while the welcome modal / a tour is up.
- *   The old first-run tour used to gate this (a fresh user met the feature
- *   as the tour's last act, and a replay held the toast); until the welcome
- *   modal's sessions page re-gates it, a fresh user gets the toast too;
+ * - the onboarding flow is settled (`selectOnboardingSettled`: modal done
+ *   or skipped AND the chain completed or skipped; a paused chain holds).
+ *   Unlike login-import, the welcome modal's sessions page consumes
+ *   `session-import` on mount, so a fresh user who saw page 2 never gets
+ *   this toast - and one whose scan found nothing (page 2 skipped) does,
+ *   which is the "skipper still gets it" rule the old tour had;
+ * - neither the welcome modal nor a tour has the screen
+ *   (`selectOnboardingBusy`). Held, not dropped - and, once up, a tour
+ *   taking the screen takes the toast down;
  * - the window narrator does not own the frame with the app gated behind
  *   its dialog, where a toast renders dead (`pointer-events: none`) and
  *   could never be dismissed - the same predicate the app-update toast
@@ -55,7 +68,8 @@ const SESSION_IMPORT_ANNOUNCEMENT_TOAST_ID =
  *
  * "Later" just dismisses - the announcement is consumed either way. A gate
  * that closes while the toast is up - the host losing the capability,
- * sign-out - dismisses it, since it is permanent otherwise; see the effect.
+ * sign-out, the flow taking the screen - dismisses it, since it is
+ * permanent otherwise; see the effect.
  */
 export function SessionImportAnnouncementController(): ReactNode {
   const available = useSessionImportAvailable();
@@ -70,6 +84,8 @@ export function SessionImportAnnouncementController(): ReactNode {
     useStreamMethodSupport("sessionImport.scan") === "supported";
   const streamLive = useWsStreamClient() !== null;
   const signedIn = useAuthStore((state) => state.status === "signed-in");
+  const onboardingSettled = useOnboardingFlowStore(selectOnboardingSettled);
+  const onboardingBusy = useOnboardingPresenceStore(selectOnboardingBusy);
   const consumed = useFeatureAnnouncementsStore((state) =>
     isFeatureAnnouncementConsumed(state.consumed, "session-import"),
   );
@@ -93,18 +109,18 @@ export function SessionImportAnnouncementController(): ReactNode {
 
   useEffect(() => {
     // The toast is permanent, so a gate that closes after it is up takes it
-    // down: the host losing the capability (a swap to an older host) or a
-    // sign-out. Not the narrator or a stream drop: both are transient, and a
-    // toast under a dialog is inert rather than wrong. Gone is gone: the id
-    // is claimed, so nothing re-shows it.
-    // TODO(onboarding-revamp T3): hold while the welcome modal / a tour is up.
-    if (shownRef.current && (!available || !signedIn)) {
+    // down: the host losing the capability (a swap to an older host), a
+    // sign-out, or the onboarding flow taking the screen (a replayed tour's
+    // spotlight). Not the narrator or a stream drop: both are transient, and
+    // a toast under a dialog is inert rather than wrong. Gone is gone: the
+    // id is claimed, so nothing re-shows it.
+    if (shownRef.current && (!available || !signedIn || onboardingBusy)) {
       shownRef.current = false;
       toast.dismiss(SESSION_IMPORT_ANNOUNCEMENT_TOAST_ID);
       return;
     }
-    if (consumed || !available || !signedIn) return;
-    if (narrated || !streamLive || !supported) return;
+    if (consumed || !available || !signedIn || !onboardingSettled) return;
+    if (onboardingBusy || narrated || !streamLive || !supported) return;
     // A claim, not a consume: `consumed` above is this window's copy, and a
     // second window restored alongside this one holds its own. The claim
     // re-reads the install's record, so of two windows that both get here
@@ -130,7 +146,17 @@ export function SessionImportAnnouncementController(): ReactNode {
         cancel: null,
       },
     );
-  }, [available, claim, consumed, narrated, signedIn, streamLive, supported]);
+  }, [
+    available,
+    claim,
+    consumed,
+    narrated,
+    onboardingBusy,
+    onboardingSettled,
+    signedIn,
+    streamLive,
+    supported,
+  ]);
 
   if (!dialogOpen) return null;
   return (

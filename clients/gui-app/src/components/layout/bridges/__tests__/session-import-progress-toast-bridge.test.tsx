@@ -1,6 +1,7 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionImportProgressToastBridge } from "@/components/layout/bridges/session-import-progress-toast-bridge";
+import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
 
 const progressToastMock = vi.hoisted(() => vi.fn());
@@ -55,11 +56,13 @@ beforeEach(() => {
   toastMessageMock.mockClear();
   toastDismissMock.mockClear();
   useSessionImportRunStore.setState({ runs: new Map() });
+  useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
 });
 
 afterEach(() => {
   cleanup();
   useSessionImportRunStore.setState({ runs: new Map() });
+  useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
 });
 
 describe("<SessionImportProgressToastBridge />", () => {
@@ -182,6 +185,70 @@ describe("<SessionImportProgressToastBridge />", () => {
     expect(toastDismissMock).toHaveBeenCalledTimes(1);
     expect(toastDismissMock).toHaveBeenCalledWith(
       "session-import-progress:host-b",
+    );
+  });
+
+  it("holds every toast while the welcome modal is open, then shows it when it closes", () => {
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(true);
+    });
+    render(<SessionImportProgressToastBridge />);
+
+    startRun({ total: 5 });
+    expect(progressToastMock).not.toHaveBeenCalled();
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(false);
+    });
+    expect(progressToastMock).toHaveBeenCalledWith(
+      "Importing 0 of 5…",
+      expect.anything(),
+    );
+  });
+
+  it("holds while a tour is busy", () => {
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(true);
+    });
+    render(<SessionImportProgressToastBridge />);
+
+    startRun({ total: 5 });
+    expect(progressToastMock).not.toHaveBeenCalled();
+
+    // A paused chain releasing the hold is the tour host's own job - it is
+    // the one that clears `tourBusy` - so only presence is asserted here.
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(false);
+    });
+    expect(progressToastMock).toHaveBeenCalledWith(
+      "Importing 0 of 5…",
+      expect.anything(),
+    );
+  });
+
+  it("holds a completed run's summary while busy, then shows it once busy clears", () => {
+    render(<SessionImportProgressToastBridge />);
+
+    startRun({ total: 1 });
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(true);
+    });
+
+    act(() => {
+      useSessionImportRunStore.getState().applyComplete(HOST, {
+        runId: "run-1",
+        counts: { imported: 1, skippedAlreadyImported: 0, failed: 0 },
+      });
+    });
+    expect(progressSuccessToastMock).not.toHaveBeenCalled();
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(false);
+    });
+    expect(progressSuccessToastMock).toHaveBeenCalledTimes(1);
+    expect(progressSuccessToastMock).toHaveBeenCalledWith(
+      "Imported 1 session",
+      expect.objectContaining({ description: "Host A" }),
     );
   });
 });
