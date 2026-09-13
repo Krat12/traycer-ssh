@@ -3191,9 +3191,19 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,
-      // One tile left of the door, so the plate `ARCHIVE_SIGN_WIDTH_TILES`
-      // spans is centred over it rather than running off along the wall.
-      signTile: { col: Math.max(archiveDoor.col - 1, 0), row: archiveDoor.row },
+      // ONE TILE RIGHT OF THE DOOR, which is a SCREEN-space anchor and not a
+      // tile-space one. Centred over the door - one tile left - the plate landed
+      // 9.8 pixels inside the front desk's at office zoom: its own row is the
+      // last row of the layout at every size, so there is no row below to move
+      // to, and the front desk's plate is one row up and four columns left.
+      //
+      // The overflow that puts them there is the LADDER WORKING, not a fault to
+      // truncate away: the word is a civic plate's floor, so "Front desk"
+      // measures 76 pixels on the three tiles this floor gives it - 33.6 at 0.7
+      // - and is drawn in full regardless. Placement is the half that has to
+      // give, and this is that placement. One column left of here clears by 1.4
+      // pixels, which is one character of that name away from failing again.
+      signTile: { col: archiveDoor.col + 1, row: archiveDoor.row },
       name: "Archive",
       seatIds: [],
       floorIndex,

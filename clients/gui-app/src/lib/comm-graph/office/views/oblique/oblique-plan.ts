@@ -1220,14 +1220,22 @@ function buildPlazaCivic(
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,
-      // ABOVE THE DOOR, not on its row, and this is what `signTile` being its
-      // own field is for. The plate is four tiles wide because one tile holds no
-      // word, and the door stands at the plaza's left edge with the front desk's
-      // own plate three columns to its right - so four tiles along the walk row
-      // would print "Records" straight through "Front desk". The row above it
-      // carries no lettering at any size, and a sign over a records door is
-      // where a records door is labelled anyway.
-      signTile: { col: archiveDoor.col, row: archiveDoor.row - 1 },
+      // TWO ROWS ABOVE THE DOOR, and this is what `signTile` being its own field
+      // is for. The plate is four tiles wide because one tile holds no word, and
+      // the door stands at the plaza's left edge with the front desk's own plate
+      // three columns to its right - so four tiles along the walk row would
+      // print "Records" straight through "Front desk".
+      //
+      // ONE ROW UP IS NOT ENOUGH, and that is a SCREEN-space fact rather than a
+      // tile one: a plate's backing is a fixed fourteen pixels tall whatever the
+      // camera is doing, while a row is sixteen world pixels - 11.2 of them at
+      // office zoom. So the row above the walk cleared the tiles and still
+      // overlapped "Front desk" by 2.8 pixels of backing, with both complete
+      // words mandatory at that band and their centres only 28 pixels apart.
+      // Two rows is 22.4 and clears it. Row 18 above carries the Plaza sign and
+      // the ward's, and neither reaches this far left: the nearer of them starts
+      // 52 pixels past where this plate ends.
+      signTile: { col: archiveDoor.col, row: archiveDoor.row - 2 },
       name: "Records",
       seatIds: [],
       floorIndex,

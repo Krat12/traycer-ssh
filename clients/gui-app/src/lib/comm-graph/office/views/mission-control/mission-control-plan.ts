@@ -72,7 +72,6 @@ const MEDBAY_ROWS = 2;
 const MEDBAY_BED_WIDTH_TILES = 2;
 /** The two columns every tier leaves clear, by `originColFor`'s own floor. */
 const GALLERY_COLS = MIN_SIDE_TILES;
-const CIVIC_SIGN_WIDTH_TILES = 2;
 
 const QUEUE_FACING: OfficeFacing = "down";
 const CONSOLE_FACING: OfficeFacing = "up";
@@ -2173,7 +2172,15 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
         rows: 2,
       },
       doorTile: deskDoor,
-      signTile: receptionTile,
+      // OVER THE DOOR RATHER THAN OVER THE COUNTER, for the reason the records
+      // plate moved off the walk row: the counter stands on row 1 and the
+      // lounge's own `area` plate sits on row 0 directly beside it, and two
+      // plates one row apart overlap in SCREEN space however cleanly their tiles
+      // separate - a backing is fourteen fixed pixels and a row is 11.2 at
+      // office zoom. "Front desk" and "Lounge" overlapped by 2.8 vertically and
+      // 28.8 horizontally. Row 2 is this room's other row, the tile somebody
+      // steps up on, and it is 22.4 pixels clear of the lounge's label.
+      signTile: deskDoor,
       name: "Front desk",
       // Standing at a counter is not sitting down.
       seatIds: [],
@@ -2226,12 +2233,18 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
     signs: rooms.map((room) => ({
       kind: "civic",
       tile: room.signTile,
-      // THE ARCHIVE'S PLATE IS WIDER THAN THE ARCHIVE, because C5 makes it a
-      // door and one tile holds no word. Every other room here is a room.
+      // A PLATE IS AS WIDE AS THE ROOM IT NAMES, which is what decides how
+      // much of its reading survives: the resolver measures the room's word and
+      // its counter against the plate's own pixels, so a Medbay spanning eight
+      // tiles and plated with two had 51 of them at close-up and dropped the
+      // count its frontage could have carried twice over.
+      //
+      // THE ARCHIVE IS THE ONE FIXED PLATE, and wider than the archive at that,
+      // because C5 makes it a DOOR - one tile, which holds no word. Every other
+      // room here is a room and is measured as one, the way the oblique plazas
+      // already do it.
       widthTiles:
-        room.kind === "archive"
-          ? ARCHIVE_SIGN_WIDTH_TILES
-          : CIVIC_SIGN_WIDTH_TILES,
+        room.kind === "archive" ? ARCHIVE_SIGN_WIDTH_TILES : room.bounds.cols,
       text: room.name,
       ownerAgentId: null,
       hostId: null,
