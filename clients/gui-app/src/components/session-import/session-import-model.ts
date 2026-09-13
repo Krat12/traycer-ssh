@@ -32,6 +32,18 @@ import {
  * projection of that state, not a copy of it.
  */
 
+/**
+ * The harnesses the host has a session reader for - exactly the three
+ * `session-import-readers.ts` builds. A caller that narrows a scan to the
+ * providers a user has enabled intersects with this first, since asking the
+ * host to scan a harness it cannot read is an empty answer at best.
+ */
+export const SESSION_IMPORT_HARNESSES: ReadonlyArray<GuiHarnessId> = [
+  "claude",
+  "codex",
+  "opencode",
+];
+
 /** `(harness, nativeSessionId)` is the import's identity everywhere. */
 export function sessionImportSelectionKey(
   harness: GuiHarnessId,
