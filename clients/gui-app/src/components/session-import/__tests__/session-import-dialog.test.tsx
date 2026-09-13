@@ -49,17 +49,24 @@ vi.mock("@/components/session-import/session-import-wizard", () => ({
  */
 const scanTrackerMock = vi.hoisted(() => {
   const calls: boolean[] = [];
+  const providers: Array<ReadonlyArray<string> | null> = [];
   return {
     calls,
+    providers,
     reset(): void {
       calls.length = 0;
+      providers.length = 0;
     },
   };
 });
 
 vi.mock("@/components/session-import/use-session-import-scan", () => ({
-  useSessionImportScan: (active: boolean) => {
+  useSessionImportScan: (
+    active: boolean,
+    providers: ReadonlyArray<string> | null,
+  ) => {
     scanTrackerMock.calls.push(active);
+    scanTrackerMock.providers.push(providers);
     return {
       state: { kind: "scan-stub" },
       dispatch: () => undefined,
@@ -279,6 +286,9 @@ describe("<SessionImportDialog />", () => {
     expect(screen.queryByTestId("session-import-host-picker-row")).toBeNull();
     expect(screen.getByTestId("session-import-wizard-stub")).not.toBeNull();
     expect(lastScanCall()).toBe(true);
+    // The dialog scans every harness the host can read; its pills narrow the
+    // list, never the request.
+    expect(scanTrackerMock.providers.at(-1)).toBeNull();
   });
 
   it("starts the fixed scope on initialHostId when it names a host other than the active one", () => {
