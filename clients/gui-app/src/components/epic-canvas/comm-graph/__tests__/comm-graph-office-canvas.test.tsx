@@ -1928,6 +1928,179 @@ interface RecordedCall {
   readonly args: ReadonlyArray<unknown>;
 }
 
+/**
+ * Canvas 2D current transform as `[a, b, c, d, e, f]`.
+ *
+ * `x' = a*x + c*y + e`, `y' = b*x + d*y + f`. Identity is
+ * `[1, 0, 0, 1, 0, 0]`. Screen-space chrome is `[dpr, 0, 0, dpr, 0, 0]`;
+ * the camera's world transform is `[dpr*zoom, 0, 0, dpr*zoom, dpr*x, dpr*y]`.
+ */
+type CanvasTransform = readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+];
+
+const CANVAS_IDENTITY: CanvasTransform = [1, 0, 0, 1, 0, 0];
+
+function multiplyCanvasTransform(
+  left: CanvasTransform,
+  right: CanvasTransform,
+): CanvasTransform {
+  const [a, b, c, d, e, f] = left;
+  const [a2, b2, c2, d2, e2, f2] = right;
+  return [
+    a * a2 + c * b2,
+    b * a2 + d * b2,
+    a * c2 + c * d2,
+    b * c2 + d * d2,
+    a * e2 + c * f2 + e,
+    b * e2 + d * f2 + f,
+  ];
+}
+
+function applyCanvasTransform(
+  transform: CanvasTransform,
+  x: number,
+  y: number,
+): { readonly x: number; readonly y: number } {
+  return {
+    x: transform[0] * x + transform[2] * y + transform[4],
+    y: transform[1] * x + transform[3] * y + transform[5],
+  };
+}
+
+function sixNumberTransform(
+  args: ReadonlyArray<unknown>,
+): CanvasTransform | null {
+  if (args.length < 6) return null;
+  const a = args[0];
+  const b = args[1];
+  const c = args[2];
+  const d = args[3];
+  const e = args[4];
+  const f = args[5];
+  if (
+    typeof a !== "number" ||
+    typeof b !== "number" ||
+    typeof c !== "number" ||
+    typeof d !== "number" ||
+    typeof e !== "number" ||
+    typeof f !== "number"
+  ) {
+    return null;
+  }
+  return [a, b, c, d, e, f];
+}
+
+function stepCanvasTransform(
+  current: CanvasTransform,
+  stack: CanvasTransform[],
+  call: RecordedCall,
+): CanvasTransform {
+  if (call.method === "save") {
+    stack.push(current);
+    return current;
+  }
+  if (call.method === "restore") {
+    const previous = stack.pop();
+    return previous ?? current;
+  }
+  if (call.method === "setTransform") {
+    return sixNumberTransform(call.args) ?? current;
+  }
+  if (call.method === "resetTransform") return CANVAS_IDENTITY;
+  if (call.method === "scale") {
+    const sx = call.args[0];
+    const sy = call.args[1];
+    if (typeof sx !== "number" || typeof sy !== "number") return current;
+    return multiplyCanvasTransform(current, [sx, 0, 0, sy, 0, 0]);
+  }
+  if (call.method === "translate") {
+    const tx = call.args[0];
+    const ty = call.args[1];
+    if (typeof tx !== "number" || typeof ty !== "number") return current;
+    return multiplyCanvasTransform(current, [1, 0, 0, 1, tx, ty]);
+  }
+  if (call.method === "transform") {
+    const extra = sixNumberTransform(call.args);
+    return extra === null ? current : multiplyCanvasTransform(current, extra);
+  }
+  return current;
+}
+
+/**
+ * THE MATRIX IN FORCE AT CALL INDEX `index`.
+ *
+ * The recording context records `setTransform` / `scale` / `translate` /
+ * `save` / `restore` as `{method, args}` and never applies them, so every
+ * assertion that reads a draw argument's x/y is talking about PRE-TRANSFORM
+ * numbers. Walk the stream up to that call and this is the CTM a real
+ * context would have had when it ran.
+ *
+ * The recorder's own `save`/`restore` snapshots only the property bag
+ * (font, letterSpacing). This stack is the matrix, and it is separate.
+ *
+ * `index` is the call being issued: the matrix is the state AFTER every
+ * earlier call and BEFORE this one, which is what a `roundRect` or a blit
+ * actually draws under.
+ */
+function canvasTransformAt(
+  recorded: ReadonlyArray<RecordedCall>,
+  index: number,
+): CanvasTransform {
+  let current: CanvasTransform = CANVAS_IDENTITY;
+  const stack: CanvasTransform[] = [];
+  const last = Math.min(Math.max(index, 0), recorded.length);
+  for (let i = 0; i < last; i += 1) {
+    current = stepCanvasTransform(current, stack, recorded[i]);
+  }
+  return current;
+}
+
+/**
+ * Whether this CTM is device-pixel-ratio scale and nothing else — no
+ * camera zoom, no camera translation. That is the screen-space reset
+ * `setTransform(dpr, 0, 0, dpr, 0, 0)`.
+ */
+function isDeviceScaleTransform(
+  transform: CanvasTransform,
+  dpr: number,
+): boolean {
+  return (
+    transform[0] === dpr &&
+    transform[1] === 0 &&
+    transform[2] === 0 &&
+    transform[3] === dpr &&
+    transform[4] === 0 &&
+    transform[5] === 0
+  );
+}
+
+/**
+ * Pushes a `drawOfficeSprite` marker onto the recording stream, in the
+ * order the real call ran, so {@link canvasTransformAt} can see it among
+ * the `setTransform`s.
+ *
+ * Does NOT call through. `officeSpriteSurface` asks `getContext` on a
+ * detached canvas; this suite's stub hands back a fresh recorder bound to
+ * the SAME `calls` array, so a call-through would inject `createImageData`
+ * / `putImageData` / an empty `drawImage` into the painted context's
+ * stream. The marker's ORDER is the fact; the blit itself would be fiction.
+ */
+function recordDrawOfficeSprite(
+  recorded: RecordedCall[],
+): MockInstance<typeof OfficePixelArt.drawOfficeSprite> {
+  const blitSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+  blitSpy.mockImplementation((_ctx, ref, at, theme) => {
+    recorded.push({ method: "drawOfficeSprite", args: [ref, at, theme] });
+  });
+  return blitSpy;
+}
+
 function createRecordingContext(calls: RecordedCall[]): unknown {
   const backing: Record<string, unknown> = {};
   // A STATE STACK for `save`/`restore`, the way a real 2D context works.
@@ -4806,10 +4979,10 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
 
   /**
    * Measured: lowest differing lens pixel's bottom edge to the plate's
-   * top, in screen pixels, at both office zoom and close-up. The lamp and
-   * the plate are both screen-space, so this number does not move with
-   * zoom; a world-space lamp at 0.7 would sit under the fill and this
-   * would be <= 0.
+   * top, in CSS pixels (device coords from the CTM, then divided by dpr).
+   * Screen-space chrome is exactly the dpr scale, so the round trip is
+   * still 3 at both zooms; a world-space pair, or a local `scale(zoom)`
+   * around the lamp alone, reports `3 × zoom`.
    */
   const LENS_CLEARANCE_PX = 3;
 
@@ -4824,6 +4997,8 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
     readonly name: "siren-light" | "siren-light-b";
     readonly x: number;
     readonly y: number;
+    readonly theme: "light" | "dark";
+    readonly matrix: CanvasTransform;
   }
 
   function mapNamed(name: OfficeSpriteName): ReadonlyArray<string> {
@@ -4995,34 +5170,20 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
     setIntersecting(true);
   }
 
-  function medbayPlate(recorded: ReadonlyArray<RecordedCall>): PlateBox {
-    const textIndex = recorded.findIndex(
-      (call) =>
-        call.method === "fillText" &&
-        typeof call.args[0] === "string" &&
-        call.args[0].startsWith("MEDBAY"),
-    );
-    if (textIndex < 0) {
-      throw new Error("expected a MEDBAY plate to be lettered");
+  function plateBoxFromArgs(args: ReadonlyArray<unknown>): PlateBox | null {
+    const left = args[0];
+    const top = args[1];
+    const width = args[2];
+    const height = args[3];
+    if (
+      typeof left !== "number" ||
+      typeof top !== "number" ||
+      typeof width !== "number" ||
+      typeof height !== "number"
+    ) {
+      return null;
     }
-    for (let index = textIndex; index >= 0; index -= 1) {
-      const call = recorded[index];
-      if (call.method !== "roundRect" && call.method !== "rect") continue;
-      const left = call.args[0];
-      const top = call.args[1];
-      const width = call.args[2];
-      const height = call.args[3];
-      if (
-        typeof left !== "number" ||
-        typeof top !== "number" ||
-        typeof width !== "number" ||
-        typeof height !== "number"
-      ) {
-        throw new Error("expected a numeric plate box");
-      }
-      return { left, top, width, height };
-    }
-    throw new Error("expected a plate box behind the MEDBAY lettering");
+    return { left, top, width, height };
   }
 
   function sirenNameOf(ref: unknown): "siren-light" | "siren-light-b" | null {
@@ -5030,6 +5191,11 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
     if (!("name" in ref)) return null;
     const name = ref.name;
     if (name === "siren-light" || name === "siren-light-b") return name;
+    return null;
+  }
+
+  function sirenThemeOf(value: unknown): "light" | "dark" | null {
+    if (value === "light" || value === "dark") return value;
     return null;
   }
 
@@ -5050,35 +5216,157 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
   }
 
   /**
-   * TYPED FROM THE FUNCTION ITSELF, not a bare `MockInstance`: an untyped spy
-   * hands back `any` arguments, and reading `.x` off one is exactly the unsafe
-   * member access the lint stops. Spelling the signature here means the sprite
-   * name and the point come out of `mock.calls` already typed, so the guards
-   * below are narrowing a real union rather than apologising for an `any`.
+   * ONE FRAME, ONE CONTEXT. Walks a single recording and pairs each MEDBAY
+   * plate with the chrome blit that follows it, under the CTM in force at
+   * each call. Returns the last pair so an earlier leftover frame cannot
+   * supply the plate while a later one supplies the lamp. Callers clear
+   * `calls` before the flush they measure; the pairing is what keeps that
+   * property if they forget.
    */
-  function captureChromeSiren(
-    blitSpy: MockInstance<typeof OfficePixelArt.drawOfficeSprite>,
-  ): { plate: PlateBox; blit: SirenBlit } {
-    const plate = medbayPlate(calls);
-    const blits: SirenBlit[] = [];
-    for (const [, ref, at] of blitSpy.mock.calls) {
-      const name = sirenNameOf(ref);
-      if (name === null) continue;
-      blits.push({ name, x: at.x, y: at.y });
-    }
-    return { plate, blit: chromeSirenOn(blits, plate) };
+  interface PlacedPlate {
+    readonly box: PlateBox;
+    readonly matrix: CanvasTransform;
+  }
+
+  interface SirenPair {
+    readonly plate: PlateBox;
+    readonly plateMatrix: CanvasTransform;
+    readonly blit: SirenBlit;
+  }
+
+  /** Whether this call is the MEDBAY lettering that names a medbay plate. */
+  function isMedbayLettering(call: RecordedCall): boolean {
+    return (
+      call.method === "fillText" &&
+      typeof call.args[0] === "string" &&
+      call.args[0].startsWith("MEDBAY")
+    );
   }
 
   /**
-   * A 1×1 pixel whose top-left is `(px, py)` is fully outside `box` when
-   * its closed-open square does not overlap the box at all. No slack: an
-   * antialiased fringe sitting on the edge is inside.
+   * One `drawOfficeSprite` marker read back as a siren blit, or `null` for
+   * every call that is not one. Its own function so the narrowing of an
+   * `unknown` point stays out of the walk below.
    */
-  function pixelFullyOutside(px: number, py: number, box: PlateBox): boolean {
+  function sirenBlitFrom(
+    call: RecordedCall,
+    matrix: CanvasTransform,
+  ): SirenBlit | null {
+    if (call.method !== "drawOfficeSprite") return null;
+    const name = sirenNameOf(call.args[0]);
+    const theme = sirenThemeOf(call.args[2]);
+    if (name === null || theme === null) return null;
+    const at = call.args[1];
+    if (typeof at !== "object" || at === null) return null;
+    if (!("x" in at) || !("y" in at)) return null;
+    if (typeof at.x !== "number" || typeof at.y !== "number") return null;
+    return { name, x: at.x, y: at.y, theme, matrix };
+  }
+
+  function sirenPairOf(
+    plate: PlacedPlate,
+    blits: ReadonlyArray<SirenBlit>,
+  ): SirenPair {
+    return {
+      plate: plate.box,
+      plateMatrix: plate.matrix,
+      blit: chromeSirenOn(blits, plate.box),
+    };
+  }
+
+  /**
+   * The LAST medbay plate in one recording, paired with the chrome blit that
+   * follows it, each under the CTM in force at its own call.
+   *
+   * Pairing rather than taking the last of each independently: a plate from an
+   * earlier frame and a lamp from a later one would measure two drawings
+   * against each other and read as a clean result. Callers still clear `calls`
+   * before the flush they measure, so in practice there is one frame here -
+   * this makes that a property of the capture rather than of the caller.
+   *
+   * The pair is assigned in the loop body rather than by a nested helper on
+   * purpose: an assignment inside a closure is invisible to the narrowing, and
+   * the `null` check below would then be reported as comparing two literals -
+   * a guard that is real at runtime and dead to the analyzer. Keeping the
+   * write where the analyzer can see it keeps the guard honest.
+   */
+  function captureChromeSiren(frame: ReadonlyArray<RecordedCall>): SirenPair {
+    let lastRect: PlacedPlate | null = null;
+    let pendingPlate: PlacedPlate | null = null;
+    let pendingBlits: SirenBlit[] = [];
+    let pair: SirenPair | null = null;
+
+    for (let index = 0; index < frame.length; index += 1) {
+      const call = frame[index];
+      const matrix = canvasTransformAt(frame, index);
+      if (call.method === "roundRect" || call.method === "rect") {
+        const box = plateBoxFromArgs(call.args);
+        if (box !== null) lastRect = { box, matrix };
+      }
+      if (isMedbayLettering(call)) {
+        if (pendingPlate !== null) {
+          pair = sirenPairOf(pendingPlate, pendingBlits);
+        }
+        pendingPlate = lastRect;
+        pendingBlits = [];
+        continue;
+      }
+      const blit = sirenBlitFrom(call, matrix);
+      if (blit !== null) pendingBlits.push(blit);
+    }
+    if (pendingPlate !== null) {
+      pair = sirenPairOf(pendingPlate, pendingBlits);
+    }
+    if (pair === null) {
+      throw new Error(
+        "expected a MEDBAY plate and a chrome siren in this frame",
+      );
+    }
+    return pair;
+  }
+
+  function cssPoint(
+    matrix: CanvasTransform,
+    x: number,
+    y: number,
+  ): { readonly x: number; readonly y: number } {
+    const dpr = window.devicePixelRatio || 1;
+    const device = applyCanvasTransform(matrix, x, y);
+    return { x: device.x / dpr, y: device.y / dpr };
+  }
+
+  function cssBox(matrix: CanvasTransform, box: PlateBox): PlateBox {
+    const corners = [
+      cssPoint(matrix, box.left, box.top),
+      cssPoint(matrix, box.left + box.width, box.top),
+      cssPoint(matrix, box.left, box.top + box.height),
+      cssPoint(matrix, box.left + box.width, box.top + box.height),
+    ];
+    const xs = corners.map((corner) => corner.x);
+    const ys = corners.map((corner) => corner.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    return {
+      left,
+      top,
+      width: Math.max(...xs) - left,
+      height: Math.max(...ys) - top,
+    };
+  }
+
+  /**
+   * A 1×1 CSS box is fully outside `box` when its closed-open square does
+   * not overlap the box at all. No slack: an antialiased fringe sitting on
+   * the edge is inside.
+   */
+  function pixelFullyOutside(pixel: PlateBox, box: PlateBox): boolean {
     const right = box.left + box.width;
     const bottom = box.top + box.height;
     return (
-      px + 1 <= box.left || px >= right || py + 1 <= box.top || py >= bottom
+      pixel.left + pixel.width <= box.left ||
+      pixel.left >= right ||
+      pixel.top + pixel.height <= box.top ||
+      pixel.top >= bottom
     );
   }
 
@@ -5102,22 +5390,59 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
   }
 
   function lensClearancePx(
-    blit: SirenBlit,
-    plate: PlateBox,
+    captured: {
+      readonly plate: PlateBox;
+      readonly plateMatrix: CanvasTransform;
+      readonly blit: SirenBlit;
+    },
     lens: ReadonlyArray<{ readonly x: number; readonly y: number }>,
   ): number {
-    const outside = lens.filter((pixel) =>
-      pixelFullyOutside(blit.x + pixel.x, blit.y + pixel.y, plate),
-    );
+    const plateCss = cssBox(captured.plateMatrix, captured.plate);
+    const outside = lens.filter((pixel) => {
+      const footprint = cssBox(captured.blit.matrix, {
+        left: captured.blit.x + pixel.x,
+        top: captured.blit.y + pixel.y,
+        width: 1,
+        height: 1,
+      });
+      return pixelFullyOutside(footprint, plateCss);
+    });
     if (outside.length === 0) {
       throw new Error("no differing lens pixel sits fully outside the plate");
     }
     let lowestBottom = -Infinity;
     for (const pixel of outside) {
-      const bottom = blit.y + pixel.y + 1;
+      const footprint = cssBox(captured.blit.matrix, {
+        left: captured.blit.x + pixel.x,
+        top: captured.blit.y + pixel.y,
+        width: 1,
+        height: 1,
+      });
+      const bottom = footprint.top + footprint.height;
       if (bottom > lowestBottom) lowestBottom = bottom;
     }
-    return plate.top - lowestBottom;
+    return plateCss.top - lowestBottom;
+  }
+
+  function assertScreenChrome(
+    captured: {
+      readonly plateMatrix: CanvasTransform;
+      readonly blit: SirenBlit;
+    },
+    label: string,
+  ): void {
+    const dpr = window.devicePixelRatio || 1;
+    expect(captured.blit.matrix, `${label} same CTM`).toEqual(
+      captured.plateMatrix,
+    );
+    expect(
+      isDeviceScaleTransform(captured.plateMatrix, dpr),
+      `${label} plate is screen-space`,
+    ).toBe(true);
+    expect(
+      isDeviceScaleTransform(captured.blit.matrix, dpr),
+      `${label} lamp is screen-space`,
+    ).toBe(true);
   }
 
   function civicTaken(value: unknown): number {
@@ -5133,6 +5458,13 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
   }
 
   it("keeps the blinking lens outside the plate's opaque box at office zoom and close-up", () => {
+    // Plate-versus-lamp GEOMETRY in screen space, not final visible
+    // pixels. The oracle does not composite the frame, so a later opaque
+    // draw covering the lamp would not redden here — that is a live
+    // sitting. These two beacon cases are the only ones in this file that
+    // read the CTM; every other screen-position assertion is still
+    // pre-transform arguments.
+    //
     // Premise: Mission control plans a roadless ward, so this sign is the
     // one that carries a beacon. A Floor case cannot witness this.
     const layout = missionControlLayout();
@@ -5141,14 +5473,11 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
       layout.floors[0]?.civic.some((room) => room.kind === "infirmary"),
     ).toBe(true);
 
-    const lens = differingLensPixels("light");
-    expect(lens.length).toBeGreaterThan(0);
-
     const clearances: number[] = [];
     for (const zoom of [OFFICE_LOD_OFFICE_ZOOM, OFFICE_LOD_CLOSEUP_ZOOM]) {
       const motion = installReducedMotion(true);
       seedFailure(HALL_LEAD.id, HALL_LEAD.hostId);
-      const blitSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      const blitSpy = recordDrawOfficeSprite(calls);
       const tally = vi.spyOn(OfficeScene.prototype, "civicTally");
       renderMissionControl(zoom);
       let taken = 0;
@@ -5165,23 +5494,24 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
       flushRaf(2);
 
       calls.length = 0;
-      blitSpy.mockClear();
       flushRaf(1);
-      const darkFrame = captureChromeSiren(blitSpy);
+      const darkFrame = captureChromeSiren(calls);
+      const lens = differingLensPixels(darkFrame.blit.theme);
+      expect(lens.length).toBeGreaterThan(0);
 
       calls.length = 0;
-      blitSpy.mockClear();
       flushRaf(FLUSHES_PER_SIREN_PERIOD);
-      const litFrame = captureChromeSiren(blitSpy);
+      const litFrame = captureChromeSiren(calls);
 
       expect(darkFrame.blit.name).not.toBe(litFrame.blit.name);
+      assertScreenChrome(darkFrame, `zoom ${zoom} dark`);
+      assertScreenChrome(litFrame, `zoom ${zoom} lit`);
 
-      const darkClearance = lensClearancePx(
-        darkFrame.blit,
-        darkFrame.plate,
-        lens,
+      const darkClearance = lensClearancePx(darkFrame, lens);
+      const litClearance = lensClearancePx(
+        litFrame,
+        differingLensPixels(litFrame.blit.theme),
       );
-      const litClearance = lensClearancePx(litFrame.blit, litFrame.plate, lens);
       expect(darkClearance, `zoom ${zoom} dark`).toBe(LENS_CLEARANCE_PX);
       expect(litClearance, `zoom ${zoom} lit`).toBe(LENS_CLEARANCE_PX);
       clearances.push(darkClearance);
@@ -5196,6 +5526,7 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
   });
 
   it("maps the resolver's frame number onto the lens pixels of Mission control's roadless ward", () => {
+    // Geometry and the captured theme argument, not a composited frame.
     const layout = missionControlLayout();
     expect(layout.floors[0]?.road ?? null).toBeNull();
 
@@ -5210,11 +5541,10 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
 
     for (const theme of ["light", "dark"] as const) {
       resolvedThemeMock.current = theme;
-      const lens = differingLensPixels(theme);
-      expect(lens.length, theme).toBeGreaterThan(0);
 
-      const blitSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      const blitSpy = recordDrawOfficeSprite(calls);
       renderMissionControl(OFFICE_LOD_OFFICE_ZOOM);
+      calls.length = 0;
       flushRaf(4);
       const emptyResolved = resolveWardFrame({
         layout,
@@ -5224,8 +5554,13 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
         zoom: OFFICE_LOD_OFFICE_ZOOM,
       });
       expect(emptyResolved, `${theme} empty`).toBe(0);
-      const empty = captureChromeSiren(blitSpy);
-      expect(empty.blit.name, `${theme} empty sprite`).toBe("siren-light");
+      const empty = captureChromeSiren(calls);
+      expect(empty.blit.theme, `${theme} empty arg`).toBe(theme);
+      const emptyDrawn = rasterNamed(empty.blit.name, empty.blit.theme);
+      const emptyExpected = rasterNamed("siren-light", theme);
+      expect([...emptyDrawn.pixels], `${theme} empty pixels`).toEqual([
+        ...emptyExpected.pixels,
+      ]);
       expect(mapNamed(empty.blit.name).join("")).not.toContain("y");
 
       cleanup();
@@ -5233,8 +5568,9 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
 
       const motion = installReducedMotion(true);
       seedFailure(HALL_LEAD.id, HALL_LEAD.hostId);
-      const occupiedSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      const occupiedSpy = recordDrawOfficeSprite(calls);
       renderMissionControl(OFFICE_LOD_OFFICE_ZOOM);
+      calls.length = 0;
       flushRaf(4);
       const occupiedResolved = resolveWardFrame({
         layout,
@@ -5244,10 +5580,16 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
         zoom: OFFICE_LOD_OFFICE_ZOOM,
       });
       expect(occupiedResolved, `${theme} occupied`).toBe(1);
-      const occupied = captureChromeSiren(occupiedSpy);
-      expect(occupied.blit.name, `${theme} occupied sprite`).toBe(
-        "siren-light-b",
+      const occupied = captureChromeSiren(calls);
+      expect(occupied.blit.theme, `${theme} occupied arg`).toBe(theme);
+      const occupiedDrawn = rasterNamed(
+        occupied.blit.name,
+        occupied.blit.theme,
       );
+      const occupiedExpected = rasterNamed("siren-light-b", theme);
+      expect([...occupiedDrawn.pixels], `${theme} occupied pixels`).toEqual([
+        ...occupiedExpected.pixels,
+      ]);
       expect(mapNamed(occupied.blit.name).join("")).toContain("y");
 
       cleanup();
