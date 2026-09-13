@@ -76,6 +76,13 @@ export function HostVideoPlaneRow(props: {
   /** Whether the surrounding scope is otherwise usable (mirrors the panel's `usable`). */
   readonly enabled: boolean;
   readonly hostPlatform: string | null;
+  /**
+   * The selected host's display name (`scope.hostLabel`). The setting is
+   * written over THAT host's RPC and nothing else's, so the row has to say
+   * which machine will be doing the asking - a write made while another host
+   * was selected silently never reaches the Mac (research/10 §(d) 4).
+   */
+  readonly hostName: string;
 }): ReactNode {
   const supported = useHostMethodSupport(
     props.hostId,
@@ -119,6 +126,15 @@ export function HostVideoPlaneRow(props: {
     >
       <SettingsRow
         row={HOST_DIAGNOSTICS.definitions.videoPlane}
+        // The definition's own copy plus the host sentence: the static string
+        // stays the searchable one (it is the settings-search index entry, so
+        // it cannot name a host), this is what the row actually shows.
+        status={
+          <>
+            {HOST_DIAGNOSTICS.definitions.videoPlane.description}{" "}
+            {`Applies to ${props.hostName} only. Other hosts keep their own setting.`}
+          </>
+        }
         control={
           <Select
             value={optionFor(data?.browserVideoPlane)}

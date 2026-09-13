@@ -221,6 +221,7 @@ function DiagnosticsPanelOverRpc(props: {
             client={client}
             enabled={usable}
             hostPlatform={scope.host?.platform ?? null}
+            hostName={scope.hostLabel}
           />
         </HostScopeGate>
       </div>

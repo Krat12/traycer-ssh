@@ -75,8 +75,14 @@ export const HOST_DIAGNOSTICS = defineSettingsSection("diagnostics", {
     group: "advanced",
     search: { contributesTo: "page" },
     label: "Low-latency video for remote viewing",
+    // Deliberately reads as a feature switch, not a permission grant: the row
+    // turns streaming on, and macOS is what asks for the two permissions as a
+    // consequence. Users read a tri-state in Settings as "I granted this" and
+    // then wonder why the OS asks anyway (mobile-browser research/10 RC-A).
+    // Host-agnostic, because this same string is the settings-search index
+    // entry; `HostVideoPlaneRow` names the selected host in its live status.
     description:
-      "Streams this host's browser tabs to your phone and other devices over WebRTC instead of images, which is smoother on a good network. On macOS, turning this on makes the host ask for Screen Recording permission and for permission to reach devices on your local network. Leave it off and tabs still stream as images.",
+      "Streams this host's browser tabs to your phone and other devices over WebRTC instead of images, which is smoother on a good network. Turning it on is what makes a macOS host ask for Screen Recording and Local Network access — this switch does not grant them, macOS still asks, and you can turn it back off. Off keeps tabs streaming as images.",
     availableWhen: alwaysAvailable,
     keywords: [
       "webrtc",

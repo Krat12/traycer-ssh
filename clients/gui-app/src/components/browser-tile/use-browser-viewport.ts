@@ -28,6 +28,7 @@ import {
 } from "@/lib/browser-tab-identity";
 import { useDesktopWindowId } from "@/lib/windows/desktop-window-id";
 import { toastFromHostError } from "@/lib/host-error-toast";
+import { runWhenNativeKeyboardSettled } from "@/lib/native-keyboard";
 import { usePaneFocused } from "@/components/epic-tabs/pane-visibility-context";
 import { useCoarsePointer } from "@/hooks/ui/use-coarse-pointer";
 import {
@@ -36,6 +37,24 @@ import {
   subscribeBrowserGuestViewport,
   type BrowserGuestViewportPresentation,
 } from "@/lib/browser-view/guest/persistent-browser-guest-host";
+
+/**
+ * A report the host answers with silence (it deduped it via `sameGeometry`, or
+ * ownership moved between send and arrival) must not strand the hold. 4s is
+ * the host's own per-apply budget (`playwright-browser-driver.ts`), so anything
+ * still outstanding past it is not coming.
+ */
+const FIT_CONFIRM_TIMEOUT_MS = 4_000;
+
+/**
+ * Trailing coalesce for a ResizeObserver burst. Deliberately NOT sized against
+ * the 250ms `h-safe-dvh` glide (`index.css`): the glide is held out by the
+ * native keyboard's `transitioning` flag, and a trailing timer re-armed by each
+ * of its ~16 ticks fires only after the last one anyway. 50ms matches the
+ * terminal's observer (`terminal-tile-xterm.tsx`) and is immaterial next to the
+ * host's apply, which is four CDP round trips under a 4s budget.
+ */
+const VIEWPORT_REPORT_DEBOUNCE_MS = 50;
 
 export interface BrowserViewportOrigin {
   readonly x: number;
@@ -90,6 +109,10 @@ export interface BrowserViewportPresentation {
     readonly width: number;
     readonly height: number;
   } | null;
+  /** The measured pane, for the DEV overlay (research 09 §D). */
+  readonly area: { readonly width: number; readonly height: number };
+  /** Monotonic count of Fit reports actually put on the wire; DEV overlay only. */
+  readonly reportCount: number;
   readonly claim: () => void;
   readonly onInteraction: (event: SyntheticEvent) => void;
 }
@@ -174,12 +197,69 @@ export function useBrowserViewport(input: {
       input.visible && paneFocused && document.hasFocus();
   }, [input.visible, paneFocused, viewerId]);
 
+  // D22a: while a Fit report is outstanding the painted box keeps the last
+  // host-CONFIRMED scale, so a pane that shrinks ahead of the host (the 250ms
+  // keyboard glide) clips the picture instead of thumbnailing it.
+  const { heldScale, reportCount, hold, holdForClaim, countReport, commit } =
+    useFitReportHold(state, viewerId);
+
   useEffect(() => {
     const element = areaRef.current;
     if (element === null || !input.visible) return;
     // Local to this subscription: reconnect and ownership/lifecycle changes
     // still resend, but ResizeObserver's initial delivery need not repeat it.
     let lastReported: BrowserViewportGeometry | null = null;
+    let reportTimer: number | null = null;
+    let settleCancel: (() => void) | null = null;
+    const cancelPendingReport = (): void => {
+      if (reportTimer !== null) {
+        clearTimeout(reportTimer);
+        reportTimer = null;
+      }
+      settleCancel?.();
+      settleCancel = null;
+    };
+    const sendReport = (): void => {
+      // The LAST measurement, not the one that armed the timer.
+      const geometry = geometryRef.current;
+      if (geometry === null) return;
+      if (
+        lastReported?.width === geometry.width &&
+        lastReported.height === geometry.height &&
+        lastReported.dpr === geometry.dpr
+      )
+        return;
+      lastReported = geometry;
+      report?.({
+        sessionId: input.sessionId,
+        tabId: input.tabId,
+        viewerId,
+        geometry,
+        claim: activationPending.current && document.hasFocus(),
+        pointer: coarse ? "coarse" : "fine",
+      });
+      activationPending.current = false;
+      countReport();
+    };
+    /**
+     * D22b: one report per gesture. The trailing timer coalesces a plain
+     * ResizeObserver burst; `runWhenNativeKeyboardSettled` holds the whole
+     * keyboard glide out (outside the installed app it runs synchronously, so
+     * desktop behaviour is the debounce alone). The hold latches here, when the
+     * pane first disagrees with the host - not at send - because the glide's
+     * every tick would otherwise repaint at an unconfirmed scale.
+     */
+    const scheduleReport = (): void => {
+      cancelPendingReport();
+      hold();
+      reportTimer = window.setTimeout(() => {
+        reportTimer = null;
+        settleCancel = runWhenNativeKeyboardSettled(() => {
+          settleCancel = null;
+          sendReport();
+        });
+      }, VIEWPORT_REPORT_DEBOUNCE_MS);
+    };
     const measure = (): void => {
       const width = element.clientWidth - (expanded ? 48 : 0);
       const height = element.clientHeight - (expanded ? 48 : 0);
@@ -202,22 +282,16 @@ export function useBrowserViewport(input: {
           lastReported.height !== geometry.height ||
           lastReported.dpr !== geometry.dpr)
       ) {
-        lastReported = geometry;
-        report?.({
-          sessionId: input.sessionId,
-          tabId: input.tabId,
-          viewerId,
-          geometry,
-          claim: activationPending.current && document.hasFocus(),
-          pointer: coarse ? "coarse" : "fine",
-        });
-        activationPending.current = false;
+        scheduleReport();
       }
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     measure();
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      cancelPendingReport();
+    };
   }, [
     input.visible,
     input.pageZoom,
@@ -231,6 +305,8 @@ export function useBrowserViewport(input: {
     coarse,
     expanded,
     paneFocused,
+    hold,
+    countReport,
   ]);
 
   /**
@@ -265,6 +341,13 @@ export function useBrowserViewport(input: {
       claim: true,
       pointer: coarse ? "coarse" : "fine",
     });
+    countReport();
+    // A claim is always an owner-transferring report - the host answers it
+    // whoever sends it - so it latches unconditionally, unlike the measure
+    // path. It also stays immediate and undebounced (D03): ownership transfer
+    // is a deliberate act, and delaying it would let a background measurement
+    // land first.
+    holdForClaim();
   }, [
     coarse,
     input.sessionId,
@@ -274,6 +357,8 @@ export function useBrowserViewport(input: {
     supported,
     canChange,
     viewerId,
+    countReport,
+    holdForClaim,
   ]);
 
   const mutation = useMutation({
@@ -383,39 +468,51 @@ export function useBrowserViewport(input: {
       return;
     claim();
   };
-  if (state === null)
+  const layout = viewportLayout({
+    state,
+    area,
+    pageZoom: input.pageZoom,
+    native: input.native,
+    viewerId,
+    expanded,
+    previewScaleSetting,
+    nativeViewport,
+    heldScale,
+  });
+  // The committed scale is recorded in an effect, never during render: on the
+  // render that latches, the held value is therefore the scale of the last
+  // commit with no report outstanding - the one the host had confirmed (D22a).
+  useEffect(() => {
+    commit(layout);
+  }, [commit, layout]);
+  if (layout === null)
     return {
       areaRef,
       scrollRef,
       claim,
       onInteraction,
+      area,
+      reportCount,
       guestViewport: null,
       paintedSize: null,
       controller: null,
     };
   const { size, scale, resizeScale, fitOwnedHere, guestViewport, paintedSize } =
-    viewportLayout({
-      state,
-      area,
-      pageZoom: input.pageZoom,
-      native: input.native,
-      viewerId,
-      expanded,
-      previewScaleSetting,
-      nativeViewport,
-    });
+    layout;
   return {
     areaRef,
     scrollRef,
     claim,
     onInteraction,
+    area,
+    reportCount,
     guestViewport,
     paintedSize,
     controller: {
       state:
         nativeViewport === null
-          ? state
-          : { ...state, intent: nativeViewport.intent },
+          ? layout.state
+          : { ...layout.state, intent: nativeViewport.intent },
       size,
       expanded,
       pending: mutation.isPending || nativePending,
@@ -423,7 +520,7 @@ export function useBrowserViewport(input: {
       error: viewportFailureMessage(
         failure,
         mutation.error,
-        state.revision,
+        layout.state.revision,
         connectionGeneration,
       ),
       dismissError: () => setFailure(null),
@@ -452,6 +549,91 @@ export function useBrowserViewport(input: {
       },
     },
   };
+}
+
+/**
+ * The outstanding-Fit-report latch (D22a) and the DEV report counter, kept out
+ * of {@link useBrowserViewport} so the caller reads as presentation.
+ *
+ * `heldScale` is the scale to paint at while a report is outstanding: the last
+ * one committed with nothing outstanding - i.e. the last the host had confirmed
+ * - and `null` whenever the live pane may be trusted again.
+ */
+function useFitReportHold(
+  state: BrowserViewportState | null,
+  viewerId: string,
+): {
+  readonly heldScale: number | null;
+  readonly reportCount: number;
+  readonly hold: () => void;
+  readonly holdForClaim: () => void;
+  readonly countReport: () => void;
+  readonly commit: (layout: { readonly scale: number } | null) => void;
+} {
+  const [heldScale, setHeldScale] = useState<number | null>(null);
+  const [reportCount, setReportCount] = useState(0);
+  // Written in an effect and read only from the send paths, which run from a
+  // timer: the value is the scale of the last committed render, so latching
+  // during a pane change holds the size the host last confirmed against.
+  const committedScale = useRef<number | null>(null);
+  const fitOwnedHereRef = useRef(false);
+
+  useEffect(() => {
+    const fitOwnerId = state?.fitOwnerId ?? null;
+    fitOwnedHereRef.current = fitOwnerId === null || fitOwnerId === viewerId;
+  }, [state?.fitOwnerId, viewerId]);
+
+  /**
+   * Latch the painted box until the host answers. Gated on ownership: the host
+   * answers a report from the Fit owner (or a claim) and silently returns the
+   * current state for anyone else (`browser-viewport-plane.ts`), so a non-owner
+   * that latched would freeze its own rotate/resize behind a report nobody will
+   * answer.
+   */
+  const hold = useCallback((): void => {
+    if (fitOwnedHereRef.current) setHeldScale(committedScale.current);
+  }, []);
+  /** A claim transfers ownership, so the host always answers it. */
+  const holdForClaim = useCallback((): void => {
+    setHeldScale(committedScale.current);
+  }, []);
+  const countReport = useCallback((): void => {
+    if (import.meta.env.DEV) setReportCount((count) => count + 1);
+  }, []);
+  const commit = useCallback(
+    (layout: { readonly scale: number } | null): void => {
+      committedScale.current = layout === null ? null : layout.scale;
+    },
+    [],
+  );
+
+  // Any word from the host - a confirmed geometry or a new revision - ends the
+  // hold. Adjusted during render rather than in an effect so the tile never
+  // paints one more frame at the held scale after the host has answered.
+  const applied = state?.applied ?? null;
+  const confirmed = `${applied?.width ?? "-"}x${applied?.height ?? "-"}@${applied?.dpr ?? "-"}#${state?.revision ?? "-"}`;
+  const [lastConfirmed, setLastConfirmed] = useState(confirmed);
+  if (lastConfirmed !== confirmed) {
+    setLastConfirmed(confirmed);
+    setHeldScale(null);
+  }
+
+  /**
+   * Backstop: a report the host answers with silence (it deduped it via
+   * `sameGeometry`, or ownership moved between send and arrival) must not
+   * strand the hold.
+   */
+  useEffect(() => {
+    if (heldScale === null) return;
+    const timer = window.setTimeout(() => {
+      setHeldScale(null);
+    }, FIT_CONFIRM_TIMEOUT_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [heldScale]);
+
+  return { heldScale, reportCount, hold, holdForClaim, countReport, commit };
 }
 
 function viewportControlState(
@@ -496,7 +678,7 @@ function viewportFailureMessage(
 }
 
 function viewportLayout(input: {
-  readonly state: BrowserViewportState;
+  readonly state: BrowserViewportState | null;
   readonly area: { readonly width: number; readonly height: number };
   readonly pageZoom: number;
   readonly native: boolean;
@@ -504,6 +686,8 @@ function viewportLayout(input: {
   readonly expanded: boolean;
   readonly previewScaleSetting: number | null;
   readonly nativeViewport: BrowserViewGuestViewportRequested | null;
+  /** The last host-confirmed scale while a Fit report is outstanding (D22a). */
+  readonly heldScale: number | null;
 }): {
   readonly size: BrowserViewportController["size"];
   readonly scale: number;
@@ -511,8 +695,11 @@ function viewportLayout(input: {
   readonly fitOwnedHere: boolean;
   readonly guestViewport: BrowserViewportPresentation["guestViewport"];
   readonly paintedSize: BrowserViewportPresentation["paintedSize"];
-} {
+  /** The state this layout was computed from, narrowed for the caller. */
+  readonly state: BrowserViewportState;
+} | null {
   const { state, area } = input;
+  if (state === null) return null;
   const request = input.nativeViewport;
   const { size, intrinsic, zoom } = viewportDimensions(
     state,
@@ -520,17 +707,11 @@ function viewportLayout(input: {
     request,
   );
   const scale =
-    input.previewScaleSetting ??
-    (intrinsic === null || area.width === 0 || area.height === 0
-      ? 1
-      : Math.min(
-          1,
-          area.width / intrinsic.width,
-          area.height / intrinsic.height,
-        ));
+    input.previewScaleSetting ?? input.heldScale ?? fitScale(intrinsic, area);
   const fitOwnedHere =
     state.fitOwnerId === null || state.fitOwnerId === input.viewerId;
   const layout = {
+    state,
     size,
     scale,
     resizeScale: scale * zoom,
@@ -561,6 +742,16 @@ function viewportLayout(input: {
       height: intrinsic.height * scale,
     },
   };
+}
+
+/** The pane-fitting scale, never an upscale. */
+function fitScale(
+  intrinsic: BrowserViewportController["size"],
+  area: { readonly width: number; readonly height: number },
+): number {
+  return intrinsic === null || area.width === 0 || area.height === 0
+    ? 1
+    : Math.min(1, area.width / intrinsic.width, area.height / intrinsic.height);
 }
 
 function viewportDimensions(

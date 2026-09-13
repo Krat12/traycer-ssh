@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserViewportState } from "@traycer/protocol/host/browser/viewport";
 import { BrowserViewportToolbar } from "../browser-viewport-toolbar";
 import {
@@ -20,6 +20,7 @@ import {
   PaneSurfaceActivityContext,
   type PaneSurfaceActivity,
 } from "@/components/epic-tabs/pane-visibility-context";
+import { setNativeKeyboardState } from "@/lib/native-keyboard";
 import { useBrowserViewport } from "../use-browser-viewport";
 
 const desktopWindowId = vi.hoisted(() => ({ value: "window-a" }));
@@ -1563,3 +1564,460 @@ describe("releaseViewport fires only on unmount (D03, critique-2 B6)", () => {
     });
   });
 });
+
+/**
+ * D22, the numeric reproduction from `research/09-keyboard-layout-shift.md`
+ * (§0, §A.3). The measured phone pane is 393x610 with the keyboard down and
+ * 393x278 with it up, and the 250ms `h-safe-dvh` glide between them delivers
+ * ~16 ResizeObserver ticks. Before this suite each of those ticks both
+ * repainted the frame at an unconfirmed scale (the 179x278 centred thumbnail)
+ * and sent its own Fit report, each answered by a 4-round-trip host apply
+ * during which no frames are published at all.
+ */
+describe("Fit settles before it is sent (D22)", () => {
+  const PANE_WIDTH = 393;
+  /** The 16 measured pane heights of the 250ms keyboard-up glide. */
+  const OPEN_GLIDE_HEIGHTS = [
+    610, 588, 566, 544, 521, 499, 477, 455, 433, 411, 389, 367, 344, 322, 300,
+    278,
+  ];
+  /** `VIEWPORT_REPORT_DEBOUNCE_MS` in `use-browser-viewport.ts`. */
+  const DEBOUNCE_MS = 50;
+  /** `FIT_CONFIRM_TIMEOUT_MS` in `use-browser-viewport.ts`. */
+  const CONFIRM_TIMEOUT_MS = 4_000;
+  /** One 60fps glide frame. */
+  const TICK_MS = 16;
+
+  let paneHeight = 610;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    paneHeight = OPEN_GLIDE_HEIGHTS[0];
+    vi.stubGlobal("ResizeObserver", ControllableViewportResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      () => PANE_WIDTH,
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      () => paneHeight,
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    setNativeKeyboardState({ open: false, transitioning: false });
+  });
+
+  function viewerIdFor(instanceId: string): string {
+    return JSON.stringify(["window-a", instanceId]);
+  }
+
+  function appliedFitState(
+    applied: { readonly width: number; readonly height: number },
+    fitOwnerId: string | null,
+    revision: number,
+  ): BrowserViewportState {
+    return {
+      ...viewportState(),
+      applied: { ...applied, dpr: 1 },
+      fitOwnerId,
+      revision,
+    };
+  }
+
+  function paintedSize(): string {
+    return screen.getByTestId("painted-size").textContent;
+  }
+
+  function glideTo(height: number): void {
+    paneHeight = height;
+    act(() => {
+      triggerLastViewportResize();
+      vi.advanceTimersByTime(TICK_MS);
+    });
+  }
+
+  function advance(ms: number): void {
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  }
+
+  it("holds the confirmed box through the open glide and reports once, at the settled size", () => {
+    const instanceId = "instance-settle-open";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    setNativeKeyboardState({ open: true, transitioning: true });
+    render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    expect(paintedSize()).toBe("393x610");
+
+    for (const height of OPEN_GLIDE_HEIGHTS.slice(1)) {
+      glideTo(height);
+      // Not 379x588, not 179x278, not any of the 16 intermediates the
+      // unlatched scale produced.
+      expect(paintedSize()).toBe("393x610");
+      expect(reportViewport).not.toHaveBeenCalled();
+    }
+
+    act(() => {
+      setNativeKeyboardState({ open: true, transitioning: false });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+    });
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+    expect(reportViewport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geometry: { width: 393, height: 278, dpr: 1 },
+        pointer: "fine",
+      }),
+    );
+    // The host has not confirmed yet, so the picture has not moved.
+    expect(paintedSize()).toBe("393x610");
+    expect(screen.getByTestId("report-count").textContent).toBe("1");
+  });
+
+  it("releases the hold when the host confirms the reported viewport", () => {
+    const instanceId = "instance-settle-confirm";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    const queryClient = new QueryClient();
+    const view = render(
+      settleViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    glideTo(278);
+    advance(DEBOUNCE_MS);
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+    expect(paintedSize()).toBe("393x610");
+
+    view.rerender(
+      settleViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 278 },
+            viewerIdFor(instanceId),
+            2,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    expect(paintedSize()).toBe("393x278");
+  });
+
+  it("never upscales through the close glide and reports once", () => {
+    const instanceId = "instance-settle-close";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    paneHeight = 278;
+    setNativeKeyboardState({ open: true, transitioning: true });
+    render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 278 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    expect(paintedSize()).toBe("393x278");
+
+    for (const height of [...OPEN_GLIDE_HEIGHTS].reverse().slice(1)) {
+      glideTo(height);
+      // `Math.min(1, ...)` refuses to upscale: the short strip stays 1:1 at
+      // the top of the growing pane until the taller frame lands.
+      expect(paintedSize()).toBe("393x278");
+      expect(reportViewport).not.toHaveBeenCalled();
+    }
+
+    act(() => {
+      setNativeKeyboardState({ open: false, transitioning: false });
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+    });
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+    expect(reportViewport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geometry: { width: 393, height: 610, dpr: 1 },
+      }),
+    );
+  });
+
+  it("coalesces a non-keyboard ResizeObserver burst into one trailing report", () => {
+    const instanceId = "instance-settle-burst";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+
+    for (const height of OPEN_GLIDE_HEIGHTS.slice(1)) {
+      glideTo(height);
+      expect(reportViewport).not.toHaveBeenCalled();
+    }
+    advance(DEBOUNCE_MS);
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+    expect(reportViewport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geometry: { width: 393, height: 278, dpr: 1 },
+      }),
+    );
+  });
+
+  it("gives the pane back to the live scale when the host answers a report with silence", () => {
+    const instanceId = "instance-settle-watchdog";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    glideTo(278);
+    advance(DEBOUNCE_MS);
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+    expect(paintedSize()).toBe("393x610");
+
+    advance(CONFIRM_TIMEOUT_MS);
+    expect(paintedSize()).toBe("179x278");
+  });
+
+  it("never holds for a viewer that does not own Fit", () => {
+    const instanceId = "instance-settle-non-owner";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState({ width: 393, height: 610 }, "viewer-elsewhere", 1),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    glideTo(278);
+    // No report is coming for this viewer, so a hold would freeze it forever.
+    expect(paintedSize()).toBe("179x278");
+
+    advance(DEBOUNCE_MS);
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a claim immediately, undebounced, and latches the hold", () => {
+    const instanceId = "instance-settle-claim";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    const queryClient = new QueryClient();
+    const view = render(
+      settleViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+    advance(DEBOUNCE_MS);
+    expect(reportViewport).toHaveBeenCalledTimes(1);
+
+    // A host word clears the mount hold, so the claim's own latch is visible.
+    view.rerender(
+      settleViewportTree(
+        queryClient,
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            2,
+          ),
+          reportViewport,
+          () => undefined,
+        ),
+        instanceId,
+      ),
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Claim viewport" }).click();
+    });
+    // No timer advance: ownership transfer is deliberate and immediate (D03).
+    expect(reportViewport).toHaveBeenCalledTimes(2);
+    expect(reportViewport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ claim: true }),
+    );
+
+    glideTo(278);
+    expect(paintedSize()).toBe("393x610");
+  });
+
+  it("sends nothing when the surface unmounts mid-debounce", () => {
+    const instanceId = "instance-settle-unmount";
+    const setViewport = vi.fn<BrowserSessionsState["setViewport"]>(() =>
+      Promise.resolve(),
+    );
+    const reportViewport = vi.fn<BrowserSessionsState["reportViewport"]>();
+    const releaseViewport = vi.fn<BrowserSessionsState["releaseViewport"]>();
+    const view = render(
+      settleViewportTree(
+        new QueryClient(),
+        sessionsState(
+          setViewport,
+          appliedFitState(
+            { width: 393, height: 610 },
+            viewerIdFor(instanceId),
+            1,
+          ),
+          reportViewport,
+          releaseViewport,
+        ),
+        instanceId,
+      ),
+    );
+    paneHeight = 278;
+    act(() => {
+      triggerLastViewportResize();
+    });
+    view.unmount();
+    advance(DEBOUNCE_MS * 20);
+
+    expect(reportViewport).not.toHaveBeenCalled();
+    expect(releaseViewport).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `native: false` (the phone/headless surface, the one that takes the
+ * `paintedSize` branch) with the painted box and the report counter read back
+ * per render.
+ */
+function SettleViewportProbe(props: {
+  readonly instanceId: string;
+}): ReactElement {
+  const { areaRef, claim, paintedSize, reportCount } = useBrowserViewport({
+    hostId: "host-1",
+    sessionId: "session-1",
+    tabId: "tab-1",
+    instanceId: props.instanceId,
+    registrationId: null,
+    visible: true,
+    disabled: false,
+    pageZoom: 1,
+    native: false,
+  });
+  return (
+    <>
+      <div data-testid="measurement-area" ref={areaRef} />
+      <button type="button" onClick={claim}>
+        Claim viewport
+      </button>
+      <output data-testid="painted-size">
+        {paintedSize === null
+          ? "none"
+          : `${Math.round(paintedSize.width)}x${Math.round(paintedSize.height)}`}
+      </output>
+      <output data-testid="report-count">{reportCount}</output>
+    </>
+  );
+}
+
+function settleViewportTree(
+  queryClient: QueryClient,
+  sessions: BrowserSessionsState,
+  instanceId: string,
+): ReactElement {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserSessionsContext.Provider value={sessions}>
+        <PaneSurfaceActivityContext.Provider
+          value={{ visible: true, focused: true }}
+        >
+          <SettleViewportProbe instanceId={instanceId} />
+        </PaneSurfaceActivityContext.Provider>
+      </BrowserSessionsContext.Provider>
+    </QueryClientProvider>
+  );
+}

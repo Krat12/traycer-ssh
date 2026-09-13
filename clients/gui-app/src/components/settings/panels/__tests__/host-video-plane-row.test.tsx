@@ -36,6 +36,7 @@ function renderRow(options: {
     effective: boolean;
   };
   readonly hostPlatform?: string | null;
+  readonly hostName?: string;
   readonly methods?: readonly string[] | null;
   readonly overrideHandlers?: Parameters<
     typeof buildConfigHostFixture
@@ -63,6 +64,7 @@ function renderRow(options: {
         client={fixture.client}
         enabled
         hostPlatform={options.hostPlatform ?? "darwin-arm64"}
+        hostName={options.hostName ?? "Studio Mac"}
       />
     </QueryClientProvider>,
   );
@@ -123,9 +125,40 @@ describe("<HostVideoPlaneRow />", () => {
     ).toBeTruthy();
     expect(
       screen.getByText(
-        /turning this on makes the host ask for Screen Recording/,
+        /Turning it on is what makes a macOS host ask for Screen Recording and Local Network access/,
       ),
     ).toBeTruthy();
+  });
+
+  it("names the selected host, because the setting is written over that host's RPC alone", async () => {
+    renderRow({
+      hostSettings: { browserVideoPlane: null, effective: false },
+      hostName: "Studio Mac",
+    });
+
+    await screen.findByText("Low-latency video for remote viewing");
+    // A write made while another host was selected never reaches this one, so
+    // the row has to say which machine it is talking about (research/10 (d)4).
+    expect(screen.getByText(/Applies to Studio Mac only/)).toBeTruthy();
+    expect(screen.getByText(/Other hosts keep their own setting/)).toBeTruthy();
+  });
+
+  it("reads as a feature switch, not a permission granted here", async () => {
+    renderRow({ hostSettings: { browserVideoPlane: null, effective: false } });
+
+    await screen.findByText("Low-latency video for remote viewing");
+    // RC-A: a tri-state in Settings reads as "I granted this", and then the
+    // OS asking anyway reads as a bug. The copy must say the opposite - the
+    // switch turns streaming on, macOS is what asks, and it is reversible.
+    expect(
+      screen.getByText(
+        /this switch does not grant them, macOS still asks, and you can turn it back off/,
+      ),
+    ).toBeTruthy();
+    // The only occurrence of "grant" is that denial: nothing in the row says
+    // the user is granting anything by choosing On.
+    const copy = screen.getByText(/Streams this host's browser tabs/);
+    expect(copy.textContent.match(/grant/gi)).toEqual(["grant"]);
   });
 
   it("turning it on sends { browserVideoPlane: true } and renders the refetched value", async () => {

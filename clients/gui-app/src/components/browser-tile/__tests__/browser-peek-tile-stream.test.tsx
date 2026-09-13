@@ -15,6 +15,10 @@ import {
   tabHostIdModule,
 } from "@/components/browser-tile/__tests__/browser-peek-tile-stream-fixture";
 import { BrowserPeekTile } from "@/components/browser-tile/browser-peek-tile";
+import {
+  BrowserSessionsContext,
+  type BrowserSessionsState,
+} from "@/components/epic-canvas/renderers/browser-sessions-context";
 
 const hookState = vi.hoisted(() => ({
   streamClient: null as FakeStreamClient | null,
@@ -50,6 +54,38 @@ vi.mock("@/lib/host/stream-auth-revalidator", () =>
 vi.mock("@/hooks/epic/use-epic-nested-focus-navigation", () =>
   epicNestedFocusNavigationModule(),
 );
+
+/** The tile only reads `applied` / `reportViewport` off this context. */
+function peekSessionsState(): BrowserSessionsState {
+  return {
+    viewports: {
+      [PEEK_NODE.tabId]: {
+        sessionId: PEEK_NODE.sessionId,
+        tabId: PEEK_NODE.tabId,
+        intent: { mode: "fit" },
+        applied: { width: 393, height: 610, dpr: 1 },
+        revision: 1,
+        source: "user",
+        fitOwnerId: null,
+      },
+    },
+    setViewport: () => Promise.resolve(),
+    reportViewport: () => undefined,
+    releaseViewport: () => undefined,
+    hostId: PEEK_NODE.hostId,
+    lifecycle: "live",
+    inventoryReady: true,
+    canMaterializeElectron: true,
+    connectionGeneration: 1,
+    items: [],
+    errorMessage: null,
+    retry: () => undefined,
+    openTab: () => Promise.reject(new Error("unused")),
+    closeTab: () => Promise.resolve(),
+    attachTab: () => Promise.resolve(),
+    moveTab: () => Promise.resolve(),
+  };
+}
 
 function peekTile(): HTMLElement {
   return screen.getByTestId(`browser-peek-tile-${PEEK_NODE.instanceId}`);
@@ -1218,5 +1254,82 @@ describe("BrowserPeekTile rttProbe handling", () => {
       { kind: "rttProbeAck", hasBinaryPayload: false, probeId: 1 },
       { kind: "rttProbeAck", hasBinaryPayload: false, probeId: 2 },
     ]);
+  });
+});
+
+describe("BrowserPeekTile DEV viewport overlay", () => {
+  beforeEach(() => {
+    hookState.visible = true;
+    hookState.streamClient = new FakeStreamClient(true);
+    hookState.streamClientFactory = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+    hookState.streamClientFactory = null;
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The DEV measurement overlay (T17 §C / research 09 §D). It is the only
+   * thing that can decide the residuals recorded under D22 on a real device -
+   * whether `applied` really lags the pane, and whether the video plane flips
+   * mid-transition - so it prints the pane, the host's confirmed viewport, the
+   * scale, the painted box, the frame, the plane, and the report count.
+   */
+  it("prints the pane, the applied viewport, the painted box and the report count in the DEV overlay", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(393);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(610);
+    renderPeekTile(
+      <BrowserSessionsContext.Provider value={peekSessionsState()}>
+        <BrowserPeekTile
+          scope={{ kind: "epic", epicId: "epic-1" }}
+          visible={hookState.visible}
+          onConvertToPip={() => {}}
+          onRequestNewTab={null}
+          onRequestCloseTab={null}
+          node={PEEK_NODE}
+          completeMeans="ended"
+        />
+      </BrowserSessionsContext.Provider>,
+    );
+    const stream = liveStream();
+    act(() => {
+      stream.emitStatus("open");
+      stream.emit(
+        {
+          kind: "started",
+          hasBinaryPayload: false,
+          frameWidth: 393,
+          frameHeight: 610,
+          deviceScaleFactor: 1,
+        },
+        null,
+      );
+      stream.emit(
+        {
+          kind: "frame",
+          hasBinaryPayload: true,
+          sequence: 7,
+          metadata: {
+            offsetTop: 0,
+            pageScaleFactor: 1,
+            deviceWidth: 393,
+            deviceHeight: 610,
+            scrollOffsetX: 0,
+            scrollOffsetY: 0,
+            timestamp: 1,
+          },
+        },
+        new Uint8Array([1, 2, 3]),
+      );
+    });
+
+    const overlay = screen.getByText(/area 393x610/);
+    expect(overlay.textContent).toMatch(/applied 393x610/);
+    expect(overlay.textContent).toMatch(/painted 393x610/);
+    expect(overlay.textContent).toMatch(/frame 393x610/);
+    expect(overlay.textContent).toMatch(/video off/);
+    expect(overlay.textContent).toMatch(/reports \d+/);
   });
 });

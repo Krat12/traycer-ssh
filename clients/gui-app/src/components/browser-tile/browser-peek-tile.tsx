@@ -1,4 +1,7 @@
-import { useBrowserViewport } from "./use-browser-viewport";
+import {
+  useBrowserViewport,
+  type BrowserViewportPresentation,
+} from "./use-browser-viewport";
 import { BrowserViewportToolbar } from "./browser-viewport-toolbar";
 import { BrowserViewportFrame } from "./browser-viewport-frame";
 import { useLayoutEffect, useMemo, useState, type ReactElement } from "react";
@@ -318,6 +321,7 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
           ) : null}
           <ScreencastPeekSurface
             session={session}
+            viewport={viewport}
             overlay={status.overlay}
             showStartPage={showStartPage}
           />
@@ -345,15 +349,44 @@ export function BrowserPeekTile(props: BrowserPeekTileProps) {
   );
 }
 
+/**
+ * DEV-only measurement line (research 09 §D): the pane, the host's confirmed
+ * viewport, the scale, the box actually painted, the frame inside it, which
+ * plane is live, and how many Fit reports have gone out. One keyboard cycle
+ * must move `reports` by exactly 1, and `painted` must not move until
+ * `applied` does.
+ */
+function devViewportLine(
+  session: ScreencastSession,
+  viewport: BrowserViewportPresentation,
+): string {
+  const applied = viewport.controller?.state.applied ?? null;
+  const painted = viewport.paintedSize;
+  const frame = session.frameSize;
+  return [
+    `area ${viewport.area.width}x${viewport.area.height}`,
+    applied === null
+      ? "applied none"
+      : `applied ${applied.width}x${applied.height}@${applied.dpr}`,
+    `scale ${(viewport.controller?.previewScale ?? 1).toFixed(2)}`,
+    painted === null
+      ? "painted none"
+      : `painted ${Math.round(painted.width)}x${Math.round(painted.height)}`,
+    frame === null ? "frame none" : `frame ${frame.width}x${frame.height}`,
+    `video ${session.video.active ? "on" : "off"}`,
+    `reports ${viewport.reportCount}`,
+  ].join(" · ");
+}
+
 /** The pixels and everything that reaches them. */
 function ScreencastPeekSurface(props: {
   readonly session: ScreencastSession;
+  readonly viewport: BrowserViewportPresentation;
   readonly overlay: string | null;
   readonly showStartPage: boolean;
 }) {
   const session = props.session;
   const { overlayButtonRef, imeInputRef } = session.refs;
-  const frameSize = session.frameSize;
   const pixels = (
     <>
       <ScreencastSurface session={session} />
@@ -362,9 +395,9 @@ function ScreencastPeekSurface(props: {
           {props.overlay}
         </div>
       )}
-      {import.meta.env.DEV && frameSize !== null ? (
-        <div className="pointer-events-none absolute left-3 top-3 rounded-sm bg-background/80 px-2 py-1 font-mono text-ui-xs text-muted-foreground">
-          {frameSize.width} x {frameSize.height}
+      {import.meta.env.DEV ? (
+        <div className="pointer-events-none absolute left-3 top-3 max-w-full rounded-sm bg-background/80 px-2 py-1 font-mono text-ui-xs text-muted-foreground">
+          {devViewportLine(session, props.viewport)}
         </div>
       ) : null}
     </>
