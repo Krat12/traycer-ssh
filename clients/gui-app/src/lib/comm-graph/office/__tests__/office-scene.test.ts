@@ -5407,6 +5407,143 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
   });
 
+  /**
+   * READ O'S FINDING 3: the bench, from the other side.
+   *
+   * `OfficeErrandSpot.seatId` stopped a STROLL being sent to a bench somebody is
+   * sitting in. It did nothing about the reverse - a waiting agent being seated
+   * onto a bench a stroller is already on - because the seat book reads
+   * assignments and claims and has never read an errand target. The landed case
+   * claimed every bench BEFORE any stroll could start, so it only ever tested
+   * the order that was already safe.
+   *
+   * The gate is the COINCIDENCE, not the view's name: this can only happen where
+   * some errand spot names a seat, which today is Campus's courtyard bench row
+   * and nothing else. A view that grows a second shared fixture is covered here
+   * the day it does, without a line of code.
+   */
+  it("never seats a waiter onto a bench a stroller is already on", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 60, 9);
+    const idle = idleStatusById(epic);
+    // PRODUCTION'S SET, archived records included: at 60 agents the fixture
+    // archives two, and they are bodies the painter draws as ghosted desks
+    // rather than agents this case can seat. The waiter set below excludes
+    // them for that reason, so the fill is a fill of real chairs.
+    const visible = existingIdsOf(epic);
+    const scene = newScene();
+    // MOTION ON, so a stroll can actually start and reach a bench.
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const shared = layout.floors
+      .flatMap((floor) => floor.errandSpots)
+      .filter((spot) => spot.seatId !== null);
+    if (shared.length === 0) {
+      context.skip(`${viewId} has no fixture that is also a seat`);
+      return;
+    }
+
+    const lounge = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "waiting-room");
+    if (lounge === undefined) throw new Error("no waiting room");
+    const benchSeats = lounge.seatIds.map((seatId) => {
+      const seat = layout.seats.get(seatId);
+      if (seat === undefined) throw new Error(`no seat ${seatId}`);
+      return seat;
+    });
+    expect(benchSeats.length).toBeGreaterThan(1);
+
+    /** Whoever is drawn standing on this seat's own tile, or `null`. */
+    const onSeat = (seat: OfficeSeat): string | null => {
+      const want = footRect(layoutOf(scene), seat.chairTile);
+      for (const region of frameOf(scene).hitRegions) {
+        if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
+        if (region.rect.x === want.x && region.rect.y === want.y) {
+          return region.agentId;
+        }
+      }
+      return null;
+    };
+
+    // A STROLLER ON A BENCH: no civic claim, sitting on a bench's own tile.
+    // Its own function to stay inside the complexity ceiling, as `watchEngine`
+    // above is: a search that ticks, scans every bench and stops on the first
+    // hit is all branches, and inlining it puts the case over on its own.
+    const findSitter = (): { id: string; seat: OfficeSeat } | null => {
+      for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+        scene.tick(100);
+        const book = bookOf(scene);
+        for (const seat of benchSeats) {
+          const who = onSeat(seat);
+          if (who === null || book.civicClaimOf(who) !== null) continue;
+          return { id: who, seat };
+        }
+      }
+      return null;
+    };
+    const sitter = findSitter();
+    if (sitter === null) {
+      throw new Error("no idle agent ever strolled to a bench");
+    }
+    const { id: strollerId, seat: strollerSeat } = sitter;
+
+    // FILL EVERY CHAIR with somebody else, so the stroller's own bench has to
+    // be handed to one of them - a smaller outbreak could take another bench
+    // and the case would pass without ever testing the collision. Reduced
+    // motion so the placement is instant and there is no walk to wait out:
+    // the defect was two sit poses at ZERO ticks.
+    const waiters = epic.agents
+      .filter((agent) => !agent.archived && agent.id !== strollerId)
+      .map((agent) => agent.id)
+      .slice(0, benchSeats.length);
+    expect(waiters.length).toBe(benchSeats.length);
+    const waiting = new Map(idle);
+    for (const id of waiters) waiting.set(id, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: waiting,
+        reducedMotion: true,
+      }),
+    );
+
+    // NO TWO CHARACTERS AT ONE PLACE, which is the defect stated as the frame
+    // would show it. Under reduced motion nobody is mid-step, so two equal
+    // painted positions mean two people on one tile and nothing else.
+    const byPlace = new Map<string, string[]>();
+    for (const region of frameOf(scene).hitRegions) {
+      if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
+      const key = `${String(region.rect.x)},${String(region.rect.y)}`;
+      const bucket = byPlace.get(key);
+      if (bucket === undefined) byPlace.set(key, [region.agentId]);
+      else bucket.push(region.agentId);
+    }
+    for (const [place, ids] of byPlace) {
+      expect(ids.length, `${ids.join(" and ")} are both at ${place}`).toBe(1);
+    }
+
+    // AND THE BENCH WENT TO THE WAITER: the stroll is the one that yields, so
+    // the tile holds exactly one character and that character is holding a
+    // civic claim. Without this the case would pass on a scene that refused to
+    // seat the waiter anywhere at all.
+    const occupant = onSeat(strollerSeat);
+    expect(occupant).not.toBeNull();
+    if (occupant === null) return;
+    expect(bookOf(scene).civicClaimOf(occupant)).toBe("lounge");
+    expect(occupant).not.toBe(strollerId);
+  });
+
   it("leaves outbreak overflow at its desk with its glyph when the ward is full", (context) => {
     if (!CIVIC_ROOMS_EXPECTED[viewId]) {
       context.skip(`${viewId} plans no civic rooms`);

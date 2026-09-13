@@ -301,6 +301,23 @@ function paintedSeatsIn(args: {
   let seats = 0;
   for (const seat of layout.seats.values()) {
     if (!assigned.has(seat.seatId) && seat.kind === "cubby") continue;
+    // IN THE ISOMETRIC VIEWS A CIVIC SEAT PAINTS NOTHING, so it is not in their
+    // denominator - and the scope is the point rather than a caveat. The Floor,
+    // the oblique views and Mission control all draw their civic furniture FROM
+    // THE SEAT (`seat.kind === "bed"` becomes a `bed` sprite, with a
+    // `bed-occupied` overlay on top), so a civic seat there emits drawables like
+    // any other. Campus and City draw it from the PLAN instead: `bed-iso` is a
+    // two-tile prop anchored the way `desk-iso` is, and the plan emits it, so
+    // the seat has nothing left to say and its painter's civic branch returns
+    // nothing. Counting those seats here is what made this case demand a
+    // workstation on a hospital bed.
+    //
+    // Not a relaxation: the case below asserts the denominator and the emitted
+    // set are EQUAL rather than bounding one by the other, so an isometric civic
+    // seat that started painting again reddens there, and so does a Floor bed
+    // that stopped.
+    const isometric = layout.view === "campus" || layout.view === "city";
+    if (isometric && seat.civicRoomId !== null) continue;
     const box = seatBoxOf(seat, projector);
     if (box.x >= right || left >= box.x + box.width) continue;
     if (box.y >= bottom || top >= box.y + box.height) continue;

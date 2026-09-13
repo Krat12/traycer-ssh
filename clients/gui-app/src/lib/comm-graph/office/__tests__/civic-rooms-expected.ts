@@ -79,13 +79,30 @@ export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
  * makes this table something the scene confirms rather than something a fixture
  * assumes.
  *
- * THE AMBULANCE, AND ONLY THE AMBULANCE - which is why the name says so. Campus
- * is not excused from the rider claim in general: its POLICE CAR has a late rider
- * and pins the wait exactly as the other views do. Measured, by deleting the
- * rider check in `advanceVehicle`: ten cases red, and one of them is Campus's own
- * police-car case. So this table is about one vehicle at one room whose kerb is a
- * step from its door, not about a view that cannot see vehicles waiting. Widen it
- * to another vehicle only with that vehicle's own measurement in hand.
+ * WHAT THIS TABLE IS ABOUT, STATED NARROWLY - the first wording of this comment
+ * claimed more than the measurement, so here is the narrow one. It is about the
+ * WARD'S RIDER: both cases that read it watch an agent on its way to a bed, and
+ * Campus's sick bay is the room whose kerb is a step from its own door. Nothing
+ * here says Campus cannot see a vehicle wait - its POLICE CAR has a late rider
+ * and pins the wait exactly as the other views do, measured by deleting the rider
+ * check in `advanceVehicle`: ten cases red, one of them Campus's own police-car
+ * case.
+ *
+ * AND IT IS NOT A CLAIM ABOUT THE SPRITE, nor about inheritance. The first of
+ * the two cases watches a FIRE ENGINE that has replaced the ambulance and
+ * INHERITED its riders, so "ambulance" in this constant's name is the trigger
+ * and the room, not what is drawn at the kerb.
+ *
+ * Inheritance is the sharper one. In the `true` views a trip that DROPPED its
+ * riders is rejected on the dwell itself - `minimumDwell > 41`, 41 being what
+ * such a trip is observed at. Campus's branch asserts that same 41 as its
+ * expected value, so the dwell reading there cannot tell a carried rider from a
+ * dropped one at all: what rejects the dropped one in Campus is the rider
+ * observed directly - `sawInheritedRiderAway` before the regime split, and the
+ * settled-tick observation inside the branch - never this row. So the row says
+ * which of the three bounds does the waiting, and nothing about whether riders
+ * are carried; widening it to another vehicle needs that vehicle's own
+ * measurement.
  */
 export const AMBULANCE_RIDER_SETS_THE_DWELL: Readonly<
   Record<OfficeViewId, boolean>

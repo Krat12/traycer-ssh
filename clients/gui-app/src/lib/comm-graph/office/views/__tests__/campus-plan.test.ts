@@ -212,6 +212,19 @@ const CLOSE_UP_WORKING: OfficeDeskState = {
   accentId: null,
 };
 
+/** Nobody in it: the reserve state, which is what an unclaimed bed is. */
+const EMPTY_SEAT: OfficeDeskState = {
+  agentId: null,
+  name: "",
+  status: "idle",
+  sheeted: false,
+  openRequests: 0,
+  screenFrame: 0,
+  harnessId: null,
+  modelTier: "small",
+  accentId: null,
+};
+
 function paintAllSeats(layout: OfficeLayout): void {
   for (const seat of layout.seats.values()) {
     ISO_PAINTER.seatProps(layout, seat, CLOSE_UP_WORKING, 2);
@@ -2040,6 +2053,166 @@ describe("planCampus", () => {
       expect(drawn).toHaveLength(1);
       expect(drawn[0].anchor).toEqual(anchor);
     }
+  });
+});
+
+/**
+ * WHAT THE PAINTER OWES A CIVIC ROOM, and what it must not give it.
+ *
+ * Read O's findings 1 and 2: the civic seats and rooms reached the plan and then
+ * fell through the painter. Beds and benches entered `layout.seats`, the scene
+ * asked for their props like any other seat's, and the isometric painter had no
+ * branch for them - so `campusSeatProps` put a `desk-iso` slab on a hospital bed
+ * and a crashed monitor on top of the patient in it. The rooms had the mirror
+ * problem: `pushRoomWalls` reads `layout.rooms`, so the ward's and the hut's wall
+ * tiles were blocked by the plan and drawn by nobody, and `blockMap` never
+ * emitted a civic quad, so all four rooms vanished as rooms at overview.
+ */
+describe("campus civic rooms, painted", () => {
+  const CIVIC_SEAT_KINDS: ReadonlySet<OfficeSeat["kind"]> = new Set([
+    "bed",
+    "lounge",
+  ]);
+
+  function campusLayout(n: number): OfficeLayout {
+    return planCampus(inputFor("triage", n, { width: 1040, height: 700 }));
+  }
+
+  /** Sprite names in a run of drawables, however they are wrapped. */
+  function spritesOf(
+    drawables: ReadonlyArray<OfficeWorldDrawable>,
+  ): ReadonlyArray<string> {
+    const names: string[] = [];
+    for (const entry of drawables) {
+      const drawable = entry.drawable;
+      if (drawable.kind === "sprite") names.push(drawable.sprite.name);
+    }
+    return names;
+  }
+
+  it.each([1, 2] as const)(
+    "gives a bed and a bench no workstation at lod %i",
+    (lod) => {
+      const layout = campusLayout(309);
+      const civic = [...layout.seats.values()].filter(
+        (seat) => seat.civicRoomId !== null,
+      );
+      // The fixture has to hold both kinds, or the case is about one of them.
+      expect(civic.length).toBeGreaterThan(0);
+      expect(new Set(civic.map((seat) => seat.kind))).toEqual(CIVIC_SEAT_KINDS);
+
+      for (const seat of civic) {
+        // EMPTY AND CLAIMED, because the defect was different in each: an empty
+        // bed grew a desk slab, and an occupied one grew the slab AND a monitor.
+        for (const state of [EMPTY_SEAT, CLOSE_UP_WORKING]) {
+          const painted = ISO_PAINTER.seatProps(layout, seat, state, lod);
+          expect(
+            spritesOf(painted),
+            `${seat.kind} ${seat.seatId} painted a workstation`,
+          ).toEqual([]);
+        }
+      }
+
+      // AND ORDINARY DESKS ARE UNTOUCHED, which is the half that keeps this from
+      // passing on a painter that stopped drawing seats altogether.
+      const desks = [...layout.seats.values()].filter(
+        (seat) => seat.civicRoomId === null && seat.kind === "desk",
+      );
+      expect(desks.length).toBeGreaterThan(0);
+      const drawn = spritesOf(
+        ISO_PAINTER.seatProps(layout, desks[0], CLOSE_UP_WORKING, lod),
+      );
+      expect(drawn).toContain("desk-iso");
+    },
+  );
+
+  it("walls a civic room where the plan blocked it, and nowhere else", () => {
+    const layout = campusLayout(309);
+    const ward = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "infirmary");
+    if (ward === undefined) throw new Error("no ward");
+
+    // The whole district, so the window cannot be the reason a wall is missing.
+    const whole: OfficeTileRect = {
+      col: 0,
+      row: 0,
+      cols: layout.cols,
+      rows: layout.rows,
+    };
+    const walls = ISO_PAINTER.floor(layout, whole, 1).filter(
+      (drawable) =>
+        drawable.kind === "sprite" &&
+        (drawable.sprite.name === "wall-iso-left" ||
+          drawable.sprite.name === "wall-iso-right"),
+    );
+    expect(walls.length).toBeGreaterThan(0);
+
+    const projector = ISO_PAINTER.projector(layout);
+    const cornerKey = (col: number, row: number): string => {
+      const point = projector.project(col, row);
+      return `${point.x},${point.y}`;
+    };
+    const rightWalls = new Set<string>();
+    const leftWalls = new Set<string>();
+    for (const wall of walls) {
+      if (wall.kind !== "sprite") continue;
+      const key = `${wall.x},${wall.y + 24}`;
+      if (wall.sprite.name === "wall-iso-right") rightWalls.add(key);
+      else leftWalls.add(`${wall.x + 32},${wall.y + 24}`);
+    }
+
+    // THE WARD'S TOP ROW IS A WALL, every column of it.
+    for (
+      let col = ward.bounds.col;
+      col < ward.bounds.col + ward.bounds.cols;
+      col += 1
+    ) {
+      expect(
+        rightWalls.has(cornerKey(col, ward.bounds.row)),
+        `ward top row col ${String(col)} has no wall`,
+      ).toBe(true);
+    }
+    // AND ITS AISLE COLUMN IS NOT, below that corner - the door is in it, and a
+    // wall there would leave whoever came through facing a bed with no step. The
+    // plan says so by leaving those tiles walkable, and this is the assertion
+    // that a painter deriving walls from bounds alone would fail.
+    for (
+      let row = ward.bounds.row + 1;
+      row < ward.bounds.row + ward.bounds.rows;
+      row += 1
+    ) {
+      expect(layout.walkable[row]?.[ward.bounds.col]).toBe(true);
+      expect(
+        leftWalls.has(cornerKey(ward.bounds.col, row)),
+        `ward aisle row ${String(row)} was walled shut`,
+      ).toBe(false);
+    }
+  });
+
+  it("gives every civic room a quad of its own at overview", () => {
+    const layout = campusLayout(309);
+    const whole: OfficeTileRect = {
+      col: 0,
+      row: 0,
+      cols: layout.cols,
+      rows: layout.rows,
+    };
+    const blocks = ISO_PAINTER.floor(layout, whole, 0);
+    // `quad`, not `block`: the isometric painter draws a lod-0 region as a
+    // projected diamond, where the flat and oblique painters draw a rect.
+    const civicQuads = blocks.filter(
+      (drawable) => drawable.kind === "quad" && drawable.fill === "civic",
+    );
+    const rooms = layout.floors.flatMap((floor) => floor.civic);
+    expect(rooms.length).toBeGreaterThan(0);
+    // One per room, and the district's own quads still there beneath them.
+    expect(civicQuads.length).toBe(rooms.length);
+    expect(
+      blocks.some(
+        (drawable) => drawable.kind === "quad" && drawable.fill === "storey",
+      ),
+    ).toBe(true);
   });
 });
 
