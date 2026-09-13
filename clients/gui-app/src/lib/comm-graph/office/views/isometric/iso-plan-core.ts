@@ -1021,6 +1021,12 @@ export interface IsoProjectorMemo {
   readonly projector: OfficeProjector;
 }
 
+/** One civic room in the index, with the order its plan listed it in. */
+interface IsoIndexedCivic {
+  readonly room: OfficeCivicRoom;
+  readonly order: number;
+}
+
 export class IsoPlanIndex {
   /** Floor-pass props only: a fixture is drawn from its spot, not from here. */
   readonly propsByTile: Map<string, IsoIndexedProp[]>;
@@ -1029,6 +1035,15 @@ export class IsoPlanIndex {
   readonly roomsByCell: Map<string, IsoIndexedRoom[]>;
   /** Districts by the same coarse cell, for the ground question below. */
   readonly floorsByCell: Map<string, OfficeFloor[]>;
+  /**
+   * CIVIC ROOMS by the same coarse cell, and a second map rather than entries
+   * in `roomsByCell` because the two are different things to the painter. A
+   * team room's back walls are solid and are drawn from its bounds alone; a
+   * civic room's are drawn only where the PLAN blocked a tile, so its ward's
+   * open aisle and its hut's door stay open. Folding them together would make
+   * every reader ask which kind it was holding.
+   */
+  readonly civicByCell: Map<string, IsoIndexedCivic[]>;
   /** The one spot per fixture tile that draws it; the rest only sit at it. */
   readonly drawingSpots: Set<string>;
   /** The widest and tallest sprite indexed, in TILES, rounded up. */
@@ -1049,6 +1064,7 @@ export class IsoPlanIndex {
     this.propsByTile = new Map();
     this.roomsByCell = new Map();
     this.floorsByCell = new Map();
+    this.civicByCell = new Map();
     this.drawingSpots = new Set();
     this.projectorMemo = null;
     this.propMargin = 0;
@@ -1146,6 +1162,21 @@ export function buildIsoIndex(args: IsoIndexArgs): IsoPlanIndex {
       if (bucket === undefined) index.floorsByCell.set(key, [floor]);
       else bucket.push(floor);
     });
+  }
+
+  // One order across every storey's civic rooms, so two districts' wards come
+  // back in plan order rather than in whatever order the cells were walked.
+  let civicOrder = 0;
+  for (const floor of args.floors) {
+    for (const room of floor.civic) {
+      const order = civicOrder;
+      civicOrder += 1;
+      eachCell(room.bounds, (key) => {
+        const bucket = index.civicByCell.get(key);
+        if (bucket === undefined) index.civicByCell.set(key, [{ room, order }]);
+        else bucket.push({ room, order });
+      });
+    }
   }
   return index;
 }
@@ -1308,6 +1339,46 @@ export function isoRoomsIn(
   for (let row = firstRow; row <= lastRow; row += 1) {
     for (let col = firstCol; col <= lastCol; col += 1) {
       for (const entry of index.roomsByCell.get(cellKey(col, row)) ?? []) {
+        if (!isoRectsOverlap(entry.room.bounds, tiles)) continue;
+        found.set(entry.order, entry.room);
+      }
+    }
+  }
+  return [...found.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, room]) => room);
+}
+
+/**
+ * The CIVIC rooms whose bounds meet this window, in plan order.
+ *
+ * Through the index for the reason `isoRoomsIn` is: the painter asks per window
+ * and a walk over every district's `civic` would make a far district cost
+ * something, which the ground-question guard asserts it does not. A layout with
+ * no index answers from every storey, which is the un-frozen path and is only
+ * ever a test's.
+ */
+export function isoCivicIn(
+  layout: OfficeLayout,
+  tiles: OfficeTileRect,
+): ReadonlyArray<OfficeCivicRoom> {
+  const index = readIsoIndex(layout);
+  if (index === null) {
+    return layout.floors.flatMap((floor) => [...floor.civic]);
+  }
+  if (tiles.cols <= 0 || tiles.rows <= 0) return [];
+  const found = new Map<number, OfficeCivicRoom>();
+  const firstCol = Math.floor(Math.max(0, tiles.col) / ISO_INDEX_CELL);
+  const lastCol = Math.floor(
+    Math.max(0, tiles.col + tiles.cols - 1) / ISO_INDEX_CELL,
+  );
+  const firstRow = Math.floor(Math.max(0, tiles.row) / ISO_INDEX_CELL);
+  const lastRow = Math.floor(
+    Math.max(0, tiles.row + tiles.rows - 1) / ISO_INDEX_CELL,
+  );
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    for (let col = firstCol; col <= lastCol; col += 1) {
+      for (const entry of index.civicByCell.get(cellKey(col, row)) ?? []) {
         if (!isoRectsOverlap(entry.room.bounds, tiles)) continue;
         found.set(entry.order, entry.room);
       }

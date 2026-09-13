@@ -41,6 +41,7 @@ import {
   isoGroundAt,
   isoProjectorInputsOf,
   isoPropsIn,
+  isoCivicIn,
   isoRoomsIn,
   isoSameProjectorInputs,
   isoSpotDraws,
@@ -289,6 +290,62 @@ function pushRoomWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
       }
     }
   }
+  pushCivicWalls(scan, out);
+}
+
+/**
+ * A civic room's walls: THE SAME TWO EDGES, drawn only where the plan actually
+ * blocked a tile.
+ *
+ * That filter is the whole difference from a team room, and it is not a
+ * refinement - it is the rule. A team room's back walls are solid, so its bounds
+ * are enough. A civic room's are not: the sick bay leaves its AISLE COLUMN open
+ * top to bottom because the door is in it, and the records hut leaves its own
+ * door open on its last row. Deriving walls from bounds alone would brick both
+ * of them shut, and deriving them from a per-kind table here would be the plan's
+ * geometry written out a second place to drift from. Walkability is the plan's
+ * own answer to "is this tile a wall", so the painter asks that.
+ *
+ * Campus only, like the room walls above: a City block IS its own wall, and its
+ * civic rooms are blocks.
+ */
+function pushCivicWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
+  const { tiles, layout } = scan;
+  const lastCol = tiles.col + tiles.cols;
+  const lastRow = tiles.row + tiles.rows;
+  const walled = (col: number, row: number): boolean =>
+    !layout.walkable[row]?.[col];
+  for (const room of isoCivicIn(layout, tiles)) {
+    const { bounds } = room;
+    if (bounds.row >= tiles.row && bounds.row < lastRow) {
+      const from = Math.max(bounds.col, tiles.col);
+      const to = Math.min(bounds.col + bounds.cols, lastCol);
+      for (let col = from; col < to; col += 1) {
+        if (!walled(col, bounds.row)) continue;
+        const corner = cornerOf(scan.projector, { col, row: bounds.row });
+        out.push({
+          kind: "sprite",
+          sprite: { name: "wall-iso-right" },
+          x: corner.x,
+          y: corner.y - WALL_LIFT,
+        });
+      }
+    }
+    if (bounds.col >= tiles.col && bounds.col < lastCol) {
+      const from = Math.max(bounds.row, tiles.row);
+      const to = Math.min(bounds.row + bounds.rows, lastRow);
+      for (let row = from; row < to; row += 1) {
+        if (!walled(bounds.col, row)) continue;
+        const corner = cornerOf(scan.projector, { col: bounds.col, row });
+        out.push({
+          kind: "sprite",
+          sprite: { name: "wall-iso-left" },
+          x: corner.x - ISO_HALF_WIDTH,
+          y: corner.y - WALL_LIFT,
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -456,6 +513,12 @@ function blockMap(
   const roomFill: OfficeBlockFill =
     layout.view === "city" ? "building" : "room";
   for (const room of isoRoomsIn(layout, tiles)) push(room.bounds, roomFill);
+  // CIVIC LAST, so it reads over what it stands on. A civic room is not a room
+  // beside the amenities here - Campus's waiting room IS the courtyard's bench
+  // row, inside the garden's own rect - so a ward drawn before the grass under
+  // it would vanish at the one band where the overview is all these quads are.
+  // Both isometric views: City's quarter comes through the same call.
+  for (const room of isoCivicIn(layout, tiles)) push(room.bounds, "civic");
   return blocks;
 }
 
@@ -750,6 +813,15 @@ function paintSeat(
   // whole of the floor. Answered before projecting, so nothing is computed for
   // a seat that has nothing to say.
   if (lod === 0) return [];
+  // A CIVIC SEAT HAS NO WORKSTATION, and this branch is before the City/Campus
+  // split because both views' civic rooms come through here. A bed and a bench
+  // are furniture the PLAN already stands up as props, so the seat itself owes
+  // the frame nothing: without this, `campusSeatProps` drew `desk-iso` on the
+  // bed's own tile for an empty ward bed, and a bed with a crashed agent in it
+  // got a desk slab AND a monitor - a workstation built on top of a patient.
+  // City's quarter inherits the fix; its hospital beds and shelter seats are
+  // the same kind of seat and would have dispatched the same way.
+  if (seat.civicRoomId !== null) return [];
   const projector = projectorFor(layout);
   const frozen = readCityFrozen(layout);
   if (frozen !== null) {

@@ -519,16 +519,30 @@ interface OfficeErrandTarget {
    * about one floor plan rather than about errands.
    */
   readonly actionTile: OfficeTilePos | null;
+  /**
+   * The SEAT this errand's fixture also is, or `null` for a fixture that is
+   * nothing but furniture - which is nearly all of them.
+   *
+   * Carried from the spot for the same reason `actionTile` is, and read by the
+   * civic pass: a bench an idle agent is sitting on is a seat the waiting room
+   * would otherwise hand to a waiter, and the pass has to be able to find the
+   * sitter from the seat it just claimed.
+   */
+  readonly seatId: string | null;
 }
 
-/** Every errand target that is not a spot on the plan names no fixture. */
+/**
+ * Every errand target that is not a spot on the plan names no fixture - and so
+ * no seat either. A corridor tile and a colleague's desk are places to stand,
+ * not seats the book can lend.
+ */
 function derivedTarget(args: {
   readonly kind: OfficeErrandTargetKind;
   readonly tile: OfficeTilePos;
   readonly facing: OfficeFacing;
   readonly partnerId: string | null;
 }): OfficeErrandTarget {
-  return { ...args, fixtureId: null, actionTile: null };
+  return { ...args, fixtureId: null, actionTile: null, seatId: null };
 }
 
 function targetOfSpot(spot: OfficeErrandSpot): OfficeErrandTarget {
@@ -539,6 +553,7 @@ function targetOfSpot(spot: OfficeErrandSpot): OfficeErrandTarget {
     partnerId: null,
     fixtureId: spot.fixtureId,
     actionTile: spot.actionTile,
+    seatId: spot.seatId,
   };
 }
 
@@ -3104,7 +3119,44 @@ export class OfficeScene {
         shortfall: "none",
       });
       if (seat === null) continue;
+      this.evictStrollerFrom(seat.seatId);
       this.startCivicWalk(character, seat);
+    }
+  }
+
+  /**
+   * A STROLL GIVES UP A BENCH THE WAITING ROOM NEEDS.
+   *
+   * `spotSuitsAgent` already refuses to send a stroll to a bench somebody is
+   * sitting in. This is the other direction, and the two are halves of one rule:
+   * between a decorative errand and a civic claim, **the stroll is always the one
+   * that yields** - it will not take a seat somebody is in, and it gives up one
+   * somebody needs. Without this half, a bench an idle agent had strolled to was
+   * invisible to the book (`firstFreeSeat` reads assignments and claims, never
+   * errand targets), so a waiter was seated onto it and two characters sat at one
+   * tile in two poses, with the book convinced it had seated one of them.
+   *
+   * WHY THIS SIDE AND NOT THE BOOK'S. Teaching the book to skip seats an errand
+   * targets would make the waiting room quietly smaller than `civicCapacityFor`
+   * promises - a stroll could deny a crashed agent a chair - and it would put
+   * knowledge of characters into a module that deliberately has none. Evicting
+   * costs the stroller nothing it minds: it returns to its own desk, which is
+   * where `returnToDesk` was already sending it when its own status changed.
+   *
+   * And it happens HERE, in the claiming pass, not in `errandMustEnd` on the
+   * next tick. `updateCivicClaims` runs during sync, before the errand-ending
+   * loop; an eviction deferred to a tick would leave one frame - the frame a
+   * reduced-motion sync paints immediately - with both characters drawn sitting
+   * on the bench. Nothing is left to observe by the time this returns.
+   */
+  private evictStrollerFrom(seatId: string): void {
+    for (const character of this.characters.values()) {
+      const target = character.errandTarget;
+      if (target === null || target.seatId !== seatId) continue;
+      // Not `onCancellableErrand`: the question is who is ON this bench or
+      // heading for it, and the answer is the same either way - the seat is
+      // about to belong to somebody else, so this errand is over.
+      this.returnToDesk(character);
     }
   }
 
