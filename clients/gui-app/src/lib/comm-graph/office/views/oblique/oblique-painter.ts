@@ -436,6 +436,14 @@ export const OBLIQUE_PAINTER: OfficePainter = {
   projector,
   floor,
   seatProps,
+  /**
+   * NOT ASKED. This painter is a `world` one, so the scene's depth-ordered hit
+   * regions do apply to it - but it paints a civic seat ITSELF
+   * (`civicSeatProps`, keyed on `seat.kind`), so its beds and benches carry
+   * their own owned props and their own depth. The isometric painter is the one
+   * that returns nothing for them.
+   */
+  seatDepth: null,
   spotProps,
   /**
    * NONE. This painter's block is the tile rect itself, scaled by the tile

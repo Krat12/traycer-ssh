@@ -520,7 +520,25 @@ export type OfficePodStyle = "glass" | "planters" | "shelves";
  * grow without bound.
  */
 export interface OfficeCivicRoom {
-  /** Stable across plans: `"<host>/<floor>/civic/<kind>"`. */
+  /**
+   * Stable across plans: `"<host>/civic/<kind>"`, and the host is the only thing
+   * outside the kind that names it.
+   *
+   * NO FLOOR ORDINAL, which this carried until read X. A floor or district index
+   * is a POSITION in the partition's host-id ordering, so a host arriving
+   * lexically earlier renamed every later floor's rooms and seats, the book
+   * adopted nothing, and patients holding beds were re-seated into each other's.
+   *
+   * WHAT THE UNIQUENESS RESTS ON, because it is not a prohibition in this
+   * contract: every producer shipped today builds ONE civic pool per host. The
+   * Floor groups its rooms once per host; Campus and City build one quarter per
+   * partition host; Towers and Building keep one civic plaza per building, with a
+   * host-to-building map carrying it across growth; Mission control's hall builds
+   * one set globally, for every host at once (`hostScope: "every-host"`). Nothing
+   * here forbids a producer from wanting TWO rooms of one kind for one host - and
+   * the day one does, this id is what it has to extend, with a discriminator that
+   * is a fact about the room rather than its rank in a sort.
+   */
   readonly civicRoomId: string;
   readonly kind: OfficeCivicKind;
   /**

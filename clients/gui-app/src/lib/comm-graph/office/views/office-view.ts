@@ -156,6 +156,31 @@ export interface OfficePainter {
     state: OfficeDeskState,
     lod: OfficeLod,
   ) => ReadonlyArray<OfficeWorldDrawable>;
+  /**
+   * The depth a seat's OWN GROUND is at, for a seat this painter draws no art
+   * for - or `null` from a painter that is never asked.
+   *
+   * A civic seat is furniture the PLAN stands up, so `seatProps` returns nothing
+   * for one (O1) and the scene's world hit regions had no depth to place the
+   * occupant's box at. They took it from whichever prop the owner happened to
+   * have, which for a patient means its own DESK: correct-looking while that
+   * desk is on screen, and gone the moment the frame culls the building the
+   * patient came from. A bed nobody can click is a bed with no hover card, no
+   * "where" line and no camera target, while the patient is plainly drawn lying
+   * in it.
+   *
+   * It is not the scene's sum to do. The depth scale is the painter's - the
+   * isometric one biases per kind and breaks ties on `col + row`, and a number
+   * from a different scale would sort the box against the wrong props - so the
+   * painter that knows where a tile lies answers for it.
+   *
+   * `null` for every `layered` painter: their hit regions are built by draw
+   * order rather than depth, so the Floor, both storeyed views and Mission
+   * control were never exposed to this.
+   */
+  readonly seatDepth:
+    | ((layout: OfficeLayout, seat: OfficeSeat) => number)
+    | null;
   readonly spotProps: (
     layout: OfficeLayout,
     spot: OfficeErrandSpot,

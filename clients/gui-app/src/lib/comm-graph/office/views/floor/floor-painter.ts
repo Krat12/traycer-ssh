@@ -947,6 +947,11 @@ export const floorPainter: OfficePainter = {
   floor: floorChunk,
   seatProps: seatPropsOf,
   /**
+   * NOT ASKED: a `layered` painter's hit regions are built from DRAW ORDER,
+   * not depth, so a civic seat here never needed one.
+   */
+  seatDepth: null,
+  /**
    * Nothing. Every fixture an errand spot names - the bin, the cafe table, the
    * dartboard - is a prop in `layout.props` and is already drawn with the
    * scenery, because on this floor it never moves and never changes.

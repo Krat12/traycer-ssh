@@ -607,6 +607,11 @@ export const MISSION_CONTROL_PAINTER: OfficePainter = {
   projector: identityProjector,
   floor: paintFloor,
   seatProps: paintSeat,
+  /**
+   * NOT ASKED: `layered`, like the Floor - the hall's beds and its gallery
+   * benches are placed in draw order and hit in the reverse of it.
+   */
+  seatDepth: null,
   spotProps: paintSpot,
   /**
    * NONE. This painter's block is the tile rect itself, scaled by the tile

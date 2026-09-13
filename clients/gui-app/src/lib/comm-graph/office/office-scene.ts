@@ -6526,6 +6526,34 @@ export class OfficeScene {
    * leaves them, so a foreground drawable a painter deliberately emitted late
    * at the same depth stays in front here too.
    */
+  /**
+   * THE DEPTH OF A SEAT WHOSE FURNITURE THE PLAN OWNS, or `null` where the
+   * question does not arise.
+   *
+   * A civic seat's art is a prop the plan stands up, so the painter that returns
+   * nothing for it leaves the occupant's box with no depth of its own - and the
+   * loop below then took whatever prop the owner happened to have, which for a
+   * patient is its DESK. That looked right only while the desk was on screen:
+   * frame a window without the building the patient came from, or hit-test a bed
+   * two tiles wide, and the seat had no region at all. So the occupant of a bed
+   * was unclickable and unhoverable in the one view where the bed is what you
+   * can see - and the borrowed depth was wrong even when it existed, sorting the
+   * box against a desk's neighbours instead of its own.
+   *
+   * Asked of the PAINTER because the depth scale is its own, and asked only for
+   * a civic seat: an ordinary desk with no props in this window is a desk the
+   * frame is not drawing, and a hit region for one would put hover on something
+   * nobody can see. A painter that paints its own civic seats answers `null` and
+   * keeps its props' depth.
+   */
+  private civicSeatDepth(seat: OfficeSeat): number | null {
+    if (seat.civicRoomId === null) return null;
+    const answer = this.view.painter.seatDepth;
+    const layout = this.layoutOrNull;
+    if (answer === null || layout === null) return null;
+    return answer(layout, seat);
+  }
+
   private worldHitRegions(args: {
     readonly characters: ReadonlyArray<OfficeCharacter>;
     readonly seats: ReadonlyArray<SeatedAgent>;
@@ -6543,7 +6571,7 @@ export class OfficeScene {
     for (const seated of seats) {
       const agentId = seated.agentId;
       if (agentId === null) continue;
-      const depth = propFloors.get(agentId);
+      const depth = this.civicSeatDepth(seated.seat) ?? propFloors.get(agentId);
       if (depth === undefined) continue;
       entries.push({
         region: { agentId, rect: this.seatBox(seated.seat) },

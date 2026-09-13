@@ -915,11 +915,28 @@ function paintSpot(
   ];
 }
 
+/**
+ * A SEAT'S OWN TILE, at prop depth: the number the furniture standing on it was
+ * drawn with.
+ *
+ * This painter is the one that returns nothing from `seatProps` for a civic
+ * seat - a bed and a bench are the plan's props, not a workstation - so it is
+ * the one the scene has to ask where the occupant's box belongs. `chairTile` is
+ * the furniture's own tile for a civic seat (`civicSeat` sets both tiles to it),
+ * and `"prop"` is the bias the floor pass gave that sprite, so the box sorts
+ * exactly where the bed it covers does rather than at the depth of a desk in
+ * another district.
+ */
+function isoSeatDepth(layout: OfficeLayout, seat: OfficeSeat): number {
+  return tileDepth(projectorFor(layout), seat.chairTile, "prop");
+}
+
 export const ISO_PAINTER: OfficePainter = {
   depth: "world",
   projector: projectorFor,
   floor: paintFloor,
   seatProps: paintSeat,
+  seatDepth: isoSeatDepth,
   spotProps: paintSpot,
   blockOverhangPx: isoBlockOverhang,
 };
