@@ -88,6 +88,57 @@ vi.mock("sonner", () => ({
   toast: Object.assign(seam.toast, { dismiss: seam.toastDismiss }),
 }));
 
+// The welcome modal's SHAPE, not its pages: a modal shadcn Dialog (so it
+// registers as a presented modal exactly as the real one does), `startModal`
+// on mount, `modalOpen` presence while mounted, Esc → pauseModal + onPaused,
+// and a Continue that finishes into the no-sessions chain. Its pages have
+// their own suites; what is under test here is the seam with the tour.
+vi.mock("@/components/onboarding/welcome/welcome-modal", async () => {
+  const react = await import("react");
+  const dialog = await import("@/components/ui/dialog");
+  const presence = await import("@/stores/onboarding/onboarding-presence-store");
+  const flowStore = await import("@/stores/onboarding/onboarding-flow-store");
+  function WelcomeModal(props: { readonly onPaused: () => void }) {
+    const setModalOpen = presence.useOnboardingPresenceStore(
+      (state) => state.setModalOpen,
+    );
+    react.useEffect(() => {
+      const flow = flowStore.useOnboardingFlowStore.getState();
+      if (flow.modal === "pending") flow.startModal();
+    }, []);
+    react.useEffect(() => {
+      setModalOpen(true);
+      return () => {
+        setModalOpen(false);
+      };
+    }, [setModalOpen]);
+    return (
+      <dialog.Dialog
+        open
+        onOpenChange={(open) => {
+          if (open) return;
+          flowStore.useOnboardingFlowStore.getState().pauseModal();
+          props.onPaused();
+        }}
+      >
+        <dialog.DialogContent data-testid="welcome-modal" showCloseButton={false}>
+          <dialog.DialogTitle>Welcome</dialog.DialogTitle>
+          <dialog.DialogDescription>stand-in</dialog.DialogDescription>
+          <button
+            type="button"
+            onClick={() => {
+              flowStore.useOnboardingFlowStore.getState().finishModal("no-sessions");
+            }}
+          >
+            Continue
+          </button>
+        </dialog.DialogContent>
+      </dialog.Dialog>
+    );
+  }
+  return { WelcomeModal };
+});
+
 vi.mock("@/lib/analytics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/analytics")>();
   return {
@@ -198,7 +249,7 @@ afterEach(() => {
 });
 
 describe("flow host gates and mount", () => {
-  it("renders nothing signed out, nothing while the chain is pending, and exactly one tour once a chain is active", () => {
+  it("renders nothing signed out, nothing while the chain is pending, and exactly one tour once a chain is active", async () => {
     useAuthStore.getState().setSignedOut();
     const view = render(<OnboardingFlowHost />);
     expect(joyride.props).toBeNull();
@@ -212,6 +263,11 @@ describe("flow host gates and mount", () => {
     focusDraftTab(DRAFT_ID);
     act(() => {
       flow().finishModal("no-sessions");
+    });
+    // The modal's Dialog un-presents with the finish; the tour follows one
+    // macrotask later.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(joyride.props?.run).toBe(true);
     expect(
@@ -430,6 +486,29 @@ describe("entry navigation", () => {
   });
 });
 
+function completeChainViaFinishFrom(_events: typeof fireEvent): void {
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  keep(mountEpicSurface(EPIC_TAB_ID, false));
+  const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+  useEpicCanvasStore.setState({
+    tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+    openTabOrder: [EPIC_TAB_ID],
+    activeTabId: EPIC_TAB_ID,
+    mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
+  });
+  useTabsStore.setState({
+    items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+    activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+    systemTabs: { history: null, settings: null },
+    stripOrder: [ref],
+  });
+  act(() => {
+    flow().replayTour("task-panels");
+  });
+  next();
+  expect(flow().chain).toBe("completed");
+}
+
 describe("completion toast", () => {
   function completeChainViaFinish(): void {
     keep(mountEpicSurface(EPIC_TAB_ID, false));
@@ -586,5 +665,93 @@ describe("completion toast", () => {
     fireEvent.click(learnMore);
     expect(api.openSettings).not.toHaveBeenCalled();
     expect(seam.toastDismiss).not.toHaveBeenCalled();
+  });
+});
+
+describe("welcome modal <-> tour seam", () => {
+  const tick = async (): Promise<void> => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  it("first run: the modal shows, no tour; Esc hides it for this session without starting a chain; Settings brings it back", () => {
+    render(<OnboardingFlowHost />);
+    expect(screen.getByTestId("welcome-modal")).toBeTruthy();
+    expect(flow().modal).toBe("in-progress");
+    expect(joyride.props).toBeNull();
+    expect(useOnboardingPresenceStore.getState().modalOpen).toBe(true);
+    fireEvent.keyDown(screen.getByTestId("welcome-modal"), { key: "Escape" });
+    expect(screen.queryByTestId("welcome-modal")).toBeNull();
+    expect(flow().modal).toBe("in-progress");
+    expect(flow().chain).toBe("pending");
+    expect(joyride.props).toBeNull();
+    expect(useOnboardingPresenceStore.getState().modalOpen).toBe(false);
+    act(() => {
+      flow().showWelcomeModalAgain();
+    });
+    expect(screen.getByTestId("welcome-modal")).toBeTruthy();
+  });
+
+  it("Continue finishes the modal into the chain; the tour runs only once the modal's Dialog has un-presented, one macrotask later", async () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    render(<OnboardingFlowHost />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(flow().chain).toBe("active");
+    expect(flow().modal).toBe("done");
+    expect(screen.queryByTestId("welcome-modal")).toBeNull();
+    // Same task as the close: still held.
+    expect(props().run).toBe(false);
+    await tick();
+    expect(props().run).toBe(true);
+    expect(props().options?.dismissKeyAction).toBe("close");
+    expect(useOnboardingPresenceStore.getState().tourBusy).toBe(true);
+  });
+
+  it("the modal shown again over an active chain holds the tour (run false, Esc left to the modal); Esc pauses only the modal and the same lesson resumes", async () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    render(<OnboardingFlowHost />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await tick();
+    expect(props().run).toBe(true);
+    act(() => {
+      flow().showWelcomeModalAgain();
+    });
+    expect(screen.getByTestId("welcome-modal")).toBeTruthy();
+    expect(props().run).toBe(false);
+    expect(props().options?.dismissKeyAction).toBe(false);
+    fireEvent.keyDown(screen.getByTestId("welcome-modal"), { key: "Escape" });
+    expect(screen.queryByTestId("welcome-modal")).toBeNull();
+    expect(flow().modal).toBe("in-progress");
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("add-folder");
+    await tick();
+    expect(props().run).toBe(true);
+  });
+
+  it("modalOpen and tourBusy both hold the completion toast", () => {
+    setSystemTabModalApi(fakeSettingsApi());
+    render(<OnboardingFlowHost />);
+    completeChainViaFinishFrom(fireEvent);
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+    seam.toast.mockReset();
+    useFeatureAnnouncementsStore.setState({ consumed: {} });
+    act(() => {
+      flow().showWelcomeModalAgain();
+    });
+    expect(useOnboardingPresenceStore.getState().modalOpen).toBe(true);
+    act(() => {
+      // The chain ends again while the modal is on screen.
+      flow().replayTour("task-panels");
+      flow().completeChain();
+    });
+    expect(flow().completionPending).toBe(true);
+    expect(seam.toast).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByTestId("welcome-modal"), { key: "Escape" });
+    expect(seam.toast).toHaveBeenCalledTimes(1);
   });
 });

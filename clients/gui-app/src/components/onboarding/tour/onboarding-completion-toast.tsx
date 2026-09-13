@@ -33,7 +33,8 @@ export const ONBOARDING_COMPLETION_TOAST_ID = "traycer-onboarding-completion";
  *   `skipped` chain without it, so an old-tour completer never toasts on
  *   upgrade, while their deliberate later replay ending here does - even
  *   if the toast had to be held across a remount or a reload;
- * - nothing of the flow has the screen (`selectOnboardingBusy`);
+ * - nothing of the flow has the screen (`selectOnboardingBusy`: the
+ *   welcome modal's presence or a running tour);
  * - the system-tab modal API is published, so "Learn more" has a Settings
  *   to open (`navigateToSettingsSection` no-ops without it).
  *

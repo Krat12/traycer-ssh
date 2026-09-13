@@ -234,6 +234,14 @@ vi.mock(
 
 const analyticsTrack = vi.hoisted(() => vi.fn());
 
+// The unified host also mounts the spotlight tour behind the (defaulted-to-
+// ready) host gate; these suites are about the modal, so the tour's router
+// dependency is stubbed and nothing else of it is exercised here.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return { ...actual, useNavigate: () => () => undefined };
+});
+
 vi.mock("@/lib/analytics", () => ({
   Analytics: { getInstance: () => ({ track: analyticsTrack }) },
   AnalyticsEvent: {
@@ -251,7 +259,7 @@ function trackedEvents(): ReadonlyArray<[string, unknown]> {
 }
 
 import { WithTestQueryClient } from "@/__tests__/with-test-query-client";
-import { OnboardingFlowHost } from "@/components/onboarding/welcome/onboarding-flow-host";
+import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host";
 import { setMobileApp } from "@/lib/mobile-app";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import {
