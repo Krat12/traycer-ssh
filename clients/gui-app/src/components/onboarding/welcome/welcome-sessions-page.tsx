@@ -331,7 +331,8 @@ function importLabel(count: number): string {
  * One provider's card: a header that is the provider-level checkbox, then
  * one folder group per folder this provider has work in. A provider the
  * scan covered but found nothing for keeps its card, header only - the user
- * should see what was looked at, not wonder whether it was.
+ * should see what was looked at, not wonder whether it was. A failed reader
+ * adds its banner above the groups it still has, if any.
  */
 function WelcomeProviderSectionCard(props: {
   readonly section: WelcomeProviderSection;
@@ -406,14 +407,21 @@ function WelcomeProviderSectionCard(props: {
           </span>
         </div>
       </div>
-      {section.failure !== null ? (
-        <div className={cn("border-t p-2", tone.border)}>
-          <ProviderFailureBanner section={section} tone={tone} />
-        </div>
-      ) : section.groups.length > 0 ? (
+      {section.failure !== null || section.groups.length > 0 ? (
         <div
-          className={cn("flex flex-col gap-2 border-t py-2 pr-2 pl-3", tone.border)}
+          className={cn(
+            "flex flex-col gap-2 border-t py-2 pr-2 pl-3",
+            tone.border,
+          )}
         >
+          {/* The banner sits ABOVE whatever this provider still has, never
+              in place of it: a same-host reconnect keeps the groups and
+              ticks from the earlier pass in the reducer, and those rows
+              are still what Import submits - hiding them behind the banner
+              would import work the user could no longer see or untick. */}
+          {section.failure !== null ? (
+            <ProviderFailureBanner section={section} tone={tone} />
+          ) : null}
           {section.groups.map((group) => (
             <SessionImportGroupItem
               key={group.groupKey}

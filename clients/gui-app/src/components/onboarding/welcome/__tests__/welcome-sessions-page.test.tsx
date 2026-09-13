@@ -117,10 +117,18 @@ const statusQuery = vi.hoisted(() => ({
   isPending: false,
   isSuccess: true,
   refetch: vi.fn(),
+  /** The `enabled` flag of the latest render's probe, for the gate tests. */
+  enabled: null as boolean | null,
 }));
 
 vi.mock("@/hooks/session-import/use-session-import-check-status-query", () => ({
-  useSessionImportCheckStatus: () => statusQuery,
+  useSessionImportCheckStatus: (
+    _binding: StreamRuntimeBinding | null,
+    enabled: boolean,
+  ) => {
+    statusQuery.enabled = enabled;
+    return statusQuery;
+  },
 }));
 
 const analyticsTrack = vi.hoisted(() => vi.fn());
@@ -135,7 +143,11 @@ vi.mock("@/lib/analytics", () => ({
 
 import { useWelcomeScan } from "@/components/onboarding/welcome/use-welcome-scan";
 import { WelcomeSessionsPage } from "@/components/onboarding/welcome/welcome-sessions-page";
-import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
+import {
+  SESSION_IMPORT_RUN_IDLE,
+  useSessionImportRunStore,
+  type SessionImportRunStatus,
+} from "@/stores/session-import/session-import-run-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
 
 interface PageCallbacks {
@@ -156,19 +168,54 @@ function TestPage(props: {
   return <WelcomeSessionsPage welcomeScan={welcomeScan} {...props.callbacks} />;
 }
 
+interface PageHandle extends PageCallbacks {
+  /** Re-renders the same page, which is what re-runs the scan effect. */
+  readonly rerender: () => void;
+}
+
 function renderPage(
   enabledProviderIds: ReadonlyArray<ProviderId> = ["claude-code", "codex"],
-): PageCallbacks {
+): PageHandle {
   const callbacks: PageCallbacks = {
     onImportStarted: vi.fn(),
     onSkipImport: vi.fn(),
     onNoSessions: vi.fn(),
     onAlreadyRunningContinue: vi.fn(),
   };
-  render(
-    <TestPage enabledProviderIds={enabledProviderIds} callbacks={callbacks} />,
+  const page = () => (
+    <TestPage enabledProviderIds={enabledProviderIds} callbacks={callbacks} />
   );
-  return callbacks;
+  const view = render(page());
+  return {
+    ...callbacks,
+    rerender: () => {
+      view.rerender(page());
+    },
+  };
+}
+
+/**
+ * The transport coming back under the SAME host: a new stream client and a
+ * new binding naming the same machine, which the scan hook reads as a
+ * reconnect (groups and ticks survive) rather than a fresh scan.
+ */
+function reconnectStream(page: PageHandle): void {
+  stream.client = { stream: "reconnected" };
+  stream.binding = {
+    wsStreamClient: stream.client,
+    hostId: stream.hostId,
+    retain: null,
+  };
+  page.rerender();
+}
+
+/** Puts a run of the given status in the store for the page's host. */
+function seedLocalRun(status: SessionImportRunStatus): void {
+  useSessionImportRunStore.setState({
+    runs: new Map([
+      [stream.hostId, { ...SESSION_IMPORT_RUN_IDLE, status, runId: "run-0" }],
+    ]),
+  });
 }
 
 const ZERO_TOTALS: SessionImportScanTotals = {
@@ -277,6 +324,8 @@ beforeEach(() => {
   statusQuery.isFetching = false;
   statusQuery.isPending = false;
   statusQuery.isSuccess = true;
+  statusQuery.refetch.mockReset();
+  statusQuery.enabled = null;
   analyticsTrack.mockReset();
   useSessionImportRunStore.setState({ runs: new Map() });
   useFeatureAnnouncementsStore.setState({ consumed: {} });
@@ -462,6 +511,99 @@ describe("<WelcomeSessionsPage />", () => {
     ).toBe("This machine can't import sessions.");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(page.onNoSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed provider's retained rows on screen and untickable after a reconnect", () => {
+    const page = renderPage();
+    playSharedFolders();
+    expect(importButton().textContent).toBe("Import 4 tasks");
+
+    // The transport drops and returns: the reducer keeps folder A and B and
+    // every tick. This pass, Claude's reader fails before re-sending them.
+    reconnectStream(page);
+    act(() => {
+      callbacks().onStarted(["claude", "codex"]);
+      callbacks().onProviderFailed({
+        harness: "claude",
+        reason: "source_unreadable",
+        detail: "~/.claude is unreadable",
+      });
+      callbacks().onComplete(ZERO_TOTALS);
+    });
+
+    // Banner above the rows, not instead of them: they are still selected
+    // and still what Import would submit.
+    const claude = section("claude");
+    expect(
+      within(claude).getByTestId("welcome-sessions-provider-failure")
+        .textContent,
+    ).toBe("Your Claude Code work could not be read. ~/.claude is unreadable");
+    expect(within(claude).getAllByTestId("session-import-group")).toHaveLength(
+      1,
+    );
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("true");
+    expect(importButton().textContent).toBe("Import 4 tasks");
+
+    // ...and the user can still take them out.
+    fireEvent.click(sectionCheckbox("claude"));
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("false");
+    expect(importButton().textContent).toBe("Import 2 tasks");
+    fireEvent.click(importButton());
+    expect(startSessionImportRunMock.mock.calls[0]?.[0]?.selections).toEqual([
+      { harness: "codex", nativeSessionId: "x1" },
+      { harness: "codex", nativeSessionId: "x2" },
+    ]);
+  });
+
+  it("holds Import pending, label unchanged, while the status probe is still answering", () => {
+    statusQuery.data = undefined;
+    statusQuery.isSuccess = false;
+    statusQuery.isPending = true;
+    statusQuery.isFetching = true;
+    renderPage();
+    playSharedFolders();
+    // The spinner glyph is aria-hidden; the label the button is named by
+    // does not change under it.
+    const button = screen.getByRole("button", { name: "Import 4 tasks" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.querySelector("[aria-hidden='true']")).not.toBeNull();
+    fireEvent.click(button);
+    expect(startSessionImportRunMock).not.toHaveBeenCalled();
+  });
+
+  it("explains a failed status probe and re-asks on Try again", () => {
+    statusQuery.data = undefined;
+    statusQuery.isSuccess = false;
+    statusQuery.isError = true;
+    renderPage();
+    playSharedFolders();
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Traycer could not check whether an import is already running.",
+    );
+    const button = importButton();
+    expect(button.hasAttribute("disabled")).toBe(true);
+    // Not pending: the answer is in, and it is "no".
+    expect(button.querySelector("[aria-hidden='true']")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(statusQuery.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("probes the host past a finished local run, but not past one in flight", () => {
+    seedLocalRun("complete");
+    const page = renderPage();
+    playSharedFolders();
+    expect(statusQuery.enabled).toBe(true);
+    expect(screen.queryByTestId("welcome-sessions-already-running")).toBeNull();
+    expect(importButton().hasAttribute("disabled")).toBe(false);
+
+    act(() => {
+      seedLocalRun("running");
+    });
+    page.rerender();
+    expect(statusQuery.enabled).toBe(false);
+    expect(
+      screen.getByTestId("welcome-sessions-already-running"),
+    ).not.toBeNull();
   });
 
   it("keeps what landed and allows Import when the scan stream fails", () => {
