@@ -14183,3 +14183,136 @@ describe("OfficeScene finding 3b - a civic rehome is settled when motion stills"
     expect(frameOf(scene).awayAgentIds.has(walker)).toBe(true);
   });
 });
+
+/**
+ * Finding 3c - settlement runs before the passes that create walks, so a
+ * civic arrival spawned on the same sync that enters suppression is never
+ * settled. `spawnAtDoor` is the one walk-creating site that is not gated.
+ */
+describe("OfficeScene finding 3c - a civic arrival spawned into suppression is seated", () => {
+  const LEAVER = agent({ id: "alpha", createdAt: 1, archivedAt: 900 });
+
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "effectiveSeat");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function chairFootRect(
+    layout: OfficeLayout,
+    tile: OfficeTilePos,
+  ): OfficeRect {
+    const foot = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  function seatHitBox(layout: OfficeLayout, seat: OfficeSeat): OfficeRect {
+    if (seat.hitBox !== null) return seat.hitBox;
+    const origin = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(seat.deskTile.col, seat.deskTile.row);
+    return {
+      x: origin.x,
+      y: origin.y,
+      width: seat.hitTiles.width * OFFICE_TILE,
+      height: seat.hitTiles.height * OFFICE_TILE,
+    };
+  }
+
+  function liveArchivedScene(): OfficeScene {
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents: [LEAVER, BETA],
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "idle"],
+          ["beta", "idle"],
+        ]),
+        reducedMotion: false,
+      }),
+    );
+    return scene;
+  }
+
+  function readmit(
+    scene: OfficeScene,
+    status: OfficeAgentStatus,
+    cursorMs: number,
+    playing: boolean,
+  ): void {
+    scene.sync(
+      sceneInput({
+        agents: [LEAVER, BETA],
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", status],
+          ["beta", "idle"],
+        ]),
+        cursorMs,
+        playing,
+        reducedMotion: false,
+      }),
+    );
+  }
+
+  function expectSeatedInLounge(scene: OfficeScene): void {
+    const lounge = bookOf(scene).effectiveSeat("alpha");
+    if (lounge === null || lounge.kind !== "lounge") {
+      throw new Error("expected alpha to hold a lounge");
+    }
+    const chair = chairFootRect(layoutOf(scene), lounge.chairTile);
+    expect(characterRect(frameOf(scene), "alpha")).toEqual(chair);
+    expect(frameOf(scene).awayAgentIds.has("alpha")).toBe(false);
+    expect(scene.locate("alpha")).toEqual(seatHitBox(layoutOf(scene), lounge));
+  }
+
+  it("seats a civic readmit from the door on its lounge chair when the cursor pauses, on that sync", () => {
+    const scene = liveArchivedScene();
+    readmit(scene, "awaiting", 100, false);
+    if (bookOf(scene).civicClaimOf("alpha") !== "lounge") {
+      throw new Error("expected alpha to hold a lounge at the cursor");
+    }
+    expectSeatedInLounge(scene);
+    scene.tick(100);
+    expectSeatedInLounge(scene);
+  });
+
+  it("seats a civic readmit from the door on its lounge chair when playback starts, on that sync", () => {
+    const scene = liveArchivedScene();
+    readmit(scene, "awaiting", 100, true);
+    if (bookOf(scene).civicClaimOf("alpha") !== "lounge") {
+      throw new Error("expected alpha to hold a lounge at the cursor");
+    }
+    expectSeatedInLounge(scene);
+    scene.tick(100);
+    expectSeatedInLounge(scene);
+  });
+
+  it("still walks a non-civic readmit in from the door at a paused cursor", () => {
+    const scene = liveArchivedScene();
+    readmit(scene, "idle", 100, false);
+    const desk = layoutOf(scene).desks.get("alpha");
+    if (desk === undefined) throw new Error("expected a desk for alpha");
+    expect(bookOf(scene).civicClaimOf("alpha")).toBeNull();
+    expect(frameOf(scene).awayAgentIds.has("alpha")).toBe(true);
+    expect(characterRect(frameOf(scene), "alpha")).not.toEqual(
+      chairFootRect(layoutOf(scene), desk.chairTile),
+    );
+  });
+});
