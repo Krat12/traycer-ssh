@@ -13089,3 +13089,333 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
     expect(book.effectiveSeat(overflow)?.kind).toBe("cubby");
   });
 });
+
+/**
+ * Finding 7b - a civic holder that flips to `attention` is sent to the
+ * counter, and `updateCivicClaims` ends the claim without redirecting
+ * because the queue walk is already under way. Nothing then calls
+ * `vacated`, so the bed or chair stays in `occupancy()` for as long as
+ * they stand at the counter.
+ */
+describe("OfficeScene finding 7b - a queue walk must vacate the civic seat", () => {
+  const QUEUE_WALK_TICKS = 800;
+
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    // `effectiveSeat`, not `civicClaimOf`: a queue-stand character is not
+    // seated, so the frame never asks the civic claim and that spy is empty.
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "effectiveSeat");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function footRect(layout: OfficeLayout, tile: OfficeTilePos): OfficeRect {
+    const foot = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  function countKind(layout: OfficeLayout, kind: OfficeSeatKind): number {
+    let count = 0;
+    for (const seat of layout.seats.values()) {
+      if (seat.kind === kind) count += 1;
+    }
+    return count;
+  }
+
+  function tickUntilAtRect(
+    scene: OfficeScene,
+    agentId: string,
+    expected: OfficeRect,
+    steps: number,
+  ): boolean {
+    for (let step = 0; step < steps; step += 1) {
+      scene.tick(100);
+      const here = scene.locate(agentId);
+      if (here === null) continue;
+      if (here.x === expected.x && here.y === expected.y) return true;
+    }
+    return false;
+  }
+
+  interface FilledLoungeFloor {
+    readonly scene: OfficeScene;
+    readonly agents: ReadonlyArray<OfficeAgentInput>;
+    readonly visibleAgentIds: ReadonlySet<string>;
+    readonly idle: Map<string, OfficeAgentStatus>;
+    readonly sitters: ReadonlyArray<string>;
+    readonly holder: string;
+    readonly competitor: string;
+    readonly loungeSeatId: string;
+    readonly queueTile: OfficeTilePos;
+  }
+
+  function attentionStatuses(
+    idle: Map<string, OfficeAgentStatus>,
+    sitters: ReadonlyArray<string>,
+    holder: string,
+  ): Map<string, OfficeAgentStatus> {
+    const next = new Map(idle);
+    for (const id of sitters) next.set(id, "awaiting");
+    next.set(holder, "attention");
+    return next;
+  }
+
+  function filledLoungeFloor(): FilledLoungeFloor {
+    const agents = makeTestEpic("one-team", 12, 9).agents;
+    const visibleAgentIds = new Set(agents.map((person) => person.id));
+    // Annotated: an unannotated `new Map` infers `Map<string, "idle">` from
+    // the literal, and the `awaiting` write below is then a type error Vitest
+    // never sees - the hook does.
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((person) => [person.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: idle }));
+    const chairs = countKind(layoutOf(scene), "lounge");
+    if (agents.length < chairs + 1) {
+      throw new Error(
+        `need ${chairs} sitters and a competitor; got ${agents.length}`,
+      );
+    }
+    const sitters = agents.slice(0, chairs).map((person) => person.id);
+    const holder = sitters[0];
+    const competitor = agents[chairs].id;
+    const waiting = new Map(idle);
+    for (const id of sitters) waiting.set(id, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: waiting,
+        reducedMotion: true,
+      }),
+    );
+    for (const id of sitters) {
+      if (bookOf(scene).civicClaimOf(id) !== "lounge") {
+        throw new Error(`expected ${id} seated in a lounge`);
+      }
+    }
+    const lounge = bookOf(scene).effectiveSeat(holder);
+    if (lounge === null || lounge.kind !== "lounge") {
+      throw new Error(`expected ${holder} to hold a lounge`);
+    }
+    // Length, not an `undefined` check on the element: the index signature is
+    // not `noUncheckedIndexedAccess`, so comparing the element to `undefined`
+    // is a condition the types say can never fire.
+    const queueTiles =
+      layoutOf(scene).floors[lounge.floorIndex].receptionQueueTiles;
+    if (queueTiles.length === 0) {
+      throw new Error("expected a reception queue tile");
+    }
+    const queueTile = queueTiles[0];
+    return {
+      scene,
+      agents,
+      visibleAgentIds,
+      idle,
+      sitters,
+      holder,
+      competitor,
+      loungeSeatId: lounge.seatId,
+      queueTile,
+    };
+  }
+
+  function syncHolderToCounter(
+    floor: FilledLoungeFloor,
+    reducedMotion: boolean,
+  ): void {
+    floor.scene.sync(
+      sceneInput({
+        agents: floor.agents,
+        visibleAgentIds: floor.visibleAgentIds,
+        statusById: attentionStatuses(floor.idle, floor.sitters, floor.holder),
+        reducedMotion,
+      }),
+    );
+  }
+
+  function loungeOnQueueLayout(queueTile: OfficeTilePos): OfficeLayout {
+    const home = deskSeat({
+      seatId: "desk-holder",
+      deskTile: { col: 2, row: 2 },
+      floorIndex: 0,
+    });
+    const lounge: OfficeSeat = {
+      seatId: "lounge-q",
+      kind: "lounge",
+      deskTile: { col: queueTile.col, row: queueTile.row - 1 },
+      chairTile: queueTile,
+      facing: "up",
+      hitTiles: { width: 1, height: 1 },
+      hitBox: null,
+      floorIndex: 0,
+      roomId: null,
+      hostId: null,
+      manager: false,
+      civicRoomId: "waiting-room",
+    };
+    const floor: OfficeFloor = {
+      ...handBuiltFloor([]),
+      receptionQueueTiles: [queueTile],
+    };
+    return {
+      view: "floor",
+      cols: 16,
+      rows: 16,
+      desks: new Map([["holder", { ...home, agentId: "holder" }]]),
+      seats: new Map([
+        [home.seatId, home],
+        [lounge.seatId, lounge],
+      ]),
+      signs: [],
+      rooms: [],
+      floors: [floor],
+      doorTile: { col: 0, row: 0 },
+      lobbyTile: { col: 0, row: 1 },
+      props: [],
+      walkable: allWalkable(16, 16),
+      frozen: null,
+      shiftFromPrevious: null,
+      stable: true,
+    };
+  }
+
+  it("keeps a lounge reserved while its holder walks to the counter, and frees it on arrival with no further sync", () => {
+    const floor = filledLoungeFloor();
+    const queueBox = footRect(layoutOf(floor.scene), floor.queueTile);
+    syncHolderToCounter(floor, false);
+
+    const mid = bookOf(floor.scene);
+    expect(mid.occupant(floor.loungeSeatId)).toBeNull();
+    expect(mid.occupancy().get(floor.loungeSeatId)).toBe(floor.holder);
+    expect(floor.scene.whereabouts(floor.holder)).toBe("Help desk");
+    expect(floor.scene.locate(floor.holder)).not.toEqual(queueBox);
+
+    expect(
+      tickUntilAtRect(floor.scene, floor.holder, queueBox, QUEUE_WALK_TICKS),
+    ).toBe(true);
+    expect(
+      bookOf(floor.scene).occupancy().get(floor.loungeSeatId),
+    ).toBeUndefined();
+  });
+
+  it("frees a lounge on the same sync that stands its holder at the counter under reduced motion", () => {
+    const floor = filledLoungeFloor();
+    const queueBox = footRect(layoutOf(floor.scene), floor.queueTile);
+    syncHolderToCounter(floor, true);
+
+    const atQueue = floor.scene.locate(floor.holder);
+    if (
+      atQueue === null ||
+      atQueue.x !== queueBox.x ||
+      atQueue.y !== queueBox.y
+    ) {
+      throw new Error("expected instant queue-stand under reduced motion");
+    }
+    const book = bookOf(floor.scene);
+    expect(book.occupant(floor.loungeSeatId)).toBeNull();
+    expect(book.occupancy().get(floor.loungeSeatId)).toBeUndefined();
+  });
+
+  it("frees a lounge on the same sync when the holder already stands on the queue slot", () => {
+    const queueTile: OfficeTilePos = { col: 4, row: 6 };
+    const layout = loungeOnQueueLayout(queueTile);
+    const holder = agent({ id: "holder", createdAt: 1 });
+    const visibleAgentIds: ReadonlySet<string> = new Set(["holder"]);
+    const scene = new OfficeScene(
+      testView(() => layout),
+      null,
+    );
+    const idle = new Map<string, OfficeAgentStatus>([["holder", "idle"]]);
+    scene.sync(
+      sceneInput({
+        agents: [holder],
+        visibleAgentIds,
+        statusById: idle,
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: [holder],
+        visibleAgentIds,
+        statusById: new Map(idle).set("holder", "awaiting"),
+        reducedMotion: true,
+      }),
+    );
+    const lounge = bookOf(scene).effectiveSeat("holder");
+    if (lounge === null || lounge.kind !== "lounge") {
+      throw new Error("expected holder in the lounge");
+    }
+    if (
+      lounge.chairTile.col !== queueTile.col ||
+      lounge.chairTile.row !== queueTile.row
+    ) {
+      throw new Error("lounge chair must be the queue slot");
+    }
+
+    scene.sync(
+      sceneInput({
+        agents: [holder],
+        visibleAgentIds,
+        statusById: new Map(idle).set("holder", "attention"),
+        reducedMotion: false,
+      }),
+    );
+    const queueBox = footRect(layoutOf(scene), queueTile);
+    const atQueue = scene.locate("holder");
+    if (
+      atQueue === null ||
+      atQueue.x !== queueBox.x ||
+      atQueue.y !== queueBox.y
+    ) {
+      throw new Error("expected instant queue-stand: start tile was the slot");
+    }
+    expect(scene.whereabouts("holder")).toBe("Help desk");
+    const book = bookOf(scene);
+    expect(book.occupant(lounge.seatId)).toBeNull();
+    expect(book.occupancy().get(lounge.seatId)).toBeUndefined();
+  });
+
+  it("lets a competing awaiting agent claim the lounge a counter-bound holder has arrived from", () => {
+    const floor = filledLoungeFloor();
+    const queueBox = footRect(layoutOf(floor.scene), floor.queueTile);
+    syncHolderToCounter(floor, false);
+    expect(
+      tickUntilAtRect(floor.scene, floor.holder, queueBox, QUEUE_WALK_TICKS),
+    ).toBe(true);
+
+    const competing = attentionStatuses(
+      floor.idle,
+      floor.sitters,
+      floor.holder,
+    );
+    competing.set(floor.competitor, "awaiting");
+    floor.scene.sync(
+      sceneInput({
+        agents: floor.agents,
+        visibleAgentIds: floor.visibleAgentIds,
+        statusById: competing,
+      }),
+    );
+    const book = bookOf(floor.scene);
+    expect(book.civicClaimOf(floor.competitor)).toBe("lounge");
+    expect(book.effectiveSeat(floor.competitor)?.seatId).toBe(
+      floor.loungeSeatId,
+    );
+  });
+});
