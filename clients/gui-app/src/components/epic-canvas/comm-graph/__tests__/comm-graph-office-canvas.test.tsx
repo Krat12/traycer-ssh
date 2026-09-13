@@ -2575,24 +2575,52 @@ describe("CommGraphOfficeCanvas fixups 1 and 2 - renderer projection, semantic z
     setIntersecting(true);
     flushRaf(3);
 
-    const fillTextCalls = calls.filter((call) => call.method === "fillText");
     // An EIGHT-tile board is 128 screen pixels, which the abbreviated reading
     // fits and the spelt-out one does not. Matched on the abbreviation rather
     // than on a word, because what this case is about is WHERE the text lands,
     // not which rung the width picked. It used to be two tiles, which is
     // thirty-two pixels - below every reading of a roster, so the board fell
     // to a bare total and there was no "0D" on the canvas to find.
-    const boardTextCall = fillTextCalls.find(
+    //
+    // The INDEX in the whole stream, not a filtered copy: the transform in
+    // force is a property of the position a call holds among the
+    // `setTransform`s, and a filtered array has thrown that away.
+    const boardTextIndex = calls.findIndex(
       (call) =>
-        typeof call.args[0] === "string" && call.args[0].startsWith("0D"),
+        call.method === "fillText" &&
+        typeof call.args[0] === "string" &&
+        call.args[0].startsWith("0D"),
     );
-    expect(boardTextCall).toBeDefined();
+    expect(boardTextIndex).toBeGreaterThanOrEqual(0);
+    const boardTextCall = calls[boardTextIndex];
+    const anchorX = boardTextCall.args[1];
+    const anchorY = boardTextCall.args[2];
+    if (typeof anchorX !== "number" || typeof anchorY !== "number") {
+      throw new Error("expected a numeric anchor on the board's lettering");
+    }
+
+    // MEASURED THROUGH THE TRANSFORM, not off the raw argument. A board label
+    // is drawn AFTER the screen-space reset, so its argument is already a
+    // screen coordinate and the CTM is meant to be the device scale alone -
+    // which makes the assertion below identical to the raw one while the
+    // renderer is right, and different the moment it is not. Reading
+    // `args[1]` directly cannot tell those apart: deleting the reset leaves
+    // every argument in this file untouched and moves the paint, which is how
+    // it survived the whole suite.
+    const boardMatrix = canvasTransformAt(calls, boardTextIndex);
+    const dpr = window.devicePixelRatio || 1;
+    expect(
+      isDeviceScaleTransform(boardMatrix, dpr),
+      "board lettering is drawn in screen space",
+    ).toBe(true);
+    const painted = applyCanvasTransform(boardMatrix, anchorX, anchorY);
+
     // Fixed camera (zoom 1, x=5, y=0): the projected anchor for tile (2,2)
     // with an eight-tile board centred on it is
     // x = 2048 + 2*16 + (8*16)/2 = 2144, screenX = 2144 * 1 + 5 = 2149. The
     // unfixed renderer instead multiplies the raw tile by OFFICE_TILE with no
     // projector at all, landing four figures short at screenX = 101.
-    expect(boardTextCall?.args[1]).toBe(2149);
+    expect(painted.x / dpr).toBe(2149);
   });
 
   it("F10: an unhovered, unselected, unmatched agent's name tag draws nothing at LOD 1", () => {
@@ -5555,6 +5583,14 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
       });
       expect(emptyResolved, `${theme} empty`).toBe(0);
       const empty = captureChromeSiren(calls);
+      // The chrome assertion belongs in BOTH states of BOTH themes, not only
+      // in the clearance case's light pass. The clearance case pins the CTM
+      // under light alone, so a scale applied to the lamp in the dark branch
+      // only - or in the unoccupied branch only - would paint a wrong-sized
+      // beacon that every other assertion here still accepts, because the
+      // sprite name, the theme argument and the lens pixels are all
+      // unchanged by a transform.
+      assertScreenChrome(empty, `${theme} empty`);
       expect(empty.blit.theme, `${theme} empty arg`).toBe(theme);
       const emptyDrawn = rasterNamed(empty.blit.name, empty.blit.theme);
       const emptyExpected = rasterNamed("siren-light", theme);
@@ -5581,6 +5617,7 @@ describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
       });
       expect(occupiedResolved, `${theme} occupied`).toBe(1);
       const occupied = captureChromeSiren(calls);
+      assertScreenChrome(occupied, `${theme} occupied`);
       expect(occupied.blit.theme, `${theme} occupied arg`).toBe(theme);
       const occupiedDrawn = rasterNamed(
         occupied.blit.name,
