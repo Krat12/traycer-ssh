@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { CommGraphPulse } from "@/lib/comm-graph/comm-graph-timeline";
 import { layoutOffice } from "@/lib/comm-graph/office/office-layout";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
-import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
+import {
+  officeSpriteOpaqueAt,
+  officeSpriteSize,
+} from "@/lib/comm-graph/office/office-pixel-art";
 import {
   officeArchivedByHost,
   partitionOfficePopulation,
@@ -5978,35 +5981,272 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     };
   }
 
-  /** A corner of the furniture that the occupant's own body does not cover. */
-  function furniturePointOutside(
-    box: OfficeRect,
-    body: OfficeRect,
-  ): OfficePoint | null {
-    const right = box.x + box.width - 1;
-    const bottom = box.y + box.height - 1;
-    const corners: ReadonlyArray<OfficePoint> = [
-      { x: box.x, y: bottom },
-      { x: right, y: bottom },
-      { x: box.x, y: box.y },
-      { x: right, y: box.y },
-    ];
-    return corners.find((point) => !inRect(body, point)) ?? null;
+  /** Whether two rectangles share a pixel. */
+  function rectsOverlap(left: OfficeRect, right: OfficeRect): boolean {
+    return (
+      left.x < right.x + right.width &&
+      right.x < left.x + left.width &&
+      left.y < right.y + right.height &&
+      right.y < left.y + left.height
+    );
   }
 
-  /** Whether anything painted in this frame covers this point. */
-  function paintedOver(frame: OfficeFrame, point: OfficePoint): boolean {
-    const drawn = [
-      ...frame.floor,
-      ...frame.props,
-      ...(frame.world ?? []).map((entry) => entry.drawable),
-    ];
-    return drawn.some((drawable) => {
-      if (drawable.kind !== "sprite") return false;
-      const size = officeSpriteSize(drawable.sprite);
-      return inRect({ x: drawable.x, y: drawable.y, ...size }, point);
-    });
+  /**
+   * The agent whose own desk is FARTHEST from any ward bed, or `null` for a
+   * population with no desks.
+   *
+   * Measured rather than named, because the answer is a fact about each view's
+   * packing: the point of it is a patient whose home props cannot be in the same
+   * culled window as its bed.
+   */
+  function farthestFromABed(
+    scene: OfficeScene,
+    epic: OfficeTestEpic,
+  ): string | null {
+    const layout = layoutOf(scene);
+    const projector = view.painter.projector(layout);
+    const beds: OfficePoint[] = [];
+    for (const seat of layout.seats.values()) {
+      if (seat.kind !== "bed") continue;
+      beds.push(projector.project(seat.chairTile.col, seat.chairTile.row));
+    }
+    if (beds.length === 0) return null;
+    const book = bookOf(scene);
+    let best: string | null = null;
+    let bestGap = -1;
+    for (const person of epic.agents) {
+      const desk = book.assignedSeat(person.id);
+      if (desk === null) continue;
+      const at = projector.project(desk.chairTile.col, desk.chairTile.row);
+      let nearest = Number.POSITIVE_INFINITY;
+      for (const bed of beds) {
+        nearest = Math.min(
+          nearest,
+          Math.max(Math.abs(bed.x - at.x), Math.abs(bed.y - at.y)),
+        );
+      }
+      if (nearest <= bestGap) continue;
+      bestGap = nearest;
+      best = person.id;
+    }
+    return best;
   }
+
+  /**
+   * A pixel the BED ITSELF paints, that its occupant's body does not cover.
+   *
+   * Taken from the art and not from the corners of the declared box: Campus's
+   * civic box is the union its desks are drawn in, 8 px of it sky above a 32 x 24
+   * bed, so a corner of that box is transparent and a region over it proves
+   * nothing about what a reader can click. The sprite names itself - the four bed
+   * sprites the art has are `bed`, `bed-iso`, `bed-occupied` and `medbay-bed`, and
+   * nothing else is spelled with one - so the search can insist on the furniture
+   * rather than on whatever happens to be drawn there.
+   */
+  function bedPixel(
+    frame: OfficeFrame,
+    box: OfficeRect,
+    body: OfficeRect,
+  ): { readonly point: OfficePoint; readonly name: string } | null {
+    for (let y = box.y; y < box.y + box.height; y += 1) {
+      for (let x = box.x; x < box.x + box.width; x += 1) {
+        const point: OfficePoint = { x, y };
+        if (inRect(body, point)) continue;
+        const top = paintersAt(frame, point).at(-1);
+        if (top === undefined || !top.name.includes("bed")) continue;
+        return { point, name: top.name };
+      }
+    }
+    return null;
+  }
+
+  /** One sprite that PAINTS a pixel - not one whose box merely covers it. */
+  interface PaintedPixel {
+    readonly name: string;
+    readonly ownerAgentId: string | null;
+  }
+
+  /**
+   * Everything in this frame that paints this pixel.
+   *
+   * The art's own maps decide, through `officeSpriteOpaqueAt`: a sprite's box is
+   * mostly sky for most of this art, so a box that covers a point says nothing
+   * about whether the reader can see what is behind it there. The floor's ground
+   * is quads rather than sprites and so is never a painter here, which is the
+   * right reading - a click on grass names nobody.
+   */
+  function paintersAt(
+    frame: OfficeFrame,
+    point: OfficePoint,
+  ): ReadonlyArray<PaintedPixel> {
+    const painters: PaintedPixel[] = [];
+    const paints = (drawable: OfficeDrawable): boolean =>
+      drawable.kind === "sprite" &&
+      officeSpriteOpaqueAt(
+        drawable.sprite,
+        point.x - drawable.x,
+        point.y - drawable.y,
+      );
+    for (const drawable of [...frame.floor, ...frame.props]) {
+      if (!paints(drawable) || drawable.kind !== "sprite") continue;
+      painters.push({ name: drawable.sprite.name, ownerAgentId: null });
+    }
+    for (const entry of frame.world ?? []) {
+      if (!paints(entry.drawable) || entry.drawable.kind !== "sprite") continue;
+      painters.push({
+        name: entry.drawable.sprite.name,
+        ownerAgentId: entry.ownerAgentId,
+      });
+    }
+    return painters;
+  }
+
+  /** Which agent this frame's own regions resolve this point to. */
+  function regionOwnerAt(frame: OfficeFrame, point: OfficePoint): string {
+    return (
+      frame.hitRegions.find((region) => inRect(region.rect, point))?.agentId ??
+      "nobody"
+    );
+  }
+
+  /** A pixel inside an occupied civic seat's box that ONE other agent paints. */
+  interface CivicWitness {
+    readonly seatId: string;
+    readonly occupant: string;
+    readonly owner: string;
+    readonly point: OfficePoint;
+    readonly name: string;
+  }
+
+  /**
+   * READ AA'S AA1: THE FURNITURE'S OWN LAYER DECIDES, NOT A FABRICATED DEPTH.
+   *
+   * X1 gave a civic seat's box the depth of its own tile at prop bias, which is
+   * not where any of this furniture is drawn. Three of the four kinds the two
+   * isometric views ship are `layout.props` - a ward bed, a City hospital bed, a
+   * City shelter chair - and the floor pass draws those BEFORE the world stream,
+   * so every character is painted over them. The fourth, Campus's bench, is the
+   * courtyard's fixture: one row behind the seat, drawn for nobody, and shared
+   * with the strolls that sit on it. So the fabricated number put a waiting
+   * agent's box in FRONT of a character the furniture is painted behind, and out
+   * over a bench sprite 16 px up-left of where the box was.
+   *
+   * THE WITNESS IS TAKEN FROM THE ART, one pixel per (occupied civic seat, other
+   * agent) pair: a pixel inside the seat's own declared box whose LAST painter -
+   * by the art's own maps, not by a box that covers it - is a sprite somebody
+   * else owns. That sprite is what a reader sees at that pixel, so both hit paths
+   * owe that agent, and the pointer and the frame build their orders separately,
+   * which is why both are asked.
+   *
+   * At four agents on Campus that pair is the attention agent's torso at
+   * `430,68`, inside the third bench seat's `400,64 32x32` box: its fabricated
+   * `96.008` beat the character's `76`, so a click on a visible body named the
+   * agent waiting behind it. The two pairs the same fixture also yields -
+   * a head inside the box of the seat in front of it - already resolved
+   * correctly, because there the character was the nearer of the two.
+   *
+   * The layered views are skipped rather than measured: their regions come from
+   * draw order, where every character precedes every seat box, so the ordering
+   * this case is about is not theirs to get wrong.
+   */
+  it("gives a pixel one other agent paints to that agent", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    if (view.painter.depth !== "world") {
+      context.skip(`${viewId} orders its regions by draw order, not by depth`);
+      return;
+    }
+    const waiting = [
+      agent({ id: "a", createdAt: 1 }),
+      agent({ id: "b", createdAt: 2 }),
+      agent({ id: "c", createdAt: 3 }),
+    ];
+    const busy = agent({ id: "q", createdAt: 4 });
+    const people = [...waiting, busy];
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: people,
+        visibleAgentIds: new Set(people.map((person) => person.id)),
+        statusById: new Map<string, OfficeAgentStatus>([
+          ...waiting.map(
+            (person) => [person.id, "awaiting"] as [string, OfficeAgentStatus],
+          ),
+          [busy.id, "attention"],
+        ]),
+        // Reduced motion: the seats are taken outright, so the waiting agents are
+        // IN their civic seats on the first frame rather than walking to them.
+        reducedMotion: true,
+      }),
+    );
+    const frame = frameOf(scene);
+    const book = bookOf(scene);
+    const held: { readonly id: string; readonly seat: OfficeSeat }[] = [];
+    for (const person of people) {
+      const seat = book.effectiveSeat(person.id);
+      if (seat === null || seat.civicRoomId === null) continue;
+      held.push({ id: person.id, seat });
+    }
+    expect(held.length, "nobody took a civic seat").toBeGreaterThan(0);
+
+    const witnesses: CivicWitness[] = [];
+    let pixels = 0;
+    for (const holder of held) {
+      const box = civicBoxOf(scene, holder.seat);
+      const owners = new Set<string>();
+      for (let y = box.y; y < box.y + box.height; y += 1) {
+        for (let x = box.x; x < box.x + box.width; x += 1) {
+          pixels += 1;
+          const point: OfficePoint = { x, y };
+          // THE LAST PAINTER IS WHAT THE READER SEES. The ground is a sprite
+          // too, so it is the first painter of every pixel here and never the
+          // answer; a fixture drawn over a character - Campus's bench is, being
+          // a row nearer - takes the pixel back and is not a witness either.
+          const top = paintersAt(frame, point).at(-1);
+          if (top === undefined) continue;
+          const owner = top.ownerAgentId;
+          if (owner === null || owner === holder.id || owners.has(owner)) {
+            continue;
+          }
+          owners.add(owner);
+          witnesses.push({
+            seatId: holder.seat.seatId,
+            occupant: holder.id,
+            owner,
+            point,
+            name: top.name,
+          });
+        }
+      }
+    }
+    if (witnesses.length === 0) {
+      context.skip(
+        `${viewId}: of ${String(pixels)} pixels in ${String(held.length)} occupied civic boxes, none has another agent's art as its last painter`,
+      );
+      return;
+    }
+
+    const owed = witnesses.map(
+      (witness) =>
+        `${witness.owner} at ${String(witness.point.x)},${String(witness.point.y)} (${witness.name} over ${witness.seatId})`,
+    );
+    expect(
+      witnesses.map(
+        (witness) =>
+          `${regionOwnerAt(frame, witness.point)} at ${String(witness.point.x)},${String(witness.point.y)} (${witness.name} over ${witness.seatId})`,
+      ),
+      "the frame's regions",
+    ).toEqual(owed);
+    expect(
+      witnesses.map(
+        (witness) =>
+          `${scene.hitTest(witness.point) ?? "nobody"} at ${String(witness.point.x)},${String(witness.point.y)} (${witness.name} over ${witness.seatId})`,
+      ),
+      "the pointer",
+    ).toEqual(owed);
+  });
 
   /**
    * READ X'S X1: A PATIENT'S BED ANSWERS A CLICK WHEREVER THE CAMERA IS.
@@ -6018,9 +6258,11 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
    * every desk on screen the seat borrowed its owner's DESK depth, so a region
    * existed and looked right. Frame a window that leaves the patient's own
    * building out - which is every camera actually pointed at a ward - and the bed
-   * had no region at all: no hover card, no "where" line, no camera target, while
-   * the patient is plainly drawn lying in it. `hitTest` took the same path and so
-   * did not need a camera to fail.
+   * had no region at all: no hover card, nothing for a click to select, and no
+   * ring when Find matched its occupant - the three readers that go through the
+   * regions, and not the directory, the playback or the "where" line, which derive
+   * their own answers - while the patient is plainly drawn lying in it. `hitTest`
+   * took the same path and so did not need a camera to fail.
    *
    * THE POINT IS ON THE FURNITURE AND NOT ON THE BODY, which is what makes this
    * about the seat rather than the character: a bed is two tiles wide and the
@@ -6037,37 +6279,60 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       context.skip(`${viewId} plans no civic rooms`);
       return;
     }
-    const only = agent({ id: "root-only", createdAt: 1 });
+    // A POPULATION BIG ENOUGH TO PUT THE WARD AND THE PATIENT'S OWN DESK APART.
+    // At one agent they are 48 px apart on Campus and 112 on City, and the frame's
+    // cull keeps a margin for the sprites that hang into a window - so the home
+    // desk was drawn anyway, the seat's box had its depth to borrow, and only the
+    // pointer path discriminated. The patient is CHOSEN as the agent whose desk is
+    // farthest from a bed, measured per view because which agent that is differs
+    // by view: at 24 it is 496 px away on Campus and City, 464 on Mission control,
+    // 288 on Towers, 272 on Building and 1024 on the Floor.
+    const epic = makeTestEpic("many-roots", 24, 5);
+    const visible = existingIdsOf(epic);
+    const idle = idleStatusById(epic);
+    const survey = newScene();
+    survey.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const chosen = farthestFromABed(survey, epic);
+    expect(chosen, "nobody has a desk to be away from a ward").not.toBeNull();
+    if (chosen === null) return;
+    const statusById = new Map(idle);
+    statusById.set(chosen, "failure");
     const scene = newScene();
     scene.sync(
       sceneInput({
-        agents: [only],
-        visibleAgentIds: new Set([only.id]),
-        statusById: new Map<string, OfficeAgentStatus>([[only.id, "failure"]]),
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById,
         // Reduced motion: the bed is taken outright, so there is a patient IN it
         // rather than one walking to it.
         reducedMotion: true,
       }),
     );
     const book = bookOf(scene);
-    expect(book.civicClaimOf(only.id), `${only.id} never took a bed`).toBe(
-      "bed",
-    );
-    const bed = book.effectiveSeat(only.id);
-    const desk = book.assignedSeat(only.id);
+    expect(book.civicClaimOf(chosen), `${chosen} never took a bed`).toBe("bed");
+    const bed = book.effectiveSeat(chosen);
+    const desk = book.assignedSeat(chosen);
     if (bed === null || desk === null) {
       throw new Error("a bedded agent owes both a bed and a desk");
     }
     expect(bed.civicRoomId).not.toBeNull();
 
     const wide = frameOf(scene);
-    const body = characterRect(wide, only.id);
-    const point = furniturePointOutside(civicBoxOf(scene, bed), body);
+    const body = characterRect(wide, chosen);
+    const witness = bedPixel(wide, civicBoxOf(scene, bed), body);
     expect(
-      point,
-      `no ${bed.kind} pixel outside ${only.id}'s body`,
+      witness,
+      `no ${bed.kind} pixel outside ${chosen}'s body`,
     ).not.toBeNull();
-    if (point === null) return;
+    if (witness === null) return;
+    const point = witness.point;
 
     // THE WINDOW: two tiles of ward, and the patient's own desk outside it.
     const near: OfficeRect = {
@@ -6083,22 +6348,48 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       false,
     );
 
-    // THE BED IS DRAWN THERE, so a region for it is a region over something the
-    // reader can see - which is the whole reason the depth check exists.
+    // THE BED IS DRAWN THERE IN THIS WINDOW TOO, so a region for it is a region
+    // over something the reader can see - which is the whole reason the depth
+    // check exists. Asked of the CULLED frame and by sprite name: the witness was
+    // taken from the whole-world one, and what this case is about is the window.
     const framed = scene.frame(2, near);
-    expect(paintedOver(framed, point), "nothing is painted at that point").toBe(
-      true,
-    );
+    expect(
+      paintersAt(framed, point).at(-1)?.name ?? "nothing",
+      "the window does not paint the bed at that point",
+    ).toBe(witness.name);
+
+    // AND THE HOME PROPS ARE REALLY GONE, not merely outside the window's own
+    // rect: what the frame's regions borrowed was the depth of a PROP the patient
+    // owns, so the premise is that this window draws none - away from the bed,
+    // that is, since the storeyed pair paint the bed itself as the patient's own
+    // prop and that one belongs here. `world` is the stream that carries owners;
+    // the layered views carry none in the frame and hit in draw order.
+    const furniture = civicBoxOf(scene, bed);
+    expect(
+      (framed.world ?? [])
+        .filter((entry) => {
+          if (entry.ownerAgentId !== chosen) return false;
+          if (entry.drawable.kind !== "sprite") return false;
+          if (entry.drawable.sprite.name === "character") return false;
+          const size = officeSpriteSize(entry.drawable.sprite);
+          return !rectsOverlap(
+            { x: entry.drawable.x, y: entry.drawable.y, ...size },
+            furniture,
+          );
+        })
+        .map((entry) =>
+          entry.drawable.kind === "sprite" ? entry.drawable.sprite.name : "",
+        ),
+      `the window still draws props ${chosen} owns away from its bed`,
+    ).toEqual([]);
 
     // AND IT RESOLVES TO THE PATIENT, through the frame's own regions and
     // through the pointer path, which build their depths separately.
     const hit = framed.hitRegions.find((region) => inRect(region.rect, point));
     expect(hit?.agentId, "the frame's regions do not reach the bed").toBe(
-      only.id,
+      chosen,
     );
-    expect(scene.hitTest(point), "hitTest does not reach the bed").toBe(
-      only.id,
-    );
+    expect(scene.hitTest(point), "hitTest does not reach the bed").toBe(chosen);
   });
 
   /** The four host-b agents, plus the host-a arrival that renumbered them. */
