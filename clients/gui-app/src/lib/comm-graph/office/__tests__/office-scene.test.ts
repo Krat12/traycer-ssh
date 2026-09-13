@@ -6729,6 +6729,198 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     expect(vehicles.length).toBeLessThanOrEqual(2);
   });
 
+  it("keeps inherited ambulance riders waiting when a fire engine replaces their van", (context) => {
+    const specialIds = new Map<number, string>([
+      [0, "a"],
+      [1, "b"],
+      [2, "c"],
+    ]);
+    const agents: ReadonlyArray<OfficeAgentInput> = Array.from(
+      { length: 40 },
+      (_unused, index) =>
+        agent({
+          id: `inherit-${specialIds.get(index) ?? `filler-${index}`}`,
+          hostId: "inherit-host",
+          createdAt: index + 1,
+        }),
+    );
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    const infirmaries = layout.floors
+      .flatMap((floor) => floor.civic)
+      .filter((room) => room.kind === "infirmary");
+    if (
+      layout.floors[0].road === null ||
+      !hasInfirmary(layout) ||
+      infirmaries.every((room) => room.seatIds.length < 2)
+    ) {
+      context.skip("this view has no road or two-bed infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("inherit-a", "inherit-b"),
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("inherit-a", "inherit-b", "inherit-c"),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+        (vehicle) => vehicle.vehicleKind,
+      ),
+    ).toContain("fire-engine");
+    const projector = view.painter.projector(layout);
+    const kerbs = layout.floors.flatMap((floor) =>
+      floor.civic.flatMap((room) => {
+        if (room.kind !== "infirmary" || room.kerbTile === null) return [];
+        return [
+          projector.project(room.kerbTile.col + 0.5, room.kerbTile.row + 1),
+        ];
+      }),
+    );
+    const atKerb = (vehicle: OfficeVehicleDrawable): boolean =>
+      kerbs.some((point) => point.x === vehicle.x && point.y === vehicle.y);
+    const names = infirmaryNames(layout);
+    // Its own function to stay inside the complexity ceiling: a loop that
+    // records four independent firsts is all branches, and inlining it puts
+    // the case over on its own.
+    const watchEngine = (): {
+      sawInheritedRiderAway: boolean;
+      settledTick: number | null;
+      kerbTick: number | null;
+      leftKerbTick: number | null;
+    } => {
+      let sawInheritedRiderAway = false;
+      let settledTick: number | null = null;
+      let kerbTick: number | null = null;
+      let leftKerbTick: number | null = null;
+      const bothInTheWard = (): boolean =>
+        names.has(scene.whereabouts("inherit-a") ?? "") &&
+        names.has(scene.whereabouts("inherit-b") ?? "");
+      for (let step = 0; step < 500; step += 1) {
+        const frame = scene.frame(1, WHOLE_WORLD);
+        const engine = vehicleDrawables(frame).find(
+          (vehicle) => vehicle.vehicleKind === "fire-engine",
+        );
+        const onKerb = engine !== undefined && atKerb(engine);
+        const inheritedAway =
+          frame.awayAgentIds.has("inherit-a") ||
+          frame.awayAgentIds.has("inherit-b");
+        if (inheritedAway) sawInheritedRiderAway = true;
+        if (!inheritedAway && bothInTheWard()) settledTick ??= step;
+        if (onKerb) kerbTick ??= step;
+        if (!onKerb && kerbTick !== null) leftKerbTick ??= step;
+        scene.tick(100);
+      }
+      return { sawInheritedRiderAway, settledTick, kerbTick, leftKerbTick };
+    };
+    const { sawInheritedRiderAway, settledTick, kerbTick, leftKerbTick } =
+      watchEngine();
+    expect(sawInheritedRiderAway).toBe(true);
+    expect(kerbTick).not.toBeNull();
+    expect(leftKerbTick).not.toBeNull();
+    if (kerbTick === null || leftKerbTick === null) {
+      return;
+    }
+    // This fixture's forty-agent walk can exceed the observation budget; in
+    // that case the contract's 12s ceiling is the applicable rider bound.
+    const riderBound = settledTick ?? kerbTick + 120;
+    const minimumDwell = Math.max(40, Math.min(riderBound - kerbTick, 120));
+    expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
+  });
+
+  it("keeps a standing ambulance when an off-screen engine escalation is gated", (context) => {
+    const specialIds = new Map<number, string>([
+      [0, "a"],
+      [1, "b"],
+      [2, "c"],
+    ]);
+    const agents: ReadonlyArray<OfficeAgentInput> = Array.from(
+      { length: 40 },
+      (_unused, index) =>
+        agent({
+          id: `viewport-${specialIds.get(index) ?? `filler-${index}`}`,
+          hostId: "viewport-host",
+          createdAt: index + 1,
+        }),
+    );
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    const infirmary = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "infirmary" && room.kerbTile !== null);
+    if (
+      layout.floors[0].road === null ||
+      infirmary === undefined ||
+      infirmary.kerbTile === null ||
+      infirmary.seatIds.length < 2
+    ) {
+      // The kerb belongs in the guard rather than being asserted below: a
+      // room nothing can drive to is a room this case has nothing to say
+      // about, which is the same reason the road is here.
+      context.skip("this view has no road or two-bed kerbed infirmary (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("viewport-a", "viewport-b"),
+      }),
+    );
+    const projector = view.painter.projector(layout);
+    const kerb = projector.project(
+      infirmary.kerbTile.col + 0.5,
+      infirmary.kerbTile.row + 1,
+    );
+    let reachedKerb = false;
+    for (let step = 0; step < 500; step += 1) {
+      const ambulance = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+        (vehicle) => vehicle.vehicleKind === "ambulance",
+      );
+      if (
+        ambulance !== undefined &&
+        ambulance.x === kerb.x &&
+        ambulance.y === kerb.y
+      ) {
+        reachedKerb = true;
+        break;
+      }
+      scene.tick(100);
+    }
+    if (!reachedKerb) {
+      context.skip("could not observe the ambulance standing at its kerb");
+      return;
+    }
+    scene.frame(1, { x: 0, y: 0, width: 8, height: 8 });
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("viewport-a", "viewport-b", "viewport-c"),
+      }),
+    );
+    const afterEscalation = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(afterEscalation).toHaveLength(1);
+    expect(afterEscalation[0].vehicleKind).toBe("ambulance");
+    for (let step = 0; step < 500; step += 1) {
+      if (vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length === 0) break;
+      scene.tick(100);
+    }
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+  });
+
   it("GUARD: seeds silently when an epic opens with a failure already present", (context) => {
     const scene = newVehicleScene();
     scene.sync(
