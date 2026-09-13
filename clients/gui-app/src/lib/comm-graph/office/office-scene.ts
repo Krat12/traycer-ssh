@@ -3645,8 +3645,17 @@ export class OfficeScene {
     //
     // What a full road looks like is this room's OWN van plus one other
     // vehicle - a van for a different infirmary, or a police car. It is never
-    // two vans for this room: coalescing keys on (kind, room), so a second
-    // crash here joins the first van's trip rather than parking beside it.
+    // two van trips for this room THAT CAN STILL TAKE A RIDER: coalescing keys
+    // on (kind, room), so a second crash here joins the standing trip rather
+    // than parking beside it.
+    //
+    // The qualifier is load-bearing and was not always true. Since `standingFor`
+    // began excluding a departing trip, one room can briefly hold two vans - one
+    // pulling away, one arriving to replace it - because a van past the kerb is
+    // no longer something a newcomer can join. That pair is legal, and is what
+    // "allows a departing and arriving trip for one room to share the road"
+    // pins. Read this paragraph as a statement about who can be joined, not as
+    // a cap of one van per room.
     //
     // The loop is bounded by the transitions in one sync, and every call below
     // is map lookups, so what this costs is not the population.
