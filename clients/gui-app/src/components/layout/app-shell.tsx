@@ -23,6 +23,7 @@ import { TopLevelSurfaceActivationProvider } from "@/components/layout/top-level
 import { HostScopeReady } from "@/components/layout/host-readiness-controller";
 import { MigrationRunController } from "@/components/migration/migration-run-controller";
 import { LandingTerminalHost } from "@/components/home/terminal-panel/landing-terminal-host";
+import { OnboardingFlowHost } from "@/components/onboarding/welcome/onboarding-flow-host";
 import { OpenFolderDialog } from "@/components/open-folder-dialog";
 import { RemoteFolderPickerDialog } from "@/components/remote-folder-picker-dialog";
 import { useChatForkEventQuery } from "@/hooks/chats/use-chat-fork-queries";
@@ -165,6 +166,10 @@ export function AppShell(props: AppShellProps) {
               {showStatusBar && !isMobile ? <AppStatusBar /> : null}
               <OpenFolderDialog />
               <RemoteFolderPickerDialog />
+              {/* First-run welcome modal (and, later, the spotlight tours):
+                inside the shell so it has the router, the dialog primitives
+                and the toaster; gates itself on sign-in and desktop. */}
+              <OnboardingFlowHost />
               <QuitInterceptBridge />
               {/* Mounted unconditionally: the bridge itself reads the action's
                 `desktopOnly` flag and registers nothing in the installed

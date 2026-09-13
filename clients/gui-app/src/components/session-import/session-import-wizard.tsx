@@ -4,10 +4,6 @@ import type { HostRpcError } from "@traycer-clients/shared/host-transport/host-m
 import { History, Search } from "lucide-react";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import type { SessionImportStatusResponse } from "@traycer/protocol/host/session-import/contracts";
-import type {
-  SessionImportGroup,
-  SessionImportSelection,
-} from "@traycer/protocol/host/session-import/candidate";
 import { TooltipWrapper } from "@/components/ui/tooltip-wrapper";
 import type { SessionImportImportedSupport } from "@traycer-clients/shared/host-transport/session-import-scan-client";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
@@ -30,8 +26,8 @@ import {
   harnessDisplayName,
   selectionStateFor,
   sessionImportScanWindowLabel,
-  sessionImportSelectionKey,
   SESSION_IMPORT_SCAN_WINDOW_OPTIONS,
+  submittedGroupCount,
   type SessionImportProviderView,
   type SessionImportScanWindow,
   type SessionImportWizardState,
@@ -531,9 +527,10 @@ const SCOPE_PILL_SHAPE = "h-6 gap-1.5 rounded-full border px-2.5 text-ui-xs";
 /**
  * How far back the scan looks. Picking a value IS the scan: the hook watches
  * this half of the state and starts a fresh, host-bounded scan for it - there
- * is deliberately no separate "rescan" button to pair with it.
+ * is deliberately no separate "rescan" button to pair with it. Exported for
+ * the welcome modal's sessions page, whose footer carries the same picker.
  */
-function ScanWindowSelect(props: {
+export function ScanWindowSelect(props: {
   readonly tone: SessionImportTone;
   readonly scanWindow: SessionImportScanWindow;
   readonly onChange: (window: SessionImportScanWindow) => void;
@@ -675,37 +672,9 @@ function ProviderPill(props: {
   );
 }
 
-/**
- * How many repos the submission actually brings over.
- *
- * Every other number on the event describes the import, so this one has to as
- * well. `state.groups.length` counts the SCAN instead - folders the user
- * cleared outright, and folders that only ever held unreadable or
- * already-imported rows - which would read as "imported 3 sessions across 40
- * repos". The selections are the source of truth rather than `state.selected`,
- * so this cannot drift from whatever the submission decided to send.
- */
 function pillCountLabel(count: number, pending: boolean): string | null {
   if (count > 0) return count.toLocaleString();
   return pending ? null : "0";
-}
-
-function submittedGroupCount(
-  groups: ReadonlyArray<SessionImportGroup>,
-  selections: ReadonlyArray<SessionImportSelection>,
-): number {
-  const submitted = new Set(
-    selections.map((selection) =>
-      sessionImportSelectionKey(selection.harness, selection.nativeSessionId),
-    ),
-  );
-  return groups.filter((group) =>
-    group.sessions.some((candidate) =>
-      submitted.has(
-        sessionImportSelectionKey(candidate.harness, candidate.nativeSessionId),
-      ),
-    ),
-  ).length;
 }
 
 function emptyMessage(
