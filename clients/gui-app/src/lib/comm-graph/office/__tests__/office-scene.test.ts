@@ -5842,6 +5842,29 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
   const TRIO: ReadonlyArray<OfficeAgentInput> = [ALPHA, BETA, GAMMA];
   const TRIO_IDS: ReadonlySet<string> = new Set(["alpha", "beta", "gamma"]);
 
+  function failures(
+    ...ids: ReadonlyArray<string>
+  ): ReadonlyMap<string, OfficeAgentStatus> {
+    return new Map<string, OfficeAgentStatus>(ids.map((id) => [id, "failure"]));
+  }
+
+  function hasInfirmary(layout: OfficeLayout): boolean {
+    return layout.floors.some((floor) =>
+      floor.civic.some(
+        (room) => room.kind === "infirmary" && room.seatIds.length > 0,
+      ),
+    );
+  }
+
+  function infirmaryNames(layout: OfficeLayout): ReadonlySet<string> {
+    return new Set(
+      layout.floors
+        .flatMap((floor) => floor.civic)
+        .filter((room) => room.kind === "infirmary")
+        .map((room) => room.name),
+    );
+  }
+
   const CAP_TRIO: ReadonlyArray<OfficeAgentInput> = [
     agent({ id: "cap-a", hostId: "cap-h1", createdAt: 1 }),
     agent({ id: "cap-b", hostId: "cap-h2", createdAt: 2 }),
@@ -5862,6 +5885,308 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     const road = layoutOf(scene).floors[0].road;
     const dispatched = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length > 0;
     expect(dispatched).toBe(road !== null);
+  });
+
+  it("dispatches an ambulance for a failure that got a bed", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: failures("beta"),
+      }),
+    );
+    expect(infirmaryNames(layout).has(scene.whereabouts("beta") ?? "")).toBe(
+      true,
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+        (vehicle) => vehicle.vehicleKind,
+      ),
+    ).toEqual(["ambulance"]);
+  });
+
+  it("GUARD: dispatches no ambulance for a failure that got no bed", (context) => {
+    const agents: ReadonlyArray<OfficeAgentInput> = Array.from(
+      { length: 8 },
+      (_unused, index) =>
+        agent({
+          id: `ward-${index}`,
+          hostId: "ward-host",
+          createdAt: index + 1,
+        }),
+    );
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    const beds = layout.floors
+      .flatMap((floor) => floor.civic)
+      .filter((room) => room.kind === "infirmary")
+      .reduce((count, room) => count + room.seatIds.length, 0);
+    if (beds < 1 || beds >= agents.length) {
+      context.skip(
+        "fixture cannot fill an infirmary and leave an overflow crash",
+      );
+      return;
+    }
+    const beddedIds = agents.slice(0, beds).map((person) => person.id);
+    const overflowId = agents[beds].id;
+    const beddedStatuses = failures(...beddedIds);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: beddedStatuses,
+      }),
+    );
+    const names = infirmaryNames(layout);
+    expect(
+      beddedIds.every((id) => names.has(scene.whereabouts(id) ?? "")),
+    ).toBe(true);
+    for (let step = 0; step < 500; step += 1) scene.tick(100);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: new Map([...beddedStatuses, [overflowId, "failure"]]),
+      }),
+    );
+    expect(names.has(scene.whereabouts(overflowId) ?? "")).toBe(false);
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+        (vehicle) => vehicle.vehicleKind === "ambulance",
+      ),
+    ).toBe(false);
+  });
+
+  it("dispatches one fire engine for three failures in one infirmary room", (context) => {
+    const agents: ReadonlyArray<OfficeAgentInput> = [
+      agent({ id: "fire-a", hostId: "fire-host", createdAt: 1 }),
+      agent({ id: "fire-b", hostId: "fire-host", createdAt: 2 }),
+      agent({ id: "fire-c", hostId: "fire-host", createdAt: 3 }),
+    ];
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("fire-a", "fire-b", "fire-c"),
+      }),
+    );
+    const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(vehicles).toHaveLength(1);
+    expect(vehicles[0].vehicleKind).toBe("fire-engine");
+    expect(
+      vehicles.some((vehicle) => vehicle.vehicleKind === "ambulance"),
+    ).toBe(false);
+  });
+
+  it("replaces a room's standing ambulances before applying the vehicle cap", (context) => {
+    const specialIds = new Map<number, string>([
+      [0, "a"],
+      [20, "b"],
+      [1, "c"],
+      [2, "d"],
+    ]);
+    const agents: ReadonlyArray<OfficeAgentInput> = Array.from(
+      { length: 40 },
+      (_unused, index) =>
+        agent({
+          id: `replace-${specialIds.get(index) ?? `filler-${index}`}`,
+          hostId: index < 20 ? "replace-host-a" : "replace-host-b",
+          createdAt: index + 1,
+        }),
+    );
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    const infirmaries = layout.floors
+      .flatMap((floor) => floor.civic)
+      .filter((room) => room.kind === "infirmary");
+    const targetRoom = infirmaries.find(
+      (room) => room.hostId === "replace-host-a",
+    );
+    const otherRoom = infirmaries.find(
+      (room) => room.hostId === "replace-host-b",
+    );
+    if (
+      targetRoom === undefined ||
+      otherRoom === undefined ||
+      targetRoom.seatIds.length === 0 ||
+      otherRoom.seatIds.length === 0
+    ) {
+      context.skip("this view has no two host infirmaries with beds yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("replace-a"),
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("replace-a", "replace-b"),
+      }),
+    );
+    // The road is full with this room's ambulance plus an unrelated room's
+    // ambulance; same-room coalescing makes two target-room vans impossible.
+    const fullCap = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(fullCap).toHaveLength(2);
+    expect(
+      fullCap.every((vehicle) => vehicle.vehicleKind === "ambulance"),
+    ).toBe(true);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures(
+          "replace-a",
+          "replace-b",
+          "replace-c",
+          "replace-d",
+        ),
+      }),
+    );
+    const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(
+      vehicles.filter((vehicle) => vehicle.vehicleKind === "fire-engine"),
+    ).toHaveLength(1);
+    expect(
+      vehicles.filter((vehicle) => vehicle.vehicleKind === "ambulance"),
+    ).toHaveLength(1);
+    expect(vehicles.length).toBeLessThanOrEqual(2);
+  });
+
+  it("GUARD: seeds silently when an epic opens with a failure already present", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: failures("beta"),
+      }),
+    );
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+  });
+
+  it("GUARD: seeds silently after a rewind when failure was already present", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        cursorMs: 5000,
+        statusById: failures("beta"),
+      }),
+    );
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+  });
+
+  it("waits at least four seconds and for its rider, capped at twelve seconds", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: failures("beta"),
+      }),
+    );
+    const projector = view.painter.projector(layout);
+    const kerbs = layout.floors.flatMap((floor) =>
+      floor.civic.flatMap((room) => {
+        if (room.kind !== "infirmary" || room.kerbTile === null) return [];
+        return [
+          projector.project(room.kerbTile.col + 0.5, room.kerbTile.row + 1),
+        ];
+      }),
+    );
+    const atKerb = (vehicle: OfficeVehicleDrawable): boolean =>
+      kerbs.some((point) => point.x === vehicle.x && point.y === vehicle.y);
+    const names = infirmaryNames(layout);
+    // The watching is its own function so that this case stays inside the
+    // complexity ceiling: a loop that records four independent firsts is all
+    // branches, and folding them into the case body pushes it over on its own.
+    const watch = (): {
+      sawUnsettledRider: boolean;
+      settledTick: number | null;
+      kerbTick: number | null;
+      leftKerbTick: number | null;
+    } => {
+      let sawUnsettledRider = false;
+      let settledTick: number | null = null;
+      let kerbTick: number | null = null;
+      let leftKerbTick: number | null = null;
+      for (let step = 0; step < 500; step += 1) {
+        const frame = scene.frame(1, WHOLE_WORLD);
+        const onKerb = vehicleDrawables(frame).some(atKerb);
+        const riderAway = frame.awayAgentIds.has("beta");
+        if (riderAway) sawUnsettledRider = true;
+        if (!riderAway && names.has(scene.whereabouts("beta") ?? "")) {
+          settledTick ??= step;
+        }
+        if (onKerb) kerbTick ??= step;
+        if (!onKerb && kerbTick !== null) leftKerbTick ??= step;
+        scene.tick(100);
+      }
+      return { sawUnsettledRider, settledTick, kerbTick, leftKerbTick };
+    };
+    const { sawUnsettledRider, settledTick, kerbTick, leftKerbTick } = watch();
+    expect(sawUnsettledRider).toBe(true);
+    expect(kerbTick).not.toBeNull();
+    expect(leftKerbTick).not.toBeNull();
+    expect(settledTick).not.toBeNull();
+    if (kerbTick === null || leftKerbTick === null || settledTick === null)
+      return;
+    // This is the falsifier: dispatch before the claim/rehome passes sees the
+    // rider still at the desk and leaves after the 4s minimum. The contract
+    // requires the greater of that floor and the rider settlement, capped at
+    // 12s, so it must survive at least this many 100ms ticks at the kerb.
+    const minimumDwell = Math.max(40, Math.min(settledTick - kerbTick, 120));
+    expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
   });
 
   it("never dispatches while reduced motion is on", () => {
@@ -5967,6 +6292,47 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       }),
     );
     expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("seeds silently on feed settlement, then dispatches the next live failure", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    if (layout.floors[0].road === null || !hasInfirmary(layout)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        feedSettled: true,
+        statusById: failures("beta"),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        feedSettled: true,
+        statusById: new Map<string, OfficeAgentStatus>([["beta", "idle"]]),
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        feedSettled: true,
+        statusById: failures("beta"),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+        (vehicle) => vehicle.vehicleKind,
+      ),
+    ).toEqual(["ambulance"]);
   });
 
   it("never lets more than MAX_VEHICLES stand on the road at once, even with three separate rooms to dispatch to", (context) => {
