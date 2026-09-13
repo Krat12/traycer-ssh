@@ -10210,3 +10210,298 @@ describe("OfficeScene fixup 8 - a seated agent's name tag is fitted to its seat"
     expect(checkedCubbyOccupant).toBe(true);
   });
 });
+
+/**
+ * Fixup 8d - the two cold-review fixes: the arrival queue keyed at the
+ * pool's own granularity (host, not floor), and a claim that will not answer
+ * a request with a seat of the wrong kind.
+ *
+ * A STANDALONE block, not a member of `describe.each(OFFICE_VIEW_IDS)`:
+ * defect A needs a MULTI-STOREY view (Towers) that view table does not
+ * gate on `CIVIC_ROOMS_EXPECTED`, and defect B's second case needs a
+ * cubby, which the Floor plans none of. Each case builds its own
+ * `OfficeScene` directly off `OFFICE_VIEWS`, following the precedent of
+ * "OfficeScene fixup 8c - the book settles with the plan (D66)" above:
+ * local helpers, not the `describe.each` closure's `newScene` / `bookOf` /
+ * `idleStatusById` / `visibleIdsOf`, none of which are in scope here.
+ */
+describe("OfficeScene fixup 8d - the queue and the claim answer the right pool", () => {
+  /**
+   * The scene's book, captured from a frame build rather than through a
+   * private field - the same trick `describe.each` uses locally, repeated
+   * here because that copy is out of scope.
+   */
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /**
+   * DEFECT A. Towers packs a 15-agent one-team epic into a plaza storey plus
+   * three occupied storeys - the root's HQ floor, a nine-desk room and a
+   * five-desk room, all on the one (`null`) host `civicOrderKey` used to key
+   * separately before the fix. The ward is at its floor of two beds
+   * (`ceil(15/25)` is 1, floored to `INFIRMARY_MIN_BEDS`).
+   *
+   * Four agents matter: a FILLER and a "first arrival" crasher take the two
+   * beds between them (C2's "occupying the rest first"); a "second arrival"
+   * and a "third arrival" then both overflow. The second and third are
+   * chosen from the TWO DIFFERENT desk storeys on purpose, and the third is
+   * put on the storey that comes EARLIER in `characters` order (the storey
+   * built from the earlier chunk of the team) while the second - the one
+   * that actually asked first - is put on the LATER storey. That mismatch
+   * is the whole point: keyed per floor, the pre-fix queue for the earlier
+   * storey is served before the later storey's regardless of who asked
+   * first, so healing the first arrival hands its freed bed to the third
+   * arrival. Keyed per host, one queue remembers that the second arrival
+   * asked first and the bed goes to it.
+   */
+  it("gives a freed bed to the storey that asked first, not the storey that sorts first (Towers, defect A)", () => {
+    const epic = makeTestEpic("one-team", 15, 1);
+    const agents = epic.agents;
+    const visibleAgentIds = new Set(agents.map((a) => a.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((a) => [a.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.towers, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const plazaFloorIndex = layout.floors.findIndex(
+      (floor) => floor.civic.length > 0,
+    );
+    expect(plazaFloorIndex).toBeGreaterThanOrEqual(0);
+    const beds = layout.floors[plazaFloorIndex].civic.find(
+      (room) => room.kind === "infirmary",
+    )?.seatIds.length;
+    // The whole setup below leans on there being exactly two: one for the
+    // filler, one for the "first arrival" - see the class doc above.
+    expect(beds).toBe(2);
+
+    const byFloor = new Map<number, string[]>();
+    for (const [agentId, desk] of layout.desks) {
+      const list = byFloor.get(desk.floorIndex);
+      if (list === undefined) byFloor.set(desk.floorIndex, [agentId]);
+      else list.push(agentId);
+    }
+    const occupiedFloors = Array.from(byFloor.keys())
+      .filter((index) => index !== plazaFloorIndex)
+      .sort((a, b) => a - b);
+    // The root's HQ floor, the first room chunk, the second room chunk -
+    // three storeys behind the one plaza ward, which is the shape defect A
+    // needs and the fixture was sized for.
+    expect(occupiedFloors.length).toBeGreaterThanOrEqual(3);
+    const [rootFloor, earlyRoomFloor, lateRoomFloor] = occupiedFloors;
+    const rootFloorAgents = byFloor.get(rootFloor) ?? [];
+    const earlyRoomAgents = byFloor.get(earlyRoomFloor) ?? [];
+    const lateRoomAgents = byFloor.get(lateRoomFloor) ?? [];
+    expect(rootFloorAgents.length).toBeGreaterThanOrEqual(1);
+    // Two from the SAME (earlier) room: the filler and the "third arrival".
+    expect(earlyRoomAgents.length).toBeGreaterThanOrEqual(2);
+    expect(lateRoomAgents.length).toBeGreaterThanOrEqual(1);
+
+    const crashFirst = rootFloorAgents[0]; // takes the last free bed
+    const filler = earlyRoomAgents[0]; // takes the other bed, and stays
+    const crashThird = earlyRoomAgents[1]; // overflows SECOND, sorts first
+    const crashSecond = lateRoomAgents[0]; // overflows FIRST, sorts second
+
+    // The precondition this case's whole value rests on: `crashThird` is
+    // ahead of `crashSecond` in `characters` order (the canonical order
+    // `agentSetSignature`-adjacent code and the civic queue both read off
+    // `agents`), even though the syncs below make `crashSecond` the one
+    // that has actually been waiting longer. A fixture where these agreed
+    // would pass whichever key the queue used.
+    expect(agents.findIndex((a) => a.id === crashThird)).toBeLessThan(
+      agents.findIndex((a) => a.id === crashSecond),
+    );
+
+    const failing = (
+      ids: ReadonlyArray<string>,
+    ): Map<string, OfficeAgentStatus> => {
+      const next = new Map(idle);
+      for (const id of ids) next.set(id, "failure");
+      return next;
+    };
+    const sync = (ids: ReadonlyArray<string>): void => {
+      scene.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds,
+          statusById: failing(ids),
+          reducedMotion: true,
+        }),
+      );
+    };
+
+    sync([filler]);
+    sync([filler, crashFirst]);
+    sync([filler, crashFirst, crashSecond]);
+    sync([filler, crashFirst, crashSecond, crashThird]);
+
+    const beforeHeal = bookOf(scene);
+    expect(beforeHeal.civicClaimOf(filler)).toBe("bed");
+    expect(beforeHeal.civicClaimOf(crashFirst)).toBe("bed");
+    expect(beforeHeal.civicClaimOf(crashSecond)).toBeNull();
+    expect(beforeHeal.civicClaimOf(crashThird)).toBeNull();
+
+    // Heal the first arrival: its bed is the one that frees.
+    sync([filler, crashSecond, crashThird]);
+
+    const afterHeal = bookOf(scene);
+    expect(afterHeal.civicClaimOf(crashFirst)).toBeNull();
+    // C3: the freed bed goes to whichever storey asked first, not to
+    // whichever storey `civicOrderKey` (pre-fix) or `characters` sorts
+    // first.
+    expect(afterHeal.civicClaimOf(crashSecond)).toBe("bed");
+    expect(afterHeal.civicClaimOf(crashThird)).toBeNull();
+  });
+
+  /**
+   * DEFECT B, consequence 1. A live (motion-enabled) Floor agent seated in a
+   * bed goes `failure -> awaiting`: the bed answers a request for a lounge
+   * chair unless `claim` checks `wants`.
+   */
+  it("walks a bedded agent to the lounge, not back into its own bed, when failure becomes awaiting (Floor, defect B)", () => {
+    const epic = makeTestEpic("one-team", 12, 9);
+    const agents = epic.agents;
+    const visibleAgentIds = new Set(agents.map((a) => a.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((a) => [a.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: idle }));
+    const originalDesk = layoutOf(scene).desks.get(agents[2].id);
+    if (originalDesk === undefined) {
+      throw new Error(`expected a desk for ${agents[2].id}`);
+    }
+    const crasher = originalDesk.agentId;
+
+    const failing = new Map(idle);
+    failing.set(crasher, "failure");
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
+
+    // Not reduced motion, on purpose: settled-in-a-chair and never-left-the-
+    // chair look identical under reduced motion, and this finding is about a
+    // walk that never happens.
+    let bedSeatId: string | null = null;
+    for (let step = 0; step < 800 && bedSeatId === null; step += 1) {
+      scene.tick(100);
+      const book = bookOf(scene);
+      if (
+        book.civicClaimOf(crasher) === "bed" &&
+        !frameOf(scene).awayAgentIds.has(crasher)
+      ) {
+        bedSeatId = book.effectiveSeat(crasher)?.seatId ?? null;
+      }
+    }
+    if (bedSeatId === null) {
+      throw new Error(`expected ${crasher} to settle into a bed`);
+    }
+
+    const waiting = new Map(idle);
+    waiting.set(crasher, "awaiting");
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: waiting }));
+
+    let inLounge = false;
+    for (let step = 0; step < 800 && !inLounge; step += 1) {
+      scene.tick(100);
+      inLounge =
+        bookOf(scene).civicClaimOf(crasher) === "lounge" &&
+        !frameOf(scene).awayAgentIds.has(crasher);
+    }
+    // Pre-fix, `claim` hands the bed straight back and this never becomes
+    // true: the agent is settled, but still in the bed it started in.
+    expect(inLounge).toBe(true);
+
+    const book = bookOf(scene);
+    expect(book.effectiveSeat(crasher)?.kind).toBe("lounge");
+    expect(scene.whereabouts(crasher)).toBe("Lounge");
+    // Its own desk - the assignment `startCivicWalk` never touches - is
+    // exactly where the first sync put it.
+    expect(layoutOf(scene).desks.get(crasher)?.seatId).toBe(
+      originalDesk.seatId,
+    );
+    // The bed itself is free: nobody's `occupant`, not even a releasing one.
+    expect(book.occupant(bedSeatId)).toBeNull();
+  });
+
+  /**
+   * DEFECT B, consequence 2. A cubby agent wakes onto a reserve DESK for
+   * `working`, then goes `working -> failure`: that desk answers a request
+   * for a bed unless `claim` checks `wants`. Put on Building, not Floor -
+   * the Floor plans no cubbies (`CIVIC_ROOMS_EXPECTED.floor` is the only
+   * `true` in that table) - and the fixture is the "wakingCubby" idiom from
+   * "OfficeScene fixup 1 - F19", rebuilt locally since that helper is
+   * private to its own `describe`.
+   */
+  it("sends a woken cubby agent to a bed, not back to its wake desk, when working becomes failure (Building, defect B)", () => {
+    const epic = makeTestEpic("one-team", 12, 9);
+    const agents = epic.agents;
+    const visibleAgentIds = new Set(agents.map((a) => a.id));
+    const cold = new Map<string, OfficeAgentStatus>(
+      agents.map((a) => [a.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.building, null);
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: cold }));
+    const cubby = Array.from(layoutOf(scene).desks.values()).find(
+      (desk) => desk.kind === "cubby",
+    );
+    if (cubby === undefined) throw new Error("expected a cubby on Building");
+    const sleeper = cubby.agentId;
+
+    const working = new Map(cold);
+    working.set(sleeper, "working");
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: working }));
+
+    let settled = false;
+    for (let step = 0; step < 400 && !settled; step += 1) {
+      scene.tick(100);
+      settled = !frameOf(scene).awayAgentIds.has(sleeper);
+    }
+    if (!settled) {
+      throw new Error(`expected ${sleeper} to settle onto a wake desk`);
+    }
+    const wakeSeat = bookOf(scene).effectiveSeat(sleeper);
+    if (wakeSeat === null) throw new Error("expected a wake seat");
+    expect(wakeSeat.kind).toBe("desk");
+    const wakeDeskSeatId = wakeSeat.seatId;
+
+    const failing = new Map(cold);
+    failing.set(sleeper, "failure");
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
+
+    let bedded = false;
+    for (let step = 0; step < 800 && !bedded; step += 1) {
+      scene.tick(100);
+      const book = bookOf(scene);
+      bedded =
+        book.effectiveSeat(sleeper)?.kind === "bed" &&
+        !frameOf(scene).awayAgentIds.has(sleeper);
+    }
+    // Pre-fix, `claim` hands the wake desk straight back: the crash sits at
+    // the desk it woke onto and this never becomes true.
+    expect(bedded).toBe(true);
+
+    const book = bookOf(scene);
+    expect(book.effectiveSeat(sleeper)?.kind).toBe("bed");
+    expect(book.occupant(wakeDeskSeatId)).toBeNull();
+    // The cubby is still this agent's own seat - the wake claim came and
+    // went, the assignment never moved.
+    expect(book.assignedSeat(sleeper)?.seatId).toBe(cubby.seatId);
+  });
+});
