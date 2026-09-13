@@ -2472,7 +2472,7 @@ export class OfficeScene {
   /** Walks toward `goal`, or lands on it outright when there is no route. */
   private walkTo(character: OfficeCharacter, goal: OfficeTilePos): boolean {
     const start = this.startTileOf(character);
-    const path = this.reducedMotion
+    const path = this.motionSuppressed()
       ? null
       : findOfficePath(this.currentLayout, start, goal);
     if (path === null || path.length === 0) {
@@ -2491,6 +2491,42 @@ export class OfficeScene {
     character.walkPhaseMs = 0;
     character.idleMs = 0;
     return true;
+  }
+
+  /**
+   * NOBODY WALKS ACROSS A FLOOR THAT IS NOT RUNNING FORWARD IN REAL TIME.
+   *
+   * Playback replays history far faster than a walk takes, a paused cursor is
+   * a still photograph of one moment, and reduced motion is the reader asking
+   * for none. In all three the contract is the same: a character that acquires
+   * a new seat is AT it, not on its way. The errand engine already gates on
+   * exactly this - `updateErrandStarts` and `advanceFiller` read it to mean
+   * "start no ambient motion" - and the seat walks read it to mean "seat
+   * instantly". One condition, named once, so the three cannot drift apart.
+   */
+  private motionSuppressed(): boolean {
+    return this.playing || this.cursorMs !== null || this.reducedMotion;
+  }
+
+  /**
+   * Seating without a walk, TILE INCLUDED.
+   *
+   * `settleInChair` answers everything about being seated except WHERE: it
+   * sets facing, `seated` and the errand fields and never touches `col`/`row`.
+   * That is right for a character the walk has already delivered, whose tile
+   * is the chair's by the time it arrives - and wrong for every instant path,
+   * where nothing moved it. `buildActors` paints `footOf(character)`, so
+   * settling without moving left the actor sitting at its desk while the book,
+   * `whereabouts` and `locate` all named the bed.
+   *
+   * `walkTo` has always done this for the rehome - its no-route branch sets
+   * the goal tile before `returnToDesk` falls through to `settleInChair`. This
+   * is that same step for the seat walks, which had no equivalent.
+   */
+  private seatInstantlyAt(character: OfficeCharacter, seat: OfficeSeat): void {
+    character.col = seat.chairTile.col;
+    character.row = seat.chairTile.row;
+    this.settleInChair(character);
   }
 
   /** Back to its own chair, from an errand, a queue or a moved desk. */
@@ -2796,6 +2832,12 @@ export class OfficeScene {
    * arrival order kept inside each key and thrown away across them, so a freed
    * bed went to whoever sorted first in character order. Keying at the pool's
    * granularity makes key and pool one-to-one, and C3 holds again.
+   *
+   * A FLOOR KEY IS NOT EVEN STABLE FOR ONE AGENT ACROSS ITS OWN CLAIM, which
+   * is the sharper form of the same point: `effectiveSeat` moves
+   * `floorIndexOfAgent` to the plaza the moment the agent sits, so a bedded
+   * agent's key silently migrated to the plaza's. A host key is stable by
+   * construction, because every storey of a building answers the same host.
    */
   private civicOrder = new Map<string, string[]>();
 
@@ -2880,9 +2922,21 @@ export class OfficeScene {
     // seat is handed out: the bed an agent has just recovered from is a bed the
     // next one can have on this same sync rather than the next.
     for (const agentId of this.seats.knownAgentIds()) {
-      const held = this.seats.civicClaimOf(agentId);
-      if (held === null) continue;
-      if (wantById.get(agentId) === held) continue;
+      // ANY held claim, not only a civic one. A cubby agent on a wake reserve
+      // that crashes holds a DESK claim of the wrong kind, and `claim` refuses
+      // a mismatch rather than overwriting it - so if this loop read civic
+      // claims alone, nothing would ever end that desk claim and the agent
+      // would sit on it wanting a bed forever. Releasing it here is the same
+      // protocol a civic holder gets: walk home, `vacated` frees the reserve on
+      // arrival, and the next sync's civic pass makes the bed claim.
+      const heldWant = this.seats.heldClaimWant(agentId);
+      if (heldWant === null) continue;
+      const want = wantById.get(agentId);
+      if (want === heldWant) continue;
+      // An ordinary wake desk belongs to the wake pass, not to this one: only
+      // an agent that WANTS a civic seat is this loop's business. Without this
+      // the release would evict every woken agent on every sync.
+      if (want === undefined && heldWant === "desk") continue;
       this.seats.endClaim(agentId);
       const character = this.characters.get(agentId);
       if (character !== undefined) this.returnToDesk(character);
@@ -2932,11 +2986,13 @@ export class OfficeScene {
     // crashed screen vanished from the desk the moment its owner lay down,
     // and the desk stopped being painted at all, which the plan-perf
     // denominator counts.
-    if (this.reducedMotion) {
-      this.settleInChair(character);
+    if (this.motionSuppressed()) {
+      this.seatInstantlyAt(character, seat);
       return;
     }
     if (start.col === seat.chairTile.col && start.row === seat.chairTile.row) {
+      // Already standing on it, so there is no tile to move: this is the one
+      // branch for which a bare `settleInChair` is the whole answer.
       this.settleInChair(character);
       return;
     }
@@ -2946,7 +3002,7 @@ export class OfficeScene {
     // answer `returnToDesk` gives a seat it cannot reach. It is never a
     // teleport mid-frame - `settleInChair` puts it there in one piece.
     if (path === null || path.length === 0) {
-      this.settleInChair(character);
+      this.seatInstantlyAt(character, seat);
       return;
     }
     character.col = start.col;
@@ -4133,7 +4189,7 @@ export class OfficeScene {
    * than a room being evacuated.
    */
   private advanceFiller(character: OfficeCharacter, dtMs: number): void {
-    if (this.playing || this.cursorMs !== null || this.reducedMotion) {
+    if (this.motionSuppressed()) {
       character.filler = null;
       return;
     }
@@ -4279,7 +4335,7 @@ export class OfficeScene {
    * ids rather than about map insertion order.
    */
   private updateErrandStarts(): void {
-    if (this.playing || this.cursorMs !== null || this.reducedMotion) return;
+    if (this.motionSuppressed()) return;
     let away = this.errandCount();
     if (away >= MAX_CONCURRENT_ERRANDS) return;
     const claimed = this.claimedSpotKeys();
@@ -6176,6 +6232,20 @@ export class OfficeScene {
       // where its status says it should be, and claiming a desk for it here
       // would hold a second seat empty for as long as it was in the ward.
       if (this.seats.civicClaimOf(agentId) !== null) continue;
+      // WANTING ONE IS ENOUGH - the wake pass is not for an agent the civic
+      // pass is handling, whether or not that pass found it a seat.
+      //
+      // Two things go wrong without this, and the second is the worse. C2:
+      // an agent whose civic claim came back empty is the WARD being full,
+      // not the office being short of desks, so waking it here takes a desk
+      // shortfall and asks the planner to grow the storey on a status flip -
+      // which `shortfall: "none"` exists to prevent. And the release: the
+      // civic pass has just ended this agent's wake desk and started it
+      // walking home, so re-claiming that same desk here - on this very sync,
+      // since `claim` reactivates a releasing claim of the matching kind -
+      // undoes the release, and does it again on every sync. The agent never
+      // leaves the desk it is supposed to be leaving.
+      if (this.civicWantOf(agentId) !== null) continue;
       if (hot && !this.needsReception(agentId)) {
         this.seats.claim(agentId, {
           roomId: assigned.roomId,
