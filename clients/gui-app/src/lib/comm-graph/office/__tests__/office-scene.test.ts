@@ -5660,9 +5660,16 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     expect(hasCharacter(frameOf(scene), "alpha")).toBe(false);
     if (lastRect === undefined)
       throw new Error("alpha vanished without walking");
-    // SEEN ON THE WALK TO THE ARCHIVE DOOR, which is what this case is named
-    // for: C5 is a records door, and the pre-civic departure walked to the
-    // lobby instead - a different path, which this would not match.
+    // ON THE WALK TO THE ARCHIVE DOOR, which is what this case is named for:
+    // C5 is a records door, and the pre-civic departure walked to the lobby
+    // instead - a different path, which this would not match.
+    //
+    // KEPT BUT NO LONGER LOAD-BEARING. This clause once passed in the plazas on
+    // a route that was never aiming at the archive at all: the walk-out and the
+    // records walk share a long descent down the pod column, so "some observed
+    // point lay on the archive path" was true of an agent leaving by its own
+    // storey's stairwell. Arrival below is the claim; this is the shape of the
+    // route, and both are needed because either alone has passed a wrong walk.
     expect(sawArchiveLeg).toBe(true);
     // AND IT GOT THERE. Being seen somewhere on the route is not arrival: a
     // route with its last tile removed still supplies frame after matching frame
@@ -5691,20 +5698,13 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     const stride = gapTo(footRect(layout, approach));
     expect(stride).toBeGreaterThan(0);
     expect(closest).toBeLessThanOrEqual(stride * 1.5);
-    // AND ON THE DOOR ITSELF where the view draws a character standing in its
-    // doorway. Measured at 20 ms: the Floor lands a frame exactly on the door
-    // (0.0 px) and the hall within a third of a pixel, so in those two the
-    // arrival is witnessed at the tile and a one-tile-short route fails here.
-    //
-    // The oblique plazas draw no such frame - their last is the tile DIAGONALLY
-    // adjacent, 22.6 px away, because the records door is punched in the outer
-    // wall and the step into it is the same step the agent departs on. That is a
-    // question about those views' departure rather than about this case, and it
-    // is reported as one; asserting a frame this suite can prove does not exist
-    // would be pinning a wish.
-    if (viewId === "floor" || viewId === "mission-control") {
-      expect(closest).toBeLessThan(stride / 2);
-    }
+    // AND ON THE DOOR ITSELF, in every view and with no branch. The plazas used
+    // to need an exemption here, and the exemption was the bug: their last frame
+    // sat 22.6 px out because the agent was walking to its own storey's
+    // stairwell rather than to the records door - `departureDoorOf` read only the
+    // agent's own storey, and in an oblique view only the PLAZA storey carries
+    // civic rooms. Now it reads the storey, then the building.
+    expect(closest).toBeLessThan(stride / 2);
   });
 
   /**
@@ -13417,5 +13417,136 @@ describe("OfficeScene finding 7b - a queue walk must vacate the civic seat", () 
     expect(book.effectiveSeat(floor.competitor)?.seatId).toBe(
       floor.loungeSeatId,
     );
+  });
+});
+
+/**
+ * THE HOST IS A WALL, on the way out as much as on the way to a bed.
+ *
+ * A departure now reads the agent's own storey for a records door and then its
+ * own BUILDING, because in an oblique view only the plaza storey carries civic
+ * rooms and reading the storey alone sent every other storey's leavers out
+ * through their stairwell lobby instead. "Its own building" is the load-bearing
+ * half: hosts are separate buildings with no walkable route between them, so the
+ * neighbour's plaza is a records door this agent could never reach, and a scan
+ * over every floor would have found it first as often as not.
+ *
+ * Towers is the view this is asserted in because it is the one that stacks a
+ * storey per host AND puts the archive on one storey of each building, so the
+ * two wrong answers - the neighbour's door, and the stairwell - are both
+ * available to be picked.
+ */
+describe("towers: an archived agent leaves by its own building's records door", () => {
+  const VIEW = OFFICE_VIEWS.towers;
+
+  it("walks to the plaza of its own host, not to the nearer one next door", () => {
+    const epic = makeTestEpic("two-hosts", 120, 11);
+    const statusById = new Map(epic.statusById);
+    const partition = partitionOfficePopulation({
+      agents: epic.agents,
+      statusById,
+      previous: null,
+    });
+    const layout = VIEW.plan({
+      agents: epic.agents,
+      partition,
+      occupancy: new Map<string, string>(),
+      needsCapacity: [],
+      activityById: new Map<string, number>(),
+      viewport: { width: 1040, height: 700 },
+      previous: null,
+    });
+
+    const archives = layout.floors
+      .map((floor) => ({
+        hostId: floor.hostId,
+        door: floor.civic.find((room) => room.kind === "archive")?.doorTile,
+      }))
+      .filter(
+        (entry): entry is { hostId: string | null; door: OfficeTilePos } =>
+          entry.door !== undefined,
+      );
+    // One records door per building, and the buildings are different hosts.
+    expect(archives.length).toBe(2);
+    const mine = archives[0];
+    const theirs = archives[1];
+    expect(mine.hostId).not.toBe(theirs.hostId);
+
+    // AN UPPER-STOREY AGENT, which is the whole case: a leaver on the plaza
+    // storey finds its archive without the building step and would pass on the
+    // old reading too.
+    const plazaStoreys = new Set(
+      layout.floors
+        .map((floor, index) => ({ floor, index }))
+        .filter((entry) => entry.floor.civic.length > 0)
+        .map((entry) => entry.index),
+    );
+    const upstairs = epic.agents.find((candidate) => {
+      if (candidate.hostId !== mine.hostId) return false;
+      const desk = layout.desks.get(candidate.id);
+      if (desk === undefined || desk.kind === "cubby") return false;
+      return !plazaStoreys.has(desk.floorIndex);
+    });
+    if (upstairs === undefined) throw new Error("no upper-storey agent");
+
+    const scene = new OfficeScene(VIEW, null);
+    const agents = epic.agents.map((candidate) =>
+      candidate.id === upstairs.id
+        ? { ...candidate, archivedAt: 500, archived: true }
+        : candidate,
+    );
+    const visibleAgentIds = new Set(
+      epic.agents.map((candidate) => candidate.id),
+    );
+    const before = sceneInput({
+      agents,
+      visibleAgentIds,
+      statusById,
+      cursorMs: 100,
+    });
+    scene.sync(before);
+    scene.sync(
+      sceneInput({ agents, visibleAgentIds, statusById, cursorMs: 900 }),
+    );
+
+    const projector = VIEW.painter.projector(layout);
+    const footOf = (tile: OfficeTilePos): OfficePoint => {
+      const foot = projector.project(tile.col + 0.5, tile.row + 1);
+      return {
+        x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+        y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      };
+    };
+    const mineFoot = footOf(mine.door);
+    const theirsFoot = footOf(theirs.door);
+    let closestToMine = Number.POSITIVE_INFINITY;
+    let closestToTheirs = Number.POSITIVE_INFINITY;
+    let walked = false;
+    for (let step = 0; step < 4000; step += 1) {
+      const frame = scene.frame(2, WHOLE_WORLD);
+      const region = frame.hitRegions.find(
+        (candidate) =>
+          candidate.agentId === upstairs.id &&
+          candidate.rect.height === OFFICE_CHARACTER_HEIGHT,
+      );
+      if (region === undefined) break;
+      walked = true;
+      const rect = region.rect;
+      closestToMine = Math.min(
+        closestToMine,
+        Math.hypot(rect.x - mineFoot.x, rect.y - mineFoot.y),
+      );
+      closestToTheirs = Math.min(
+        closestToTheirs,
+        Math.hypot(rect.x - theirsFoot.x, rect.y - theirsFoot.y),
+      );
+      scene.tick(20);
+    }
+    expect(walked).toBe(true);
+    // It reached ITS OWN building's records door...
+    expect(closestToMine).toBeLessThan(OFFICE_TILE / 2);
+    // ...and never went anywhere near the other building's, which is a walk it
+    // has no route for: a whole tower away.
+    expect(closestToTheirs).toBeGreaterThan(OFFICE_TILE * 4);
   });
 });

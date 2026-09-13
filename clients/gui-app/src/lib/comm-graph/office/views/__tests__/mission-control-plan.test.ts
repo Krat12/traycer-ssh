@@ -2442,6 +2442,102 @@ describe("mission-control cold review: one hall for every host", () => {
   });
 
   /**
+   * THE DISCRIMINATING ARRIVAL CASE: four waiters, two hosts, interleaved, and
+   * TWO freed beds.
+   *
+   * The case above fills the ward with host A and queues only host B, so at
+   * release only B competes and a book that kept a queue PER AGENT'S HOST would
+   * hand B the bed too - it passes on both readings and proves nothing about the
+   * key. Nor is one freed bed enough: with two waiters the winner under per-host
+   * queues depends on which key `needyByKey` happens to reach first, which is a
+   * fact about the fixture's creation order rather than about the rule, and
+   * measured both ways it agreed with the fix by accident.
+   *
+   * TWO BEDS AND AN INTERLEAVED ARRIVAL settles it without depending on that at
+   * all. Arrivals are B1, A1, B2, A2; two beds free. One shared queue serves
+   * them in arrival order, so the winners are B1 and A1 - ONE FROM EACH HOST.
+   * Per-host queues serve one key's whole list and then the other's, so the
+   * winners are B1 and B2 or A1 and A2 - BOTH FROM ONE HOST - whichever key is
+   * reached first. "One from each" is therefore false under either ordering of
+   * the mutant, and the case cannot agree with it by accident.
+   */
+  it("serves a freed pair of hall beds in arrival order across hosts, one to each", () => {
+    const epic = makeTestEpic("two-hosts", 120, 13);
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const ward = infirmaryOf(planned.layout);
+    const beds = bedsOf(planned.layout);
+    expect(beds.length).toBeGreaterThan(1);
+
+    // AT A DESK, NOT ARCHIVED, NOT IN A CUBBY - three ways an agent can be on
+    // this floor and never ask for a bed. The civic pass serves agents that have
+    // a CHARACTER, and an archived one has walked out (measured: the root of this
+    // fixture is archived, so a filler set that included it left a bed free and
+    // the ward one short).
+    const deskAgentsOn = (hostId: string): ReadonlyArray<OfficeAgentInput> =>
+      epic.agents
+        .filter((agent) => agent.hostId === hostId && !agent.archived)
+        .filter((agent) => {
+          const desk = planned.layout.desks.get(agent.id);
+          return desk !== undefined && desk.kind !== "cubby";
+        });
+    const onA = deskAgentsOn(HOST_A);
+    const onB = deskAgentsOn(HOST_B);
+    expect(onA.length).toBeGreaterThan(beds.length + 1);
+    expect(onB.length).toBeGreaterThan(1);
+
+    // The fillers hold every bed; the two waiters per host are disjoint from
+    // them and from each other.
+    const fillers = onA.slice(0, beds.length);
+    const waitersA = onA.slice(beds.length, beds.length + 2);
+    const waitersB = onB.slice(0, 2);
+    expect(waitersA.length).toBe(2);
+    expect(waitersB.length).toBe(2);
+
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    const base = { ...sceneInputFor(planned.input), reducedMotion: true };
+    scene.sync(base);
+    const crashed: string[] = fillers.map((agent) => agent.id);
+    const syncWith = (...ids: ReadonlyArray<string>): void => {
+      crashed.push(...ids);
+      scene.sync({ ...base, statusById: crashing(base.statusById, crashed) });
+    };
+    scene.sync({ ...base, statusById: crashing(base.statusById, crashed) });
+    for (const filler of fillers) {
+      expect(scene.whereabouts(filler.id)).toBe(ward.name);
+    }
+
+    // FOUR ARRIVALS, ONE PER SYNC, alternating hosts. Each one finds the ward
+    // full and keeps its console, which is the queue forming (C2, C3).
+    const order = [waitersB[0], waitersA[0], waitersB[1], waitersA[1]];
+    for (const waiter of order) {
+      syncWith(waiter.id);
+      expect(scene.whereabouts(waiter.id)).not.toBe(ward.name);
+    }
+
+    // TWO BEDS FREE on one sync: the first two fillers recover.
+    const recovered = new Set([fillers[0].id, fillers[1].id]);
+    scene.sync({
+      ...base,
+      statusById: crashing(
+        base.statusById,
+        crashed.filter((id) => !recovered.has(id)),
+      ),
+    });
+    const taken = scene.civicTally().occupiedByRoom.get(ward.civicRoomId) ?? 0;
+    expect(taken).toBe(beds.length);
+
+    const inWard = order.filter(
+      (waiter) => scene.whereabouts(waiter.id) === ward.name,
+    );
+    // The two who asked first, which is one from each host.
+    expect(inWard.map((waiter) => waiter.id)).toEqual([
+      waitersB[0].id,
+      waitersA[0].id,
+    ]);
+    expect(new Set(inWard.map((waiter) => waiter.hostId)).size).toBe(2);
+  });
+
+  /**
    * The plate face this suite already derives for the lead plates, reused: the
    * tracking counts towards `measureText`, so leaving it out under-reports every
    * plate by the exact margin that separates a counter that survives from one
