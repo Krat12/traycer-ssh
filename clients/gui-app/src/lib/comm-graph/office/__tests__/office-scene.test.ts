@@ -13,7 +13,10 @@ import {
   OfficeScene,
 } from "@/lib/comm-graph/office/office-scene";
 import { CIVIC_ROOMS_EXPECTED } from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
-import { OfficeSeatBook } from "@/lib/comm-graph/office/office-seat-book";
+import {
+  OfficeSeatBook,
+  type OfficeSeatPreference,
+} from "@/lib/comm-graph/office/office-seat-book";
 import {
   makeTestEpic,
   outbreakScript,
@@ -11858,6 +11861,19 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     }
   }
 
+  /** Ticks until `agentId` is no longer away, answering whether it arrived. */
+  function tickUntilHome(
+    scene: OfficeScene,
+    agentId: string,
+    steps: number,
+  ): boolean {
+    for (let step = 0; step < steps; step += 1) {
+      scene.tick(100);
+      if (!frameOf(scene).awayAgentIds.has(agentId)) return true;
+    }
+    return false;
+  }
+
   /** Ticks until `agentId` is settled in a bed, answering that bed's id. */
   function tickUntilBedded(scene: OfficeScene, agentId: string): string | null {
     for (let step = 0; step < 800; step += 1) {
@@ -12171,22 +12187,41 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     working.set(sleeper, "working");
     scene.sync(sceneInput({ agents, visibleAgentIds, statusById: working }));
 
-    let settled = false;
-    for (let step = 0; step < 400 && !settled; step += 1) {
-      scene.tick(100);
-      settled = !frameOf(scene).awayAgentIds.has(sleeper);
-    }
-    if (!settled) {
+    if (!tickUntilHome(scene, sleeper, 400)) {
       throw new Error(`expected ${sleeper} to settle onto a wake desk`);
     }
     const wakeSeat = bookOf(scene).effectiveSeat(sleeper);
     if (wakeSeat === null) throw new Error("expected a wake seat");
     expect(wakeSeat.kind).toBe("desk");
     const wakeDeskSeatId = wakeSeat.seatId;
+    const competitorCubby = Array.from(layoutOf(scene).desks.values()).find(
+      (desk) => desk.kind === "cubby" && desk.agentId !== sleeper,
+    );
+    if (competitorCubby === undefined) {
+      throw new Error("expected a second cubby on Building");
+    }
+    const competitor = competitorCubby.agentId;
 
     const failing = new Map(cold);
     failing.set(sleeper, "failure");
-    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
+    const failingWithCompetitor = new Map(failing);
+    failingWithCompetitor.set(competitor, "working");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: failingWithCompetitor,
+      }),
+    );
+
+    // Pre-vacated: the reserve is still a reservation, so a second cubby
+    // waking now cannot take it. `!away` after the walk home cannot tell a
+    // cubby arrival from a direct bed arrival; occupancy can.
+    const releasing = bookOf(scene);
+    expect(releasing.occupancy().get(wakeDeskSeatId)).toBe(sleeper);
+    expect(releasing.effectiveSeat(competitor)?.seatId).not.toBe(
+      wakeDeskSeatId,
+    );
 
     // RESERVE -> CUBBY -> BED, in that order, and it takes two civic passes.
     //
@@ -12196,12 +12231,9 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     // calls `vacated` - and the bed claim can only be made by a civic pass,
     // which runs inside `sync`, never inside `tick`. So a sync has to arrive
     // after the agent is home, exactly as one does in the live app.
-    let home = false;
-    for (let step = 0; step < 800 && !home; step += 1) {
-      scene.tick(100);
-      home = !frameOf(scene).awayAgentIds.has(sleeper);
+    if (!tickUntilHome(scene, sleeper, 800)) {
+      throw new Error(`expected ${sleeper} to walk home to its cubby`);
     }
-    if (!home) throw new Error(`expected ${sleeper} to walk home to its cubby`);
     // Home, so the reserve is vacated and the ward is reachable now.
     expect(bookOf(scene).occupant(wakeDeskSeatId)).toBeNull();
     scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
@@ -12474,5 +12506,552 @@ describe("OfficeScene fixup 8e - the instant-seating gate, and the tile it seats
       expect(rect).toEqual(footRect(layoutOf(scene), loungeSeat.chairTile));
       expect(rect).not.toEqual(footRect(layoutOf(scene), desk.chairTile));
     }
+  });
+});
+
+/**
+ * Fixup 3a - the playback entry of `settleForStilledMotion`. Reduced motion
+ * already settled walks; playback did not, because `wasSuppressed` was read
+ * after `this.playing = input.playing` and the transition was always false.
+ */
+describe("OfficeScene fixup 3a - playback settles civic walks already in flight", () => {
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /** The sprite box a character standing on this tile would occupy, on Floor. */
+  function chairFootRect(
+    layout: OfficeLayout,
+    tile: OfficeTilePos,
+  ): OfficeRect {
+    const foot = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  function seatHitBox(layout: OfficeLayout, seat: OfficeSeat): OfficeRect {
+    if (seat.hitBox !== null) return seat.hitBox;
+    const origin = OFFICE_VIEWS.floor.painter
+      .projector(layout)
+      .project(seat.deskTile.col, seat.deskTile.row);
+    return {
+      x: origin.x,
+      y: origin.y,
+      width: seat.hitTiles.width * OFFICE_TILE,
+      height: seat.hitTiles.height * OFFICE_TILE,
+    };
+  }
+
+  function idleFloor(): {
+    readonly agents: ReadonlyArray<OfficeAgentInput>;
+    readonly visibleAgentIds: ReadonlySet<string>;
+    readonly idle: Map<string, OfficeAgentStatus>;
+  } {
+    const agents = makeTestEpic("one-team", 12, 9).agents;
+    return {
+      agents,
+      visibleAgentIds: new Set(agents.map((person) => person.id)),
+      idle: new Map(agents.map((person) => [person.id, "idle" as const])),
+    };
+  }
+
+  function firstAwayId(scene: OfficeScene): string {
+    for (let step = 0; step < 400; step += 1) {
+      scene.tick(100);
+      const away = Array.from(frameOf(scene).awayAgentIds);
+      if (away.length > 0) return away[0];
+    }
+    throw new Error("nobody started an errand");
+  }
+
+  function tickTimes(scene: OfficeScene, steps: number): void {
+    for (let step = 0; step < steps; step += 1) scene.tick(100);
+  }
+
+  function seatedOther(
+    scene: OfficeScene,
+    agents: ReadonlyArray<OfficeAgentInput>,
+    except: string,
+  ): string {
+    const away = frameOf(scene).awayAgentIds;
+    const found = agents.find(
+      (person) => person.id !== except && !away.has(person.id),
+    );
+    if (found === undefined) {
+      throw new Error("expected a seated agent besides the errand walker");
+    }
+    return found.id;
+  }
+
+  /**
+   * PLAYBACK entry, not reduced motion. A live civic walk is already in
+   * flight; turning `playing` on must land that walker on `seat.chairTile`.
+   * An ordinary errand-return at the same moment is not a civic walk, so
+   * `settleCivicWalks` leaves it mid-path.
+   */
+  it("settles a civic walker onto its chair tile when playback starts, and leaves an ordinary errand walker in flight", () => {
+    const { agents, visibleAgentIds, idle } = idleFloor();
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        playing: false,
+      }),
+    );
+
+    const errandWalker = firstAwayId(scene);
+    const waiter = seatedOther(scene, agents, errandWalker);
+    // Walk them further from the desk so the errand-return after the next
+    // sync is a real path, not a one-tile hop that four ticks would finish.
+    tickTimes(scene, 30);
+    if (!frameOf(scene).awayAgentIds.has(errandWalker)) {
+      throw new Error(`expected ${errandWalker} still away after the stroll`);
+    }
+
+    // Working turns the errand-out into errand-return: that is still an
+    // ordinary errand, and it is the walk `errandMustEnd` will not then
+    // instantly seat when playback starts (errand-out would be).
+    const inFlight = new Map(idle);
+    inFlight.set(errandWalker, "working");
+    inFlight.set(waiter, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: inFlight,
+        playing: false,
+      }),
+    );
+
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(true);
+    expect(frameOf(scene).awayAgentIds.has(errandWalker)).toBe(true);
+    const loungeSeat = bookOf(scene).effectiveSeat(waiter);
+    if (loungeSeat === null || loungeSeat.kind !== "lounge") {
+      throw new Error(`expected ${waiter} to hold a lounge chair`);
+    }
+    const chairRect = chairFootRect(layoutOf(scene), loungeSeat.chairTile);
+    expect(scene.locate(waiter)).not.toEqual(chairRect);
+
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: inFlight,
+        playing: true,
+      }),
+    );
+
+    // `locate` for a seated agent is the seat's painted box. The measured
+    // claim in the source comment is the body on `seat.chairTile`.
+    expect(characterRect(frameOf(scene), waiter)).toEqual(chairRect);
+    expect(scene.locate(waiter)).toEqual(
+      seatHitBox(layoutOf(scene), loungeSeat),
+    );
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(false);
+    expect(frameOf(scene).awayAgentIds.has(errandWalker)).toBe(true);
+  });
+});
+
+/**
+ * Evidence (a) and (c2) - book-level, no scene. A releasing claim is still a
+ * reservation, a kind mismatch is a refusal, and a cursor recompute with more
+ * wanters than beds is deterministic.
+ */
+describe("OfficeSeatBook evidence - releasing claims and civic recompute", () => {
+  function civicPref(wants: "bed" | "lounge"): OfficeSeatPreference {
+    return { roomId: null, floorIndex: 0, wants, shortfall: "none" };
+  }
+
+  function civicSeat(args: {
+    readonly seatId: string;
+    readonly kind: "bed" | "lounge";
+    readonly deskTile: OfficeTilePos;
+  }): OfficeSeat {
+    return {
+      seatId: args.seatId,
+      kind: args.kind,
+      deskTile: args.deskTile,
+      chairTile: { col: args.deskTile.col, row: args.deskTile.row + 1 },
+      facing: "up",
+      hitTiles:
+        args.kind === "bed" ? { width: 2, height: 1 } : { width: 1, height: 1 },
+      hitBox: null,
+      floorIndex: 0,
+      roomId: null,
+      hostId: null,
+      manager: false,
+      civicRoomId: args.kind === "bed" ? "infirmary" : "waiting-room",
+    };
+  }
+
+  function bookLayout(
+    desks: ReadonlyArray<{ readonly agentId: string; readonly seatId: string }>,
+    civic: ReadonlyArray<OfficeSeat>,
+  ): OfficeLayout {
+    const seats = new Map<string, OfficeSeat>();
+    const assigned = new Map<string, OfficeDesk>();
+    for (const [index, desk] of desks.entries()) {
+      const seat = deskSeat({
+        seatId: desk.seatId,
+        deskTile: { col: 2 + index * 4, row: 2 },
+        floorIndex: 0,
+      });
+      seats.set(seat.seatId, seat);
+      assigned.set(desk.agentId, { ...seat, agentId: desk.agentId });
+    }
+    for (const seat of civic) seats.set(seat.seatId, seat);
+    return {
+      view: "floor",
+      cols: 24,
+      rows: 16,
+      desks: assigned,
+      seats,
+      signs: [],
+      rooms: [],
+      floors: [handBuiltFloor([])],
+      doorTile: { col: 0, row: 0 },
+      lobbyTile: { col: 0, row: 1 },
+      props: [],
+      walkable: allWalkable(16, 16),
+      frozen: null,
+      shiftFromPrevious: null,
+      stable: true,
+    };
+  }
+
+  function bedHolders(book: OfficeSeatBook): string[] {
+    return book
+      .knownAgentIds()
+      .filter((agentId) => book.civicClaimOf(agentId) === "bed");
+  }
+
+  it("refuses a kind-mismatched lounge and a competing bed claim before vacated, then grants both after", () => {
+    const bed = civicSeat({
+      seatId: "bed-1",
+      kind: "bed",
+      deskTile: { col: 12, row: 2 },
+    });
+    const lounge = civicSeat({
+      seatId: "lounge-1",
+      kind: "lounge",
+      deskTile: { col: 16, row: 2 },
+    });
+    const book = new OfficeSeatBook();
+    book.adopt(
+      bookLayout(
+        [
+          { agentId: "alpha", seatId: "desk-alpha" },
+          { agentId: "beta", seatId: "desk-beta" },
+        ],
+        [bed, lounge],
+      ),
+      ["alpha", "beta"],
+      "keep",
+    );
+    expect(book.claim("alpha", civicPref("bed"))?.seatId).toBe("bed-1");
+
+    book.endClaim("alpha");
+    expect(book.claim("alpha", civicPref("lounge"))).toBeNull();
+    expect(book.claim("beta", civicPref("bed"))).toBeNull();
+    expect(book.occupancy().get("bed-1")).toBe("alpha");
+
+    book.vacated("alpha");
+    expect(book.claim("alpha", civicPref("lounge"))?.seatId).toBe("lounge-1");
+    expect(book.claim("beta", civicPref("bed"))?.seatId).toBe("bed-1");
+  });
+
+  it("recomputes civic claims at a cursor the same way twice when wanters exceed capacity", () => {
+    const beds: ReadonlyArray<OfficeSeat> = [
+      civicSeat({
+        seatId: "bed-1",
+        kind: "bed",
+        deskTile: { col: 12, row: 2 },
+      }),
+      civicSeat({
+        seatId: "bed-2",
+        kind: "bed",
+        deskTile: { col: 16, row: 2 },
+      }),
+    ];
+    const ids = ["A", "B", "C", "D"];
+    const desks = ids.map((agentId) => ({
+      agentId,
+      seatId: `desk-${agentId}`,
+    }));
+    const book = new OfficeSeatBook();
+    book.adopt(bookLayout(desks, beds), ids, "keep");
+    const failing: ReadonlyMap<string, OfficeAgentStatus> = new Map(
+      ids.map((agentId) => [agentId, "failure" as const]),
+    );
+
+    book.recomputeClaims(failing, ids);
+    const first = bedHolders(book);
+    expect(first).toEqual(["A", "B"]);
+    expect(book.civicClaimOf("C")).toBeNull();
+    expect(book.civicClaimOf("D")).toBeNull();
+    expect(book.effectiveSeat("C")?.seatId).toBe("desk-C");
+    expect(book.effectiveSeat("D")?.seatId).toBe("desk-D");
+
+    book.recomputeClaims(failing, ids);
+    expect(bedHolders(book)).toEqual(first);
+  });
+});
+
+/**
+ * Evidence (c1) - a civic wanter on a floor whose beds and reserves are
+ * already taken keeps its assignment rather than going seatless or taking a
+ * second seat.
+ */
+describe("OfficeScene evidence - civic wanter under full beds and reserves", () => {
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function cubbyIds(scene: OfficeScene): string[] {
+    const ids: string[] = [];
+    for (const desk of layoutOf(scene).desks.values()) {
+      if (desk.kind === "cubby") ids.push(desk.agentId);
+    }
+    return ids;
+  }
+
+  function countSeats(
+    layout: OfficeLayout,
+    kind: "bed" | "wake-reserve",
+  ): number {
+    const assigned = new Set<string>();
+    for (const desk of layout.desks.values()) assigned.add(desk.seatId);
+    let count = 0;
+    for (const seat of layout.seats.values()) {
+      if (kind === "bed") {
+        if (seat.kind === "bed") count += 1;
+        continue;
+      }
+      if (
+        seat.kind === "cubby" ||
+        seat.kind === "bed" ||
+        seat.kind === "lounge"
+      ) {
+        continue;
+      }
+      if (!assigned.has(seat.seatId)) count += 1;
+    }
+    return count;
+  }
+
+  function expectOccupantsInjective(book: OfficeSeatBook): void {
+    const seen = new Map<string, string>();
+    for (const agentId of book.knownAgentIds()) {
+      const seat = book.effectiveSeat(agentId);
+      if (seat === null) continue;
+      expect(seen.get(seat.seatId), seat.seatId).toBeUndefined();
+      seen.set(seat.seatId, agentId);
+      expect(book.occupant(seat.seatId)).toBe(agentId);
+    }
+  }
+
+  /**
+   * Wake-reserve seats the book has not spoken for. Layout-only counts
+   * cannot tell a free reserve from one a claim is holding, so a case
+   * that needs a reserve to be FREE has to ask occupancy.
+   */
+  function freeWakeReserveCount(
+    layout: OfficeLayout,
+    book: OfficeSeatBook,
+  ): number {
+    const assigned = new Set<string>();
+    for (const desk of layout.desks.values()) assigned.add(desk.seatId);
+    const spoken = book.occupancy();
+    let free = 0;
+    for (const seat of layout.seats.values()) {
+      if (
+        seat.kind === "cubby" ||
+        seat.kind === "bed" ||
+        seat.kind === "lounge"
+      ) {
+        continue;
+      }
+      if (assigned.has(seat.seatId) || spoken.has(seat.seatId)) continue;
+      free += 1;
+    }
+    return free;
+  }
+
+  it("leaves a civic wanter at its cubby when beds and reserves are full", () => {
+    const epic = makeTestEpic("one-team", 40, 1);
+    const agents = epic.agents;
+    const visibleAgentIds = new Set(agents.map((person) => person.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((person) => [person.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.building, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+
+    const cubbies = cubbyIds(scene);
+    const layout = layoutOf(scene);
+    const beds = countSeats(layout, "bed");
+    const reserves = countSeats(layout, "wake-reserve");
+    if (cubbies.length < beds + reserves + 1) {
+      throw new Error(
+        `fixture needs ${beds} bed fillers, ${reserves} reserve fillers and one overflow; got ${cubbies.length} cubbies`,
+      );
+    }
+    const bedFillers = cubbies.slice(0, beds);
+    const reserveFillers = cubbies.slice(beds, beds + reserves);
+    const overflow = cubbies[beds + reserves];
+
+    const filled = new Map(idle);
+    for (const agentId of bedFillers) filled.set(agentId, "failure");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+    for (const agentId of bedFillers) {
+      expect(bookOf(scene).civicClaimOf(agentId)).toBe("bed");
+    }
+
+    for (const agentId of reserveFillers) filled.set(agentId, "working");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+    for (const agentId of reserveFillers) {
+      expect(bookOf(scene).heldClaimWant(agentId)).toBe("desk");
+    }
+
+    filled.set(overflow, "failure");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+
+    const book = bookOf(scene);
+    expect(book.civicClaimOf(overflow)).toBeNull();
+    expect(book.heldClaimWant(overflow)).toBeNull();
+    expect(book.effectiveSeat(overflow)?.kind).toBe("cubby");
+    expect(book.effectiveSeat(overflow)?.seatId).toBe(
+      layoutOf(scene).desks.get(overflow)?.seatId,
+    );
+    expect(scene.locate(overflow)).not.toBeNull();
+    expectOccupantsInjective(book);
+  });
+
+  /**
+   * Sibling of the full/full case above. Reserves FULL made the wake-pass
+   * guard unobservable: falling through still found nothing, so
+   * `heldClaimWant` stayed null on both sides. Beds full and a reserve
+   * FREE is the shape that guard exists for — without it the overflow
+   * cubby is handed a desk.
+   */
+  it("leaves a crashed cubby agent at its cubby when beds are full and a reserve desk is free", () => {
+    const epic = makeTestEpic("one-team", 12, 9);
+    const agents = epic.agents;
+    const visibleAgentIds = new Set(agents.map((person) => person.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      agents.map((person) => [person.id, "idle" as const]),
+    );
+    const scene = new OfficeScene(OFFICE_VIEWS.building, null);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+
+    const cubbies = cubbyIds(scene);
+    const beds = countSeats(layoutOf(scene), "bed");
+    if (cubbies.length < beds + 1) {
+      throw new Error(
+        `fixture needs ${beds} bed fillers and one overflow; got ${cubbies.length} cubbies`,
+      );
+    }
+    const bedFillers = cubbies.slice(0, beds);
+    const overflow = cubbies[beds];
+
+    const filled = new Map(idle);
+    for (const agentId of bedFillers) filled.set(agentId, "failure");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+    for (const agentId of bedFillers) {
+      expect(bookOf(scene).civicClaimOf(agentId)).toBe("bed");
+    }
+
+    // The pressure this case exists to apply. If the fixture later has no
+    // free reserve, falling through the wake-pass guard finds nothing and
+    // the assertions go green for the wrong reason — the full/full sibling.
+    const freeReserves = freeWakeReserveCount(layoutOf(scene), bookOf(scene));
+    expect(
+      freeReserves,
+      "a reserve desk was free when the overflow crashed",
+    ).toBeGreaterThan(0);
+
+    filled.set(overflow, "failure");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+
+    const book = bookOf(scene);
+    expect(book.heldClaimWant(overflow)).toBeNull();
+    expect(book.effectiveSeat(overflow)?.kind).toBe("cubby");
   });
 });
