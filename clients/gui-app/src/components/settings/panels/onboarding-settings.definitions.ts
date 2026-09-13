@@ -3,13 +3,18 @@ import {
   defineSettingsSection,
   type SettingsRowDefinition,
 } from "@/lib/settings-search/settings-definitions";
-import type { LessonId } from "@/stores/onboarding/onboarding-tour-catalog";
+import {
+  TOUR_COPY,
+  type LessonId,
+} from "@/stores/onboarding/onboarding-tour-catalog";
 
 /**
  * Settings ▸ Onboarding: the page, its progress summary, and one row per
- * lesson. Every card's label and description is written HERE and nowhere
- * else - the panel renders them from these definitions and the search index
- * reads the same values, so a card cannot exist without being findable.
+ * lesson. Every card's label and description lives in one place - the four
+ * non-tour lessons' here, the five tours' in the catalogue's `TOUR_COPY`,
+ * which the tour host names them by too - and the panel renders them from
+ * these definitions while the search index reads the same values, so a card
+ * cannot exist without being findable.
  *
  * Every anchored member is gated on the build rather than always available:
  * the mobile app omits the section outright (every lesson teaches the
@@ -73,9 +78,8 @@ export const ONBOARDING = defineSettingsSection("onboarding", {
     kind: "row",
     group: "guidedTours",
     search: { anchor: "onboarding-lesson-add-folder" },
-    label: "Add a workspace folder",
-    description:
-      "Point an agent at a project on this machine, so it can read and change files there.",
+    label: TOUR_COPY["add-folder"].title,
+    description: TOUR_COPY["add-folder"].summary,
     availableWhen: isOnboardingLessonsAvailable,
     keywords: ["folder", "workspace", "project", "repository", "directory"],
   },
@@ -83,9 +87,8 @@ export const ONBOARDING = defineSettingsSection("onboarding", {
     kind: "row",
     group: "guidedTours",
     search: { anchor: "onboarding-lesson-terminal-mode" },
-    label: "Start a terminal agent",
-    description:
-      "Run a coding agent in its own terminal, the way you would on the command line.",
+    label: TOUR_COPY["terminal-mode"].title,
+    description: TOUR_COPY["terminal-mode"].summary,
     availableWhen: isOnboardingLessonsAvailable,
     keywords: ["terminal", "cli", "claude code", "codex", "agent"],
   },
@@ -93,9 +96,8 @@ export const ONBOARDING = defineSettingsSection("onboarding", {
     kind: "row",
     group: "guidedTours",
     search: { anchor: "onboarding-lesson-submit-prompt" },
-    label: "Send your first prompt",
-    description:
-      "Write to an agent and watch the task open around the conversation.",
+    label: TOUR_COPY["submit-prompt"].title,
+    description: TOUR_COPY["submit-prompt"].summary,
     availableWhen: isOnboardingLessonsAvailable,
     keywords: ["prompt", "chat", "message", "compose", "first task"],
   },
@@ -103,9 +105,8 @@ export const ONBOARDING = defineSettingsSection("onboarding", {
     kind: "row",
     group: "guidedTours",
     search: { anchor: "onboarding-lesson-task-panels" },
-    label: "Explore task panels",
-    description:
-      "The agents, artifacts and diff that a task collects, and where each one lives.",
+    label: TOUR_COPY["task-panels"].title,
+    description: TOUR_COPY["task-panels"].summary,
     availableWhen: isOnboardingLessonsAvailable,
     keywords: ["panels", "sidebar", "artifacts", "diff", "canvas", "layout"],
   },
@@ -113,9 +114,8 @@ export const ONBOARDING = defineSettingsSection("onboarding", {
     kind: "row",
     group: "guidedTours",
     search: { anchor: "onboarding-lesson-history" },
-    label: "Find imported sessions",
-    description:
-      "Where the sessions you brought over from other agents end up, and how to pick one up.",
+    label: TOUR_COPY.history.title,
+    description: TOUR_COPY.history.summary,
     availableWhen: isOnboardingLessonsAvailable,
     keywords: ["history", "imported", "sessions", "bring your work"],
   },

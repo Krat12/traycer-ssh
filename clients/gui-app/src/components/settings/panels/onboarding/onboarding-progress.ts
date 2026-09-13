@@ -3,6 +3,7 @@ import type {
   TourStatus,
 } from "@/stores/onboarding/onboarding-flow-store";
 import {
+  TOUR_COPY,
   TOUR_IDS,
   type TourId,
 } from "@/stores/onboarding/onboarding-tour-catalog";
@@ -31,14 +32,6 @@ export interface OnboardingProgressSummary {
   readonly legacyNote: string | null;
 }
 
-export const TOUR_TITLES: Readonly<Record<TourId, string>> = {
-  "add-folder": "Add a workspace folder",
-  "terminal-mode": "Start a terminal agent",
-  "submit-prompt": "Send your first prompt",
-  "task-panels": "Explore task panels",
-  history: "Find imported sessions",
-};
-
 export const LEGACY_COMPLETED_NOTE =
   "You completed the earlier tour. Explore the new lessons whenever you like.";
 
@@ -61,7 +54,7 @@ function welcomeLabel(data: OnboardingFlowData): string {
 
 function chainLabel(data: OnboardingFlowData): string {
   const current =
-    data.activeTourId === null ? null : TOUR_TITLES[data.activeTourId];
+    data.activeTourId === null ? null : TOUR_COPY[data.activeTourId].title;
   switch (data.chain) {
     case "pending":
       return "Not started";
