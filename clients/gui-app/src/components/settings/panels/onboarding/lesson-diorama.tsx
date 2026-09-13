@@ -150,18 +150,22 @@ function LessonDioramaPlayer(props: {
   // very next render shows task 0 / the finished split with nothing to wait
   // for. The stored state is reset alongside so that, if the preference flips
   // back, the loop starts over from its first beat rather than from wherever
-  // it was interrupted.
+  // it was interrupted - during render, off the previous value, so the reset
+  // lands in the same commit as the flip rather than one effect later.
+  const [wasReducedMotion, setWasReducedMotion] = useState(reducedMotion);
+  if (reducedMotion !== wasReducedMotion) {
+    setWasReducedMotion(reducedMotion);
+    if (reducedMotion) {
+      setTaskIndex(0);
+      setPhase("single");
+    }
+  }
   const activeTaskIndex =
     scene === "task-tabs" && !reducedMotion ? taskIndex : 0;
   const taskScene = taskSceneFor(activeTaskIndex);
   const navigationPhase: NavigationPhase =
     scene === "split-screen" && reducedMotion ? "split-2" : phase;
   const animate = !reducedMotion;
-  useEffect(() => {
-    if (!reducedMotion) return;
-    setTaskIndex(0);
-    setPhase("single");
-  }, [reducedMotion]);
 
   return (
     <div className="w-full max-w-full space-y-3">
