@@ -3000,6 +3000,49 @@ describe("useLandingComposerActions", () => {
       queryClient.clear();
     });
 
+    it("announces and emits nothing for a cold-image draft whose preparation resolves AFTER a reset (generation captured at startSubmission)", async () => {
+      const draftId = mountFocusedDraft("draft-cold-image-reset");
+      setSingleWorkspace();
+      imageStoreMocks.sessionImageBytes.mockReturnValue(null);
+      const imageGate = deferred<Uint8Array | undefined>();
+      imageStoreMocks.getImageBytes.mockReturnValue(imageGate.promise);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      act(() => {
+        result.current.submit({
+          draftId,
+          editor: editorHandleForHashImage("hash-cold-reset", "restored"),
+          slashCatalog: null,
+          toolbar: defaultToolbar(),
+        });
+      });
+      // The attempt started; the create has not gone out (IndexedDB pending).
+      expect(
+        landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+      ).toBe(false);
+      // A replay / chain end / sign-out resets the receipts in that gap.
+      act(() => {
+        receipts().reset();
+      });
+      await act(async () => {
+        imageGate.resolve(HELLO_BYTES);
+        await imageGate.promise;
+      });
+      await waitFor(() => {
+        expect(landingMocks.navigate).toHaveBeenCalledTimes(1);
+      });
+      // The create itself still happened; only the onboarding receipt is
+      // withheld, because the generation it was started under is gone.
+      expect(receipts().dispatchedByAttemptId).toEqual({});
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
     it("emits nothing when the tui-agent create rejects", async () => {
       landingMocks.createTerminalAgent.mockRejectedValue(new Error("no pty"));
       const queryClient = new QueryClient({

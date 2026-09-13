@@ -192,6 +192,13 @@ interface FinalizeLandingSubmissionInput {
    * could answer with a host the user was never shown.
    */
   readonly hostId: string;
+  /**
+   * Onboarding receipt generation captured at `startSubmission`, BEFORE the
+   * restored-image preparation can await. A reset that lands in that gap
+   * (replay, chain end, sign-out) must leave this attempt receipt-less
+   * rather than let it announce and emit under the new generation.
+   */
+  readonly receiptGeneration: number;
 }
 
 /**
@@ -497,12 +504,15 @@ export function useLandingComposerActions(
       // exit of the continuation below that is not the foreground acceptance
       // retires the attempt so a waiting lesson stops waiting.
       const receipts = useLandingReceiptsStore.getState();
-      const receiptGeneration = receipts.announce({
-        kind: "prompt-accepted",
-        attemptId: attempt.id,
-        draftId: attempt.draftId,
-        hostId: activeHostId,
-      });
+      const { receiptGeneration } = input;
+      if (receiptGeneration === receipts.generation) {
+        receipts.announce({
+          kind: "prompt-accepted",
+          attemptId: attempt.id,
+          draftId: attempt.draftId,
+          hostId: activeHostId,
+        });
+      }
 
       void createLandingEpic({
         epicId,
@@ -702,6 +712,8 @@ export function useLandingComposerActions(
         captureSubmissionPlacement(draftId),
       );
       if (attempt === null) return;
+      // See `FinalizeLandingSubmissionInput.receiptGeneration`.
+      const receiptGeneration = useLandingReceiptsStore.getState().generation;
       const exactArgs = { ...args, draftId };
 
       // The live editor content is hash-only (landing pastes hashes, never
@@ -720,6 +732,7 @@ export function useLandingComposerActions(
           workspaceContext,
           attempt,
           hostId,
+          receiptGeneration,
         });
         return;
       }
@@ -732,6 +745,7 @@ export function useLandingComposerActions(
           workspaceContext,
           attempt,
           hostId,
+          receiptGeneration,
         });
         return;
       }
@@ -778,6 +792,7 @@ export function useLandingComposerActions(
             workspaceContext,
             attempt,
             hostId,
+            receiptGeneration,
           });
         })
         .catch(() => {
