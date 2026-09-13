@@ -27,6 +27,7 @@ import {
   type OfficeAgentStatus,
   type OfficeAppearance,
   type OfficeCharacterPose,
+  type OfficeCivicRoom,
   type OfficeDrawable,
   type OfficeDesk,
   type OfficeErrandSpot,
@@ -310,6 +311,28 @@ function sprites(
 function visibleDrawables(frame: OfficeFrame): ReadonlyArray<OfficeDrawable> {
   if (frame.world !== null) return frame.world.map((entry) => entry.drawable);
   return [...frame.props, ...frame.actors];
+}
+
+type OfficeVehicleDrawable = Extract<OfficeDrawable, { kind: "vehicle" }>;
+
+/**
+ * Every vehicle drawable in this frame, whichever painter shape produced it.
+ *
+ * Reads through `visibleDrawables`, which already branches on `frame.world`:
+ * a WORLD painter (Towers, Building, Campus, City) leaves `props`/`actors`
+ * empty and puts everything in `frame.world` instead, and a helper that only
+ * read `props`/`actors` would find a vehicle on the Floor and silently find
+ * none anywhere else - exactly the vacuous green the per-view block below
+ * exists to avoid.
+ */
+function vehicleDrawables(
+  frame: OfficeFrame,
+): ReadonlyArray<OfficeVehicleDrawable> {
+  const found: OfficeVehicleDrawable[] = [];
+  for (const drawable of visibleDrawables(frame)) {
+    if (drawable.kind === "vehicle") found.push(drawable);
+  }
+  return found;
 }
 
 /** Every unanswered-request pile currently drawn, whatever its height. */
@@ -4966,6 +4989,603 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     expect(
       findOfficePath({ ...layout, walkable }, plazaA.doorTile, plazaB.doorTile),
     ).toBeNull();
+  });
+});
+
+describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
+  const view = OFFICE_VIEWS[viewId];
+
+  function newVehicleScene(): OfficeScene {
+    return new OfficeScene(view, null);
+  }
+
+  const ATTENTION_BETA: () => ReadonlyMap<string, OfficeAgentStatus> = () =>
+    new Map<string, OfficeAgentStatus>([["beta", "attention"]]);
+
+  const GAMMA = agent({ id: "gamma", createdAt: 3 });
+  const TRIO: ReadonlyArray<OfficeAgentInput> = [ALPHA, BETA, GAMMA];
+  const TRIO_IDS: ReadonlySet<string> = new Set(["alpha", "beta", "gamma"]);
+
+  const CAP_TRIO: ReadonlyArray<OfficeAgentInput> = [
+    agent({ id: "cap-a", hostId: "cap-h1", createdAt: 1 }),
+    agent({ id: "cap-b", hostId: "cap-h2", createdAt: 2 }),
+    agent({ id: "cap-c", hostId: "cap-h3", createdAt: 3 }),
+  ];
+  const CAP_IDS: ReadonlySet<string> = new Set(["cap-a", "cap-b", "cap-c"]);
+
+  it("dispatches a police car exactly where this floor's road is not null, never where it is", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    const road = layoutOf(scene).floors[0].road;
+    const dispatched = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length > 0;
+    expect(dispatched).toBe(road !== null);
+  });
+
+  it("never dispatches while reduced motion is on", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        reducedMotion: true,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("never dispatches while the last drawn frame was at overview (lod 0)", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.frame(0, WHOLE_WORLD);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    // Even zoomed back in after the fact, nothing was ever dispatched.
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("never dispatches while a playback session is running", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        playing: true,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("never dispatches while paused at a cursor position", () => {
+    const scene = newVehicleScene();
+    // Same cursor value on both syncs and an unchanged pulseKey: a scrub
+    // (cursorMs going from null to non-null, or backward) seeds silently
+    // through a different rule entirely (see the seed cases below), so this
+    // holds cursorMs steady to isolate the "paused" gate on its own.
+    scene.sync(
+      sceneInput({ agents: AGENTS, visibleAgentIds: BOTH, cursorMs: 1000 }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        cursorMs: 1000,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("never dispatches when the last drawn view rect does not reach the kerb", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    // A tiny rect pinned at the origin: wherever this floor's kerb actually
+    // is, it is not inside an 8x8 box at (0, 0).
+    scene.frame(1, { x: 0, y: 0, width: 8, height: 8 });
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("seeds silently: an agent already in attention on the opening sync dispatches nothing", () => {
+    const scene = newVehicleScene();
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("seeds silently after a scrub too: landing on a cursor with an agent already in attention dispatches nothing", () => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        cursorMs: 5000,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("never lets more than MAX_VEHICLES stand on the road at once, even with three separate rooms to dispatch to", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: CAP_TRIO, visibleAgentIds: CAP_IDS }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: CAP_TRIO,
+        visibleAgentIds: CAP_IDS,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["cap-a", "attention"],
+          ["cap-b", "attention"],
+          ["cap-c", "attention"],
+        ]),
+      }),
+    );
+    // Three separate hosts, three separate rooms: coalescing alone cannot be
+    // why this stays at two, since nothing here shares a room to coalesce on.
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length,
+    ).toBeLessThanOrEqual(2);
+    for (let step = 0; step < 300; step += 1) {
+      scene.tick(100);
+      expect(
+        vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length,
+      ).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("coalesces three agents entering attention together into a single police car", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: TRIO, visibleAgentIds: TRIO_IDS }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: TRIO,
+        visibleAgentIds: TRIO_IDS,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+          ["gamma", "attention"],
+        ]),
+      }),
+    );
+    // One room, one trip: three riders on the same help desk coalesce onto
+    // one car rather than three. (`forAgentIds` itself is private state and
+    // not reachable from the public scene API without an `as unknown` cast,
+    // which the repo's lint rules forbid in a test as much as anywhere else;
+    // this is the externally observable half of that claim.)
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(1);
+  });
+
+  it("keeps one police car at the kerb longer when a late rider joins its trip", (context) => {
+    const sceneA = newVehicleScene();
+    const sceneB = newVehicleScene();
+    const seed = sceneInput({ agents: AGENTS, visibleAgentIds: BOTH });
+    sceneA.sync(seed);
+    sceneB.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(sceneA);
+    const road = layout.floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    const projector = view.painter.projector(layout);
+    const kerbPoints: ReadonlyArray<OfficePoint> = layout.floors.flatMap(
+      (floor) =>
+        floor.civic.flatMap((room) => {
+          if (room.kind !== "help-desk" || room.kerbTile === null) return [];
+          return [
+            projector.project(room.kerbTile.col + 0.5, room.kerbTile.row + 1),
+          ];
+        }),
+    );
+    expect(kerbPoints.length).toBeGreaterThan(0);
+
+    const seedAndDispatch = (scene: OfficeScene): void => {
+      scene.frame(1, WHOLE_WORLD);
+      scene.sync(
+        sceneInput({
+          agents: AGENTS,
+          visibleAgentIds: BOTH,
+          statusById: new Map<string, OfficeAgentStatus>([
+            ["alpha", "attention"],
+          ]),
+        }),
+      );
+    };
+    seedAndDispatch(sceneA);
+    seedAndDispatch(sceneB);
+
+    const atKerb = (scene: OfficeScene): boolean =>
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some((vehicle) =>
+        kerbPoints.some(
+          (point) => vehicle.x === point.x && vehicle.y === point.y,
+        ),
+      );
+
+    const waitForKerb = (scene: OfficeScene): number => {
+      for (let tickCount = 0; tickCount < 200; tickCount += 1) {
+        const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+        expect(vehicles.length).toBeLessThanOrEqual(1);
+        if (atKerb(scene)) return tickCount;
+        scene.tick(100);
+      }
+      return -1;
+    };
+
+    const sceneAToKerb = waitForKerb(sceneA);
+    const sceneBToKerb = waitForKerb(sceneB);
+    expect(sceneAToKerb).toBeGreaterThanOrEqual(0);
+    expect(sceneBToKerb).toBe(sceneAToKerb);
+
+    let sceneATicks = sceneAToKerb;
+    while (vehicleDrawables(sceneA.frame(1, WHOLE_WORLD)).length > 0) {
+      sceneA.tick(100);
+      sceneATicks += 1;
+      if (sceneATicks >= 500) break;
+    }
+    expect(vehicleDrawables(sceneA.frame(1, WHOLE_WORLD))).toHaveLength(0);
+
+    sceneB.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+        ]),
+      }),
+    );
+    let sceneBTicks = sceneBToKerb;
+    let maxVehicles = 0;
+    // Bounded by the counter itself rather than by `while (true)` plus a
+    // break: the cap is the loop's own condition, so a trip that never ends
+    // cannot hang the suite.
+    while (sceneBTicks < 500) {
+      const count = vehicleDrawables(sceneB.frame(1, WHOLE_WORLD)).length;
+      maxVehicles = Math.max(maxVehicles, count);
+      if (count === 0) break;
+      sceneB.tick(100);
+      sceneBTicks += 1;
+    }
+    expect(maxVehicles).toBe(1);
+    expect(vehicleDrawables(sceneB.frame(1, WHOLE_WORLD))).toHaveLength(0);
+    expect(sceneBTicks).toBeGreaterThan(sceneATicks);
+  });
+
+  it("draws exactly one drawable per vehicle and gives it no hit region", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    const before = scene.frame(1, WHOLE_WORLD).hitRegions.length;
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    const frame = scene.frame(1, WHOLE_WORLD);
+    expect(vehicleDrawables(frame)).toHaveLength(1);
+    // No new hit region: a vehicle owns no name tag and no click target, so
+    // the region list is exactly what it was before anybody was dispatched.
+    expect(frame.hitRegions.length).toBe(before);
+  });
+
+  it("removes the vehicle once its trip is fully played out", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length,
+    ).toBeGreaterThan(0);
+    // Long enough for arrive + the longest possible wait + depart, whatever
+    // this floor's road is actually shaped like.
+    for (let step = 0; step < 400; step += 1) scene.tick(100);
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("clears any vehicle mid-trip the instant reduced motion turns on", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length,
+    ).toBeGreaterThan(0);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        reducedMotion: true,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  it("clears any vehicle mid-trip on a scrub", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const road = layoutOf(scene).floors[0].road;
+    if (road === null) {
+      context.skip("this view has no road yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length,
+    ).toBeGreaterThan(0);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        cursorMs: 3000,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+
+  /** The sprite box a character standing on this tile would occupy, per the projector. */
+  function footRectFor(layout: OfficeLayout, tile: OfficeTilePos): OfficeRect {
+    const projector = view.painter.projector(layout);
+    const foot = projector.project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  it("keeps a vehicle ahead of a character at an exact depth tie", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    const floor = layout.floors[0];
+    const road = floor.road;
+    const helpDesk = floor.civic.find((room) => room.kind === "help-desk");
+    const kerb = helpDesk?.kerbTile ?? null;
+    if (road === null || kerb === null) {
+      context.skip("no road/kerb on this view yet (K2)");
+      return;
+    }
+    // A tie needs some OTHER standing tile to land exactly on the kerb - a
+    // fact about this floor's queue geometry, not something this case can
+    // assume holds on every floor shape. Beta is the SECOND agent to join
+    // the queue below, and the second slot is the one this floor sometimes
+    // hands out at the kerb's own tile.
+    const tieTile = floor.receptionQueueTiles.find(
+      (tile) => tile.col === kerb.col && tile.row === kerb.row,
+    );
+    if (tieTile === undefined) {
+      context.skip("this floor's queue never lands exactly on the kerb");
+      return;
+    }
+    const tieRect = footRectFor(layout, tieTile);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        // Both enter together so alpha (first alphabetically) claims the
+        // first queue slot and beta claims the second - the one this floor's
+        // geometry happens to put exactly on the kerb.
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+        ]),
+      }),
+    );
+    let tied = false;
+    let vehicleIndex = -1;
+    let characterIndex = -1;
+    for (let step = 0; step < 400 && !tied; step += 1) {
+      scene.tick(100);
+      const frame = scene.frame(1, WHOLE_WORLD);
+      const betaRegion = frame.hitRegions.find(
+        (region) => region.agentId === "beta",
+      );
+      if (
+        betaRegion === undefined ||
+        betaRegion.rect.x !== tieRect.x ||
+        betaRegion.rect.y !== tieRect.y
+      ) {
+        continue;
+      }
+      const stream = visibleDrawables(frame);
+      const foundVehicle = stream.findIndex(
+        (drawable) => drawable.kind === "vehicle",
+      );
+      const foundCharacter = stream.findIndex(
+        (drawable) =>
+          drawable.kind === "sprite" &&
+          drawable.sprite.name === "character" &&
+          drawable.x === betaRegion.rect.x &&
+          drawable.y === betaRegion.rect.y,
+      );
+      if (foundVehicle < 0 || foundCharacter < 0) continue;
+      vehicleIndex = foundVehicle;
+      characterIndex = foundCharacter;
+      tied = true;
+    }
+    expect(tied, "never observed beta standing exactly on the kerb").toBe(true);
+    // The tie itself: the vehicle is emitted first in the stream, so beta's
+    // own drawable follows it rather than the other way around.
+    expect(vehicleIndex).toBeLessThan(characterIndex);
+  });
+
+  it("Mission control never dispatches", (context) => {
+    if (viewId !== "mission-control") {
+      context.skip("this case is about Mission control specifically");
+      return;
+    }
+    // Mission control's own plan carries `civic: []` (no help desk at all),
+    // so a real sync would fail the DISPATCH TRIGGER on the missing room
+    // before it ever reached the road check - proving "no civic rooms yet",
+    // not "the gate is the road". A synthetic help desk WITH a real kerbTile
+    // is grafted on here, road left untouched at null, so the only thing
+    // left that can stop the car is the road. The view's own painter never
+    // reads `floor.civic` (only Floor's does), so this is inert for drawing.
+    const withSyntheticHelpDesk: OfficeView = {
+      ...view,
+      plan: (input) => {
+        const planned = view.plan(input);
+        const floor = planned.floors[0];
+        if (floor.road !== null) {
+          throw new Error(
+            "Mission control's floor grew a road - this case no longer isolates anything",
+          );
+        }
+        const helpDesk: OfficeCivicRoom = {
+          civicRoomId: "synthetic/mission-control/help-desk",
+          kind: "help-desk",
+          bounds: {
+            col: floor.receptionTile.col,
+            row: floor.receptionTile.row,
+            cols: 1,
+            rows: 1,
+          },
+          doorTile: floor.receptionTile,
+          signTile: floor.receptionTile,
+          name: "Front desk",
+          seatIds: [],
+          floorIndex: 0,
+          hostId: floor.hostId,
+          kerbTile: floor.receptionTile,
+        };
+        return {
+          ...planned,
+          floors: [{ ...floor, civic: [...floor.civic, helpDesk] }],
+        };
+      },
+    };
+    const scene = new OfficeScene(withSyntheticHelpDesk, null);
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    // The gate this case is about, isolated: the road is still null, and now
+    // a help desk with a real kerb exists, so nothing else is left to blame.
+    expect(layout.floors[0].road).toBeNull();
+    expect(
+      layout.floors[0].civic.find((room) => room.kind === "help-desk")
+        ?.kerbTile,
+    ).not.toBeNull();
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: ATTENTION_BETA(),
+      }),
+    );
+    // The trigger really fired: beta reaches an actual reception queue tile,
+    // not just its desk, which is only true once it has been handed a slot.
+    const queueTiles = layout.floors[0].receptionQueueTiles;
+    let queued = false;
+    for (let step = 0; step < 200 && !queued; step += 1) {
+      scene.tick(100);
+      const region = scene
+        .frame(1, WHOLE_WORLD)
+        .hitRegions.find((candidate) => candidate.agentId === "beta");
+      if (region === undefined) continue;
+      queued = queueTiles.some((tile) => {
+        const rect = footRectFor(layout, tile);
+        return region.rect.x === rect.x && region.rect.y === rect.y;
+      });
+    }
+    expect(queued, "beta never reached a reception queue tile").toBe(true);
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+});
+
+/**
+ * The vacuity guard my coordinator's brief requires: without this, a
+ * regression that nulled every floor's road would read as six green "no
+ * dispatch" cases above, and nothing would say the dispatch path itself had
+ * gone dead.
+ */
+describe("OfficeScene vehicles - dispatch actually happens somewhere", () => {
+  it("dispatches at least one police car across OFFICE_VIEW_IDS", () => {
+    const dispatchedSomewhere = OFFICE_VIEW_IDS.some((viewId) => {
+      const scene = new OfficeScene(OFFICE_VIEWS[viewId], null);
+      scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+      scene.sync(
+        sceneInput({
+          agents: AGENTS,
+          visibleAgentIds: BOTH,
+          statusById: new Map<string, OfficeAgentStatus>([
+            ["beta", "attention"],
+          ]),
+        }),
+      );
+      return vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length > 0;
+    });
+    expect(dispatchedSomewhere).toBe(true);
   });
 });
 

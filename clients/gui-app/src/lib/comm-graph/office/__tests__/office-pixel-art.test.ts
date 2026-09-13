@@ -17,6 +17,7 @@ import { OFFICE_ACCESSORY_MAPS_BY_NAME } from "@/lib/comm-graph/office/office-sp
 import type {
   OfficeAppearance,
   OfficeSpriteName,
+  OfficeSpriteRef,
 } from "@/lib/comm-graph/office/office-types";
 
 /**
@@ -124,7 +125,14 @@ const ALL_SPRITE_NAMES: Readonly<Record<OfficeSpriteName, true>> = {
   "block-top": true,
   "window-lit": true,
   "window-dark": true,
+  spire: true,
 
+  bed: true,
+  "bed-occupied": true,
+  "lounge-chair": true,
+  "low-table": true,
+  "records-door": true,
+  "cross-sign": true,
   ambulance: true,
   "ambulance-b": true,
   "ambulance-iso": true,
@@ -137,14 +145,6 @@ const ALL_SPRITE_NAMES: Readonly<Record<OfficeSpriteName, true>> = {
   "fire-engine-b": true,
   "fire-engine-iso": true,
   "fire-engine-iso-b": true,
-  spire: true,
-
-  bed: true,
-  "bed-occupied": true,
-  "lounge-chair": true,
-  "low-table": true,
-  "records-door": true,
-  "cross-sign": true,
 };
 
 function mapNamed(name: OfficeSpriteName): ReadonlyArray<string> {
@@ -176,6 +176,42 @@ function pixelAt(
     sprite.pixels[offset + 2],
     sprite.pixels[offset + 3],
   ];
+}
+
+/** Rasterizes through the public cache path so `facing` selection is covered. */
+function surfaceRaster(
+  ref: OfficeSpriteRef,
+  theme: "light" | "dark",
+): RasterizedSprite {
+  clearOfficeSpriteCache();
+  let dimensions: { width: number; height: number } | null = null;
+  // A HOLDER, not a bare `let`: the write below happens inside a mocked
+  // callback, which control-flow analysis cannot see, so a plain local would
+  // still be typed `null` at the check and the comparison would be between
+  // two literals.
+  const captured: { value: RasterizedSprite | null } = { value: null };
+  const restore = stubGetContext(() => ({
+    createImageData: (width: number, height: number) => {
+      dimensions = { width, height };
+      return { data: new Uint8ClampedArray(width * height * 4) };
+    },
+    putImageData: (image: { readonly data: Uint8ClampedArray }) => {
+      if (dimensions === null) throw new Error("missing raster dimensions");
+      captured.value = {
+        width: dimensions.width,
+        height: dimensions.height,
+        pixels: image.data,
+      };
+    },
+  }));
+  try {
+    officeSpriteSurface(ref, theme);
+  } finally {
+    restore();
+  }
+  const raster = captured.value;
+  if (raster === null) throw new Error("sprite did not rasterize");
+  return raster;
 }
 
 afterEach(() => {
@@ -288,6 +324,75 @@ describe("sprite maps", () => {
       );
     },
   );
+
+  /** Where the two lamps sit on the bar, per projection. */
+  const LAMPS_OBLIQUE = { ax: 10, ay: 1, bx: 12, by: 1 } as const;
+  const LAMPS_ISO = { ax: 18, ay: 2, bx: 20, by: 2 } as const;
+
+  // ONE OBJECT PER CASE rather than a six-wide tuple: the two lamp positions
+  // are a pair of points, and spelling them out positionally both trips the
+  // parameter limit and makes the call site unreadable at a glance.
+  it.each([
+    { nameA: "ambulance", nameB: "ambulance-b", lamp: LAMPS_OBLIQUE },
+    { nameA: "police-car", nameB: "police-car-b", lamp: LAMPS_OBLIQUE },
+    { nameA: "fire-engine", nameB: "fire-engine-b", lamp: LAMPS_OBLIQUE },
+    { nameA: "ambulance-iso", nameB: "ambulance-iso-b", lamp: LAMPS_ISO },
+    { nameA: "police-car-iso", nameB: "police-car-iso-b", lamp: LAMPS_ISO },
+    { nameA: "fire-engine-iso", nameB: "fire-engine-iso-b", lamp: LAMPS_ISO },
+  ] as const)(
+    "swaps the two siren lamps between $nameA and $nameB",
+    ({ nameA, nameB, lamp }) => {
+      const { ax: lampAX, ay: lampAY, bx: lampBX, by: lampBY } = lamp;
+      const frameA = rasterizeSpriteMap(
+        mapNamed(nameA),
+        officeSpriteColors({ name: nameA }, "light"),
+        false,
+      );
+      const frameB = rasterizeSpriteMap(
+        mapNamed(nameB),
+        officeSpriteColors({ name: nameB }, "light"),
+        false,
+      );
+
+      expect(pixelAt(frameA, lampAX, lampAY)).toEqual(
+        pixelAt(frameB, lampBX, lampBY),
+      );
+      expect(pixelAt(frameA, lampBX, lampBY)).toEqual(
+        pixelAt(frameB, lampAX, lampAY),
+      );
+      expect(pixelAt(frameA, lampAX, lampAY)).not.toEqual(
+        pixelAt(frameA, lampBX, lampBY),
+      );
+    },
+  );
+
+  it("guard: leaves an ordinary prop with facing left unmirrored", () => {
+    // Guard case: this is green before vehicle facing support. It protects the
+    // named vehicle exception from turning into a rule that mirrors every prop.
+    const left = surfaceRaster({ name: "desk", facing: "left" }, "light");
+    const expected = rasterizeSpriteMap(
+      mapNamed("desk"),
+      officeSpriteColors({ name: "desk" }, "light"),
+      false,
+    );
+    expect(left.pixels).toEqual(expected.pixels);
+  });
+
+  it("mirrors a vehicle with facing left relative to facing right", () => {
+    const right = surfaceRaster(
+      { name: "ambulance", facing: "right" },
+      "light",
+    );
+    const left = surfaceRaster({ name: "ambulance", facing: "left" }, "light");
+
+    for (let y = 0; y < right.height; y += 1) {
+      for (let x = 0; x < right.width; x += 1) {
+        expect(pixelAt(left, x, y), `pixel ${x},${y}`).toEqual(
+          pixelAt(right, right.width - 1 - x, y),
+        );
+      }
+    }
+  });
 
   it("declares the sizes the scene positions the new fixtures by", () => {
     // The rectangularity test above only proves a map AGREES with its declared
