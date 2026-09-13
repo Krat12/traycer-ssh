@@ -1545,6 +1545,14 @@ function chunkKeysOfBox(box: OfficeRect): ReadonlyArray<string> {
   return keys;
 }
 
+/** The archive's way in on this storey, or `null` where this storey has none. */
+function archiveDoorOn(floor: OfficeFloor): OfficeTilePos | null {
+  for (const room of floor.civic) {
+    if (room.kind === "archive") return room.doorTile;
+  }
+  return null;
+}
+
 function rectsOverlap(a: OfficeRect, b: OfficeRect): boolean {
   return (
     a.x < b.x + b.width &&
@@ -2635,17 +2643,38 @@ export class OfficeScene {
   }
 
   /**
-   * An archived agent leaves through the ARCHIVE's door where its floor has
-   * one, and through the building's own entrance where it does not.
+   * An archived agent leaves through the ARCHIVE's door: the one on its own
+   * storey where that storey has one, ELSE ANY ARCHIVE IN ITS OWN BUILDING, and
+   * through the storey's own entrance only where its building has none at all.
    *
    * C5: the archive is a door with a counter rather than a room somebody sits
-   * in, so walking into it is the whole of being archived. Every view that
-   * plans no civic rooms keeps the entrance, which is what it always used.
+   * in, so walking into it is the whole of being archived. Every view that plans
+   * no civic rooms keeps the entrance, which is what it always used.
+   *
+   * FLOOR, THEN BUILDING - the same sentence `seatPoolAdmits` reads for a civic
+   * seat, and for the same reason. `floors` is one entry per STOREY in the
+   * oblique views (Towers at 309 agents has 65 of them) and only the PLAZA
+   * storey carries civic rooms, so reading the agent's own storey alone found no
+   * archive on any other storey and fell through to that storey's stairwell
+   * lobby. Measured: in Towers an archived agent walked to (1,18) while its
+   * building's records door stood at (0,17), reachable in sixteen steps from its
+   * desk - it left by the wrong door on every storey but one, in both plazas.
+   *
+   * AND THE HOST IS A WALL, which is why this scans its own building rather than
+   * every floor: hosts are separate buildings with no walkable route between
+   * them, so the neighbour's plaza is a records door this agent could never
+   * reach. An agent whose building genuinely has no archive keeps the entrance,
+   * and a door with no route to it is `startLeaving`'s existing case - it
+   * departs where it stands rather than walking nowhere.
    */
   private departureDoorOf(agentId: string): OfficeTilePos {
     const floor = this.floorOfAgent(agentId);
-    for (const room of floor.civic) {
-      if (room.kind === "archive") return room.doorTile;
+    const onOwnStorey = archiveDoorOn(floor);
+    if (onOwnStorey !== null) return onOwnStorey;
+    for (const other of this.currentLayout.floors) {
+      if (other.hostId !== floor.hostId) continue;
+      const door = archiveDoorOn(other);
+      if (door !== null) return door;
     }
     return floor.doorTile;
   }
