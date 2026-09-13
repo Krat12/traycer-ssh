@@ -172,6 +172,21 @@ const VEHICLE_LIGHT_MS = 250;
  */
 const MAX_VEHICLES = 2;
 /**
+ * How many crashes an infirmary has to be answering for before the engine
+ * comes instead of the vans.
+ *
+ * Counted over the ROOM rather than the storey, for the same reason the
+ * coalescing key is: on a plaza storey one infirmary serves a whole building,
+ * and three crashes spread over three of its floors are one emergency, not
+ * three separate ones that never reach the threshold.
+ *
+ * The count is of agents the room is ANSWERING FOR, not of beds it has filled.
+ * An agent that crashed and found the ward full is still part of what made
+ * this an emergency, and leaving it out would mean a floor stopped summoning
+ * the engine at exactly the point it got bad enough to run out of beds.
+ */
+const FIRE_ENGINE_MIN_CRASHES = 3;
+/**
  * Below this step length playback is running fast enough that a walk-in would
  * still be in progress when the next row is drawn, so arrivals are announced
  * with a sparkle at the desk instead.
@@ -1426,6 +1441,9 @@ const NO_AWAY_IDS: ReadonlySet<string> = new Set<string>();
 /** Nobody. Shared so a sync that rehomes no one allocates nothing. */
 const NO_IDS: ReadonlyArray<string> = [];
 
+/** What the engine's threshold reads when no crash is among the transitions. */
+const NO_CRASH_COUNTS: ReadonlyMap<string, number> = new Map();
+
 /** Nobody spoken for, which is what a plan made from scratch is told. */
 const NO_OCCUPANCY: ReadonlyMap<string, string> = new Map();
 
@@ -1871,6 +1889,7 @@ export class OfficeScene {
       outgoing: outgoingStatuses,
       firstSync,
       rewound,
+      settling,
     });
 
     if (input.pulseKey !== this.lastPulseKey) {
@@ -3377,7 +3396,8 @@ export class OfficeScene {
    * failure is a DROP rather than a queue - the room still receives its agent,
    * and only the show is skipped.
    *
-   * The seed at the first sync and at a scrub is not a gate but a definition:
+   * The seed at the first sync, at a scrub and at a settle is not a gate but
+   * a definition:
    * "entered" is a difference between two syncs, and there is no earlier sync
    * to differ from. Without it, opening an epic that already has a flagged
    * agent in it would summon somebody for a thing that happened yesterday.
@@ -3386,13 +3406,24 @@ export class OfficeScene {
     readonly outgoing: ReadonlyMap<string, OfficeAgentStatus>;
     readonly firstSync: boolean;
     readonly rewound: boolean;
+    readonly settling: boolean;
   }): void {
-    const { firstSync, outgoing, rewound } = args;
+    const { firstSync, outgoing, rewound, settling } = args;
     // The seed is the RETURN, not a stored map: the next sync's outgoing
     // statuses are this sync's incoming ones either way, so declining to
     // dispatch here is the whole of "an agent already in `attention` when the
     // scene opened, or when the cursor landed, did not enter anything".
-    if (firstSync || rewound) return;
+    //
+    // A SETTLE IS THE THIRD OF THESE, and for the same reason rather than a
+    // new one. The diff a settle produces is between a PROVISIONAL set of
+    // statuses and the settled set that replaced it, so the agents it reports
+    // as having entered `failure` did so while the office was showing a state
+    // that had not arrived yet. Without this, opening an epic that already
+    // holds a crashed agent would drive an ambulance the moment the feed
+    // caught up - the build seed suppresses that only until the settle lands.
+    // The claims are re-derived on this sync for the same reason (see
+    // `recomputeClaimsFromStatuses`); this is the vehicle half of it.
+    if (firstSync || rewound || settling) return;
     // The four that silence the layer: the errand-start gates, exactly. BEFORE
     // the transition scan, which is the only part of this that costs the
     // population - a floor under reduced motion or mid-playback must not walk a
@@ -3401,10 +3432,52 @@ export class OfficeScene {
     if (this.playing || this.cursorMs !== null || this.reducedMotion) return;
     if (this.lastLod === 0) return;
     const entered = this.enteredStatuses(outgoing);
+    if (entered.length === 0) return;
+    // ONE PASS FOR THE WHOLE SYNC, and only when a crash is among the
+    // transitions. The engine's trigger is a fact about a ROOM rather than
+    // about the agent that tripped it, so computing it inside the loop would
+    // walk the population once per crash - which is quadratic in exactly the
+    // case the engine exists for, a floor crashing all at once.
+    const crashes = entered.some(
+      (agentId) => this.statusById.get(agentId) === "failure",
+    )
+      ? this.crashesByInfirmary()
+      : NO_CRASH_COUNTS;
+    // THE CAP IS ENFORCED IN `summon`, NOT HERE. Stopping the scan the moment
+    // the road is full would be the cheaper loop and the wrong one: a crash
+    // that trips the engine's threshold has to be allowed to REPLACE this
+    // room's ambulance, and a full road is exactly the state it most needs to
+    // do that from. Bailing out here would make the replacement unreachable in
+    // the one case it exists for.
+    //
+    // What a full road looks like is this room's OWN van plus one other
+    // vehicle - a van for a different infirmary, or a police car. It is never
+    // two vans for this room: coalescing keys on (kind, room), so a second
+    // crash here joins the first van's trip rather than parking beside it.
+    //
+    // The loop is bounded by the transitions in one sync, and every call below
+    // is map lookups, so what this costs is not the population.
     for (const agentId of entered) {
-      if (this.vehicles.length >= MAX_VEHICLES) return;
-      this.dispatchFor(agentId);
+      this.dispatchFor(agentId, crashes);
     }
+  }
+
+  /**
+   * How many crashed agents each infirmary is answering for, this sync.
+   *
+   * Keyed by room rather than by floor because the room is what the engine
+   * comes to, and on a plaza storey one room answers for several storeys.
+   */
+  private crashesByInfirmary(): ReadonlyMap<string, number> {
+    const counts = new Map<string, number>();
+    for (const character of this.characters.values()) {
+      const agentId = character.agentId;
+      if (this.statusById.get(agentId) !== "failure") continue;
+      const room = this.civicRoomFor(agentId, "infirmary");
+      if (room === null) continue;
+      counts.set(room.civicRoomId, (counts.get(room.civicRoomId) ?? 0) + 1);
+    }
+    return counts;
   }
 
   /**
@@ -3438,19 +3511,74 @@ export class OfficeScene {
    * trigger: there is no pending list, no retry on the next sync, and no
    * memory that a vehicle was ever owed. That is what bounds the layer.
    */
-  private dispatchFor(agentId: string): void {
+  private dispatchFor(
+    agentId: string,
+    crashes: ReadonlyMap<string, number>,
+  ): void {
     const status = this.statusById.get(agentId);
-    if (status !== "attention") return;
-    // A police car comes for an agent that GOT A SLOT at the help desk, not
-    // for one that overflowed back to its desk - the symmetric partner of an
-    // ambulance coming for an agent that got a bed. The car drives in while
-    // the agent walks, which is why this is the slot and not the arrival.
     const character = this.characters.get(agentId);
     if (character === undefined) return;
-    if (character.queueTile === null) return;
-    const room = this.civicRoomFor(agentId, "help-desk");
-    if (room === null || room.kerbTile === null) return;
-    this.summon({ kind: "police-car", room, kerbTile: room.kerbTile, agentId });
+    if (status === "attention") {
+      // A police car comes for an agent that GOT A SLOT at the help desk, not
+      // for one that overflowed back to its desk - the symmetric partner of an
+      // ambulance coming for an agent that got a bed. The car drives in while
+      // the agent walks, which is why this is the slot and not the arrival.
+      if (character.queueTile === null) return;
+      const desk = this.civicRoomFor(agentId, "help-desk");
+      if (desk === null || desk.kerbTile === null) return;
+      this.summon({
+        kind: "police-car",
+        room: desk,
+        kerbTile: desk.kerbTile,
+        agentId,
+      });
+      return;
+    }
+    if (status !== "failure") return;
+    const ward = this.civicRoomFor(agentId, "infirmary");
+    if (ward === null || ward.kerbTile === null) return;
+    // THE ENGINE IS ASKED FIRST, and it is a fact about the room rather than
+    // about this agent: a floor with three crashes on it gets one engine, not
+    // three vans. So the threshold is tested before the bed is, and an agent
+    // that trips it summons the engine whether or not the ward had a bed left
+    // for it - running out of beds is part of what makes this an emergency.
+    if ((crashes.get(ward.civicRoomId) ?? 0) >= FIRE_ENGINE_MIN_CRASHES) {
+      this.summonFireEngine(ward, ward.kerbTile, agentId);
+      return;
+    }
+    // AN AMBULANCE COMES FOR AN AGENT THAT GOT A BED. The claim is readable
+    // here only because dispatch runs after `updateCivicClaims`: a sync
+    // earlier this agent holds nothing, and the van would come for a crash
+    // that is about to be told the ward is full.
+    if (this.seats.civicClaimOf(agentId) !== "bed") return;
+    this.summon({
+      kind: "ambulance",
+      room: ward,
+      kerbTile: ward.kerbTile,
+      agentId,
+    });
+  }
+
+  /**
+   * The engine, which REPLACES this room's ambulances rather than parking
+   * beside them.
+   *
+   * The vans go first and the cap is tested after they have gone, so the
+   * engine can never lose its slot to the two vehicles it is superseding -
+   * which is the one case where a dropped trigger would read as a bug rather
+   * than as the budget working.
+   */
+  private summonFireEngine(
+    room: OfficeCivicRoom,
+    kerbTile: OfficeTilePos,
+    agentId: string,
+  ): void {
+    this.vehicles = this.vehicles.filter(
+      (vehicle) =>
+        vehicle.kind !== "ambulance" ||
+        vehicle.civicRoomId !== room.civicRoomId,
+    );
+    this.summon({ kind: "fire-engine", room, kerbTile, agentId });
   }
 
   /**
