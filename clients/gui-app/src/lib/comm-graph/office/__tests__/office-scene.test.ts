@@ -13338,11 +13338,14 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
     // between it and the pass it is about.
     expect(book.needsCapacity()).toEqual([]);
     const cubbySeatId = book.effectiveSeat(overflow)?.seatId;
-    const deskCount = layoutOf(scene).desks.size;
+    const planBefore = layoutOf(scene);
 
     // C2: a full ward is not a floor that needs a bigger one. An unchanged
     // follow-up sync is what would re-plan if overflow had been written
-    // into `needsCapacity` on the pass above.
+    // into `needsCapacity` on the pass above. A replan with an empty
+    // shortfall preserves every count — `desks.size` and `seats.size`
+    // both — so only the layout object's identity witnesses that no
+    // replan happened.
     scene.sync(
       sceneInput({
         agents,
@@ -13353,7 +13356,7 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
     );
     expect(bookOf(scene).needsCapacity()).toEqual([]);
     expect(bookOf(scene).effectiveSeat(overflow)?.seatId).toBe(cubbySeatId);
-    expect(layoutOf(scene).desks.size).toBe(deskCount);
+    expect(layoutOf(scene)).toBe(planBefore);
   });
 
   /**
@@ -14267,6 +14270,30 @@ describe("OfficeScene finding 3c - a civic arrival spawned into suppression is s
     return scene;
   }
 
+  /**
+   * Same population as `liveArchivedScene`, but the first sync is already
+   * at a paused cursor past alpha's archival. A tail gate of
+   * `motionSuppressed() && !wasSuppressed` would still pass the two
+   * cases that enter suppression from live.
+   */
+  function pausedArchivedScene(): OfficeScene {
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents: [LEAVER, BETA],
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "idle"],
+          ["beta", "idle"],
+        ]),
+        cursorMs: 1000,
+        playing: false,
+        reducedMotion: false,
+      }),
+    );
+    return scene;
+  }
+
   function readmit(
     scene: OfficeScene,
     status: OfficeAgentStatus,
@@ -14316,6 +14343,19 @@ describe("OfficeScene finding 3c - a civic arrival spawned into suppression is s
     if (bookOf(scene).civicClaimOf("alpha") !== "lounge") {
       throw new Error("expected alpha to hold a lounge at the cursor");
     }
+    expectSeatedInLounge(scene);
+    scene.tick(100);
+    expectSeatedInLounge(scene);
+  });
+
+  it("seats a civic readmit from the door on its lounge chair when the cursor scrubs while already paused, on that sync", () => {
+    const scene = pausedArchivedScene();
+    readmit(scene, "awaiting", 100, false);
+    if (bookOf(scene).civicClaimOf("alpha") !== "lounge") {
+      throw new Error("expected alpha to hold a lounge at the cursor");
+    }
+    expectSeatedInLounge(scene);
+    readmit(scene, "awaiting", 100, false);
     expectSeatedInLounge(scene);
     scene.tick(100);
     expectSeatedInLounge(scene);

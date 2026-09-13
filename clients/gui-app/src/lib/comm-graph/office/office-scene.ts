@@ -1941,16 +1941,32 @@ export class OfficeScene {
     //
     // The settlement at the top of this method only ever catches walks
     // already in flight from an EARLIER sync: it runs before every pass that
-    // can create one. Each creator was therefore gated on its own, and the
-    // third of them was missed - `spawnAtDoor` routes a readmitted agent from
-    // the door to its EFFECTIVE seat, which may be a held civic chair, and
-    // consults nothing. `walkTo` (so `returnToDesk`) and `startCivicWalk` do
-    // consult it; `startQueueWalk` targets the counter and can never be civic.
+    // can create one. Each creator was therefore gated on its own, and
+    // `spawnAtDoor` was missed - it routes a readmitted agent from the door
+    // to its EFFECTIVE seat, which may be a held civic chair, and consults
+    // nothing.
     //
-    // Stated once here instead, after the last creator, so a fourth door
-    // cannot open the same hole a fourth time. On `motionSuppressed()` rather
-    // than on the transition into it: a sync taken IN a suppressed mode owes
-    // the same stillness as the sync that entered one.
+    // Stated once here instead, after the last creator that can leave a HELD
+    // CIVIC route ungated. That is the claim this placement needs, and it is
+    // narrower than "the last route builder in the method", which is not
+    // true of this line. The rest of the class, and why none of them leaves
+    // such a route behind:
+    //
+    // - `walkTo` (so `returnToDesk`) yields no path under suppression;
+    // - `startCivicWalk` seats the body with `seatInstantlyAt`;
+    // - `startQueueWalk` targets the counter, which is never a civic seat;
+    // - `startLeaving`, from `sendArchivedHome`, targets the archive door,
+    //   and the civic pass has already ended a departing agent's claim, so
+    //   by this line it is releasing or gone;
+    // - `applyPulse` runs AFTER this line and can reach `walkTo` through
+    //   `startHurry`/`returnToDesk`, but that path is itself gated, so the
+    //   later call cannot reopen what this one settled;
+    // - `startErrand` builds from ticks rather than from a sync, and a civic
+    //   holder is non-idle, so `errandMustEnd` refuses it in any case.
+    //
+    // On `motionSuppressed()` rather than on the transition into it: a sync
+    // taken IN a suppressed mode owes the same stillness as the sync that
+    // entered one.
     //
     // Before the dispatch below, which asks who is still on their feet - so it
     // reads the settled floor it already sees for the two gated creators.
