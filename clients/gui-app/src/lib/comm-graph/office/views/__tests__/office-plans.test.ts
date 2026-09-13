@@ -192,6 +192,16 @@ import {
 
 const TRIAGE_SCALES: ReadonlyArray<number> = [12, 309, 1000];
 
+/**
+ * How much screen-space overlap between two plate backings is not an overlap.
+ *
+ * Flat rather than scaled by zoom or by plate size: what it absorbs is a
+ * floating-point residual on an EXACT abutment, which has no size of its own to
+ * be proportional to. The measurement that picks the number, and the reason
+ * tangency is legitimate here at all, is at the use site.
+ */
+const TOUCH_TOLERANCE_PX = 0.01;
+
 describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
   const view = OFFICE_VIEWS[viewId];
 
@@ -479,14 +489,38 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
           for (let j = i + 1; j < boxes.length; j += 1) {
             const a = boxes[i];
             const b = boxes[j];
-            const clear =
-              a.right <= b.left ||
-              b.right <= a.left ||
-              a.bottom <= b.top ||
-              b.bottom <= a.top;
+            // A HUNDREDTH OF A PIXEL, because two plate faces are allowed to
+            // TOUCH and floating point cannot say which side of touching it
+            // landed on. This geometry is commensurate: a face measures
+            // `len * 6.8 + 8` and the isometric separations are `16 * zoom`
+            // apart, so faces abut EXACTLY rather than nearly, and the residual
+            // is whatever the multiplication left behind.
+            //
+            // Measured across every view, population and zoom this suite runs -
+            // 36 combinations - the separations are bimodal and nothing lands
+            // between the two modes. City's pod plates at office zoom sit at
+            // -1.1369e-13 px at 309 agents and -5.6843e-14 px at 1,000; at 309
+            // the same relation ALSO yields +1.1369e-13 for another pair, which
+            // is the proof the sign is rounding and not geometry. The next value
+            // in the whole distribution is 2.8 px, and every other combination
+            // is 8.4 px or more.
+            //
+            // So the threshold sits in an empty band eleven orders of magnitude
+            // wide: far above the residual, 280x below the tightest real
+            // clearance, and 120x below 1.2 px, the smallest REAL overprint this
+            // suite has ever caught (finding 5's board at close-up; the rest ran
+            // 2.8 to 8.4 px). Exact tangency is NOT a defect and must not be
+            // "fixed" by nudging a packer - the nudge would move a layout that
+            // is correct, to satisfy an artefact of reading it.
+            const separation = Math.max(
+              b.left - a.right,
+              a.left - b.right,
+              b.top - a.bottom,
+              a.top - b.bottom,
+            );
             expect(
-              clear,
-              `zoom ${String(zoom)}: ${a.label} overlaps ${b.label}`,
+              separation > -TOUCH_TOLERANCE_PX,
+              `zoom ${String(zoom)}: ${a.label} overlaps ${b.label} by ${String(-separation)} px`,
             ).toBe(true);
           }
         }
