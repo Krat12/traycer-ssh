@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type {
   ChatActiveTurn,
@@ -15,7 +15,18 @@ import { reportableErrorToast } from "@/lib/reportable-error-toast";
 import {
   appendImageAttachmentAtoms,
   containsImageAtoms,
+  inlineHashOnlyImageBytes,
 } from "@/lib/composer/image-atoms";
+import {
+  clearHostHeldImageHashes,
+  hostHeldImageHashes,
+} from "@/lib/composer/host-held-image-hashes";
+import { withHeldComposerContentImageRoots } from "@/lib/composer/composer-content-image-roots";
+import {
+  draftImageInliningNeeded,
+  prepareDraftImageInlining,
+} from "@/lib/drafts/draft-image-inlining";
+import { draftImageByteTargetForHost } from "@/lib/drafts/draft-image-byte-target";
 import { bytesToBase64 } from "@/lib/composer/image-base64";
 import {
   getImageBytes,
@@ -109,6 +120,20 @@ interface UseChatComposerSubmitArgs {
    * chat to fork; the prompt then goes through the ordinary send untouched.
    */
   readonly onSideChat: ((input: ChatComposerSideChatInput) => boolean) | null;
+  /**
+   * The host this composer submits to - its tab's host, which is also the host
+   * its draft mirror uploaded blobs to. That equivalence is what makes
+   * `drafts.readBlob` the right second leg when submit has to resolve a
+   * hash-only image node's bytes.
+   */
+  readonly targetHostId: string | null;
+  /**
+   * The queued prompt this composer is currently editing, or `null` for an
+   * ordinary send. Part of the submit INTENT: `onSubmitMessage`'s destination
+   * is chosen from this id, so a preparation that started while editing Q must
+   * not deliver into whatever the composer is pointed at when it finishes.
+   */
+  readonly queueEditTargetId: string | null;
 }
 
 export interface ChatComposerSideChatInput {
@@ -176,8 +201,18 @@ export function useChatComposerSubmit(
     draftReadOnly,
     onSubmitMessage,
     onSideChat,
+    targetHostId,
+    queueEditTargetId,
   } = args;
   const appendMessage = useChatStore((state) => state.appendMessage);
+  // The LIVE queue-edit target, for the continuation to re-check. A captured
+  // value cannot answer "is this still the submit the user asked for" - that is
+  // precisely the question, and the closure froze its answer at preparation
+  // time. Same shape the other latest-value bridges in this tree use.
+  const queueEditTargetIdRef = useRef(queueEditTargetId);
+  useEffect(() => {
+    queueEditTargetIdRef.current = queueEditTargetId;
+  }, [queueEditTargetId]);
   const [pendingConflict, setPendingConflict] =
     useState<PendingSteerConflict | null>(null);
   const [annotationPreparationPending, setAnnotationPreparationPending] =
@@ -189,6 +224,11 @@ export function useChatComposerSubmit(
   const clearAcceptedDraft = useCallback((): void => {
     void submitComposerDraft(taskId);
     pickerStore.getState().reset();
+    // The inherited queue-edit document is gone with the send, so its
+    // host-custody claim goes with it. Hygiene only - a stale entry would leave
+    // a hash bare on a later send, which is what this composer did before any
+    // of this existed.
+    clearHostHeldImageHashes(taskId);
     editorRef.current?.clear();
     // A rejected send leaves the text in place, and dropping the keyboard
     // there would take the user away from the message they still have to fix.
@@ -269,6 +309,7 @@ export function useChatComposerSubmit(
 
       const submitPreparedDraft = (
         annotationImages: ReadonlyArray<AnnotationImageAtom>,
+        draftImageBase64ByHash: ReadonlyMap<string, string>,
       ): void => {
         if (submitBlocked()) return;
         // Re-read the document rather than comparing the `revision` captured
@@ -280,6 +321,20 @@ export function useChatComposerSubmit(
         const liveContent = editor.getJSON();
         const liveContentText =
           extractPlainTextFromComposerJSONContent(liveContent);
+        // Re-inline against the RE-READ document, not the captured one, for the
+        // same reason. An image node that appeared during the read keeps
+        // whatever payload it has: inline stays inline, and a hash nothing
+        // resolved is left hash-only for the host's dangling-hash guard, which
+        // is the only authority on whether that send may proceed.
+        //
+        // `restore.content` below deliberately keeps the UN-inlined document:
+        // it is what goes back into the composer on a failed send, and the
+        // composer's own shape is not the wire's. Its hashes stay rooted
+        // through `chat-session-store`'s restore-content root source.
+        const sendableContent = inlineHashOnlyImageBytes(
+          liveContent,
+          draftImageBase64ByHash,
+        );
         // Re-read the sidecar array for the same reason the document is
         // re-read: an annotation attached while the crop bytes resolved is
         // what the user is looking at, and the `clearDraft` below wipes it -
@@ -297,7 +352,7 @@ export function useChatComposerSubmit(
         });
         const submittedContent = appendImageAttachmentAtoms(
           buildSubmittedChatJSONContent(
-            liveContent,
+            sendableContent,
             pickerStore.getState().knownSlashCommands,
           ),
           annotationImages,
@@ -363,17 +418,79 @@ export function useChatComposerSubmit(
         finalizeSend(sendInput);
       };
 
-      if (annotationRecords.length === 0) {
-        submitPreparedDraft([]);
+      // Hash-only image nodes this client still owes bytes for. A hash the
+      // composer INHERITED from the host - the queued prompt a queue-edit
+      // re-opened - is already an epic attachment, so it travels bare exactly
+      // as it always has; re-inlining one would put megabytes back on a wire
+      // that has been carrying a 64-character hash since message editing
+      // existed. Keyed to this editor incarnation, so a re-created editor never
+      // carries a previous one's inheritance forward.
+      const incarnation = editor.getEditorIncarnation();
+      const hostHeld = hostHeldImageHashes(taskId, incarnation);
+      const pendingImageHashes = draftImageInliningNeeded(
+        editorContent,
+        hostHeld,
+      );
+      // The submit INTENT, captured whole. The incarnation alone cannot answer
+      // "is this still the submit the user asked for": `restoreQueuedEditDraft`
+      // and every other document REPLACEMENT go through `replaceDraft`, which
+      // swaps the document via `resetEpoch` WITHOUT recreating the editor. So a
+      // cancelled queue-edit passes an incarnation check, and the continuation
+      // would then send the restored, unrelated draft into the cancelled item's
+      // destination and clear it. `resetEpoch` moves on replacement and NOT on
+      // a keystroke (`setSnapshot` passes `bumpResetEpoch: false`), which is
+      // exactly the distinction this needs - ordinary typing must still reach
+      // the live-document re-read below.
+      //
+      // `resetEpoch` also bumps when a HOST document replaces the row, which
+      // looked at first like a source of spurious abandons on the routine
+      // upsert round-trip. It is not, and the reason is worth stating exactly,
+      // because an earlier version of this comment got it wrong: the composer's
+      // own dirty-write ACK does not call the apply path AT ALL - it updates the
+      // held revision and calls `rememberSynced` and nothing else
+      // (`draft-mirror-session.ts`'s dirty-write ACK). The apply-before-remember
+      // sequence belongs to `publishImmutable`, which is the STASH flow, not
+      // this one. Own subscribe echoes are suppressed twice over: by the
+      // local-dirty gate before the ACK, and by the equal held revision after
+      // it.
+      //
+      // What remains is a genuine replacement - another window, a clear, or a
+      // clean reconnect bootstrap. Abandoning there is the accepted behaviour,
+      // and note it includes a bootstrap whose content EQUALS the current text:
+      // nothing compares documents at that point, so an in-flight send can be
+      // cancelled with the text unchanged. Fail-safe - no send, no clear, the
+      // draft stands - and the user's next Enter goes through.
+      const intent = {
+        queueEditTargetId,
+        resetEpoch: readComposerDraftSnapshot(taskId).resetEpoch,
+      };
+
+      if (annotationRecords.length === 0 && pendingImageHashes.length === 0) {
+        submitPreparedDraft([], NO_DRAFT_IMAGE_BYTES);
         return;
       }
 
       annotationPrepFlight.current = true;
       setAnnotationPreparationPending(true);
-      void (async () => {
-        try {
+      // The captured document is the only thing still naming these bytes if the
+      // draft row is replaced mid-read, so it is a GC root for exactly as long
+      // as the preparation runs.
+      const holderId = `chat-composer-submit:${taskId}`;
+      // The hold/release try/finally lives in the helper, not here: a `try`
+      // without a `catch` inside a hook body is something the React Compiler
+      // cannot lower, and it would cost this whole hook its memoization.
+      void withHeldComposerContentImageRoots(
+        holderId,
+        editorContent,
+        async () => {
+          // Awaited BEFORE the reconcile loop, not beside it. As one leg of a
+          // `Promise.all` the image leg could finish while this one was still
+          // pending, and an image added during the remaining wait was never
+          // attempted - the loop had already stopped looking.
           const annotationImages =
-            await resolveAnnotationImageAtoms(annotationRecords);
+            annotationRecords.length === 0
+              ? EMPTY_ANNOTATION_IMAGES
+              : await resolveAnnotationImageAtoms(annotationRecords);
           if (annotationImages === null) {
             reportableErrorToast(
               "Couldn't attach the annotation image.",
@@ -389,12 +506,47 @@ export function useChatComposerSubmit(
             );
             return;
           }
-          submitPreparedDraft(annotationImages);
-        } finally {
+          await prepareDraftImageInlining({
+            initialHashes: pendingImageHashes,
+            // Resolved inside the continuation: a draft mirror is acquired and
+            // released as tiles mount, so the live session is the one that can
+            // answer.
+            target: draftImageByteTargetForHost(targetHostId),
+            readRequiredHashes: () => {
+              const live = editorRef.current;
+              if (live === null) return [];
+              return draftImageInliningNeeded(live.getJSON(), hostHeld);
+            },
+            // Synchronous with the final required-set read above it: no image
+            // can arrive between that check and this send.
+            commit: (draftImageBase64ByHash) => {
+              // A re-created editor is a DIFFERENT document. `editor` here is
+              // the handle captured before the read, so without this the send
+              // would carry the destroyed editor's content while
+              // `clearAcceptedDraft` cleared the live one - a stale prompt sent
+              // and a live one wiped.
+              if (editorRef.current?.getEditorIncarnation() !== incarnation) {
+                return;
+              }
+              // And the same document in the same editor can still be a
+              // different SUBMIT: the queue-edit destination may have been
+              // cancelled or switched, or the document replaced underneath.
+              if (
+                queueEditTargetIdRef.current !== intent.queueEditTargetId ||
+                readComposerDraftSnapshot(taskId).resetEpoch !==
+                  intent.resetEpoch
+              ) {
+                return;
+              }
+              submitPreparedDraft(annotationImages, draftImageBase64ByHash);
+            },
+          });
+        },
+        () => {
           annotationPrepFlight.current = false;
           setAnnotationPreparationPending(false);
-        }
-      })();
+        },
+      );
     },
     [
       activeTurnStatus,
@@ -407,7 +559,9 @@ export function useChatComposerSubmit(
       steerCapable,
       steerEnabled,
       steerProtocolSupported,
+      queueEditTargetId,
       submitBlocked,
+      targetHostId,
       taskId,
       toolbarStore,
     ],
@@ -482,6 +636,19 @@ export function useChatComposerSubmit(
     },
   };
 }
+
+/**
+ * The synchronous path's empty resolution map. Shared so the "nothing to
+ * re-inline" send reads as the deliberate case it is rather than allocating a
+ * map per keystroke-free submit.
+ */
+const NO_DRAFT_IMAGE_BYTES: ReadonlyMap<string, string> = new Map<
+  string,
+  string
+>();
+
+/** Shared empty for the no-annotation branch, so it allocates nothing. */
+const EMPTY_ANNOTATION_IMAGES: ReadonlyArray<AnnotationImageAtom> = [];
 
 interface ComposerDraftSidecars {
   readonly annotationRecords: ReadonlyArray<BrowserAnnotationRecord>;

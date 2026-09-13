@@ -119,6 +119,10 @@ import {
 import { useChatSessionHandle } from "@/lib/registries/chat-session-registry";
 import { useEpicParked } from "@/lib/epics/epic-parking";
 import { useEpicDraftGuard } from "@/lib/epics/use-epic-draft-guard";
+import {
+  holdComposerContentImageRoots,
+  releaseComposerContentImageRoots,
+} from "@/lib/composer/composer-content-image-roots";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import type { ChatMessage as ChatMessageModel } from "@/stores/composer/chat-store";
 import {
@@ -2252,6 +2256,22 @@ function useChatTileSessionViewModel(
   // `currentContent` from the saved message, so a pristine edit loses nothing
   // and must not hold the epic resident.
   useEpicDraftGuard(currentEpicId, activeInlineEdit?.dirty ?? false);
+  // The byte-custody twin of that veto. `landing-image-gc.reconcile` deletes
+  // every stored hash outside the live roots, and an inline edit's images are
+  // named by nothing else - not a composer-draft row, not a chat session slice -
+  // so without this a reconcile while an edit is open reaps the bytes the
+  // submit is about to inline. Not gated on `dirty`: a pristine edit still
+  // REFERENCES those hashes, and only the park question cares whether the user
+  // has typed.
+  useEffect(() => {
+    const holderId = `inline-edit:${node.id}`;
+    if (activeInlineEdit !== null) {
+      holdComposerContentImageRoots(holderId, activeInlineEdit.currentContent);
+    }
+    return () => {
+      releaseComposerContentImageRoots(holderId);
+    };
+  }, [activeInlineEdit, node.id]);
 
   const displayedMessages = useMemo(() => {
     if (activeInlineEdit === null) return renderedMessages;

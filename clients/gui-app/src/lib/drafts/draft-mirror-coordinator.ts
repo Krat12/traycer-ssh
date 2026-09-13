@@ -664,6 +664,24 @@ export function acquireDraftMirrorSession(
   return session;
 }
 
+/**
+ * The requester for a host this window currently holds a draft mirror on, or
+ * `null`.
+ *
+ * The same map `applyHostDocument` consults before it fetches a document's
+ * blobs, exposed so a READER can ask the same question. That equivalence is the
+ * point: a host with no mirror session here is a host this window never
+ * uploaded a draft blob to, so there is nothing for `drafts.readBlob` to find -
+ * and a requester built some other way would be addressing a host whose draft
+ * store this window has no relationship with.
+ */
+export function draftMirrorClientForHost(
+  hostId: string | null,
+): HostRequester<HostRpcRegistry> | null {
+  if (hostId === null) return null;
+  return sessionClients.get(hostId) ?? null;
+}
+
 export function releaseDraftMirrorSession(hostId: string): void {
   const existing = sessions.get(hostId);
   if (existing === undefined) return;

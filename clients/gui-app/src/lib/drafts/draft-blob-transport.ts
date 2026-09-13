@@ -142,7 +142,18 @@ async function readDraftBlobs(
   if (hashes.length === 0) return images;
   if (blobUnsupportedHosts.has(hostId)) return images;
   for (const sha256 of hashes) {
-    const existing = await getImageBytes(sha256);
+    // Contained, and the containment is the point: an unavailable or failing
+    // IndexedDB makes this reject, and OUTSIDE a catch that rejection escaped
+    // the whole read - taking the `drafts.readBlob` request below with it, so
+    // a host that had the bytes was never asked. A local-store fault is "not
+    // here", which is exactly the case the host leg exists for.
+    const existing = await getImageBytes(sha256).catch((error: unknown) => {
+      appLogger.warn("[draft-blobs] local image read failed", {
+        sha256,
+        error: describeLogError(error),
+      });
+      return undefined;
+    });
     if (existing !== undefined) {
       const mimeType = sniffImageMimeType(existing) ?? "image/png";
       images.set(sha256, { bytes: existing, mimeType });

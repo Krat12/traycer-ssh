@@ -89,6 +89,9 @@ import { useTaskProfileRateLimitSwitch } from "./use-task-profile-rate-limit-swi
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { useEpicAttachmentBytesPresence } from "@/lib/attachments/use-attachment-blob-src";
 import { useChatAttachmentByteReader } from "@/lib/attachments/use-chat-image-fetcher";
+import type { ImageBytes } from "@/lib/attachments/image-bytes";
+import { draftImageByteTargetForHost } from "@/lib/drafts/draft-image-byte-target";
+import { resolveDraftImageBytes } from "@/lib/drafts/resolve-draft-image-bytes";
 import { recordFocusedChat } from "@/stores/chat/last-focused-chat-store";
 import { usePromptStash } from "@/hooks/composer/use-prompt-stash";
 import {
@@ -511,7 +514,22 @@ function ChatComposerImpl(props: ChatComposerProps) {
   // the bound is what keeps a stash save from hanging on an unreachable image.
   // A capture deliberately survives composer unmount, so this read is not
   // coupled to component-lifecycle cancellation.
-  const readPromptStashImage = useChatAttachmentByteReader();
+  const readChatAttachmentBytes = useChatAttachmentByteReader();
+  // The chat reader above answers for a SENT image; a hash this composer is
+  // still holding is in neither the chat plane nor the epic doc, so the stash
+  // would refuse to capture exactly the drafts it exists to hold. Chat-first,
+  // because that leg fails fast and this one is purely additive behind it.
+  const readPromptStashImage = useCallback(
+    async (hash: string): Promise<ImageBytes | null> => {
+      const fromChat = await readChatAttachmentBytes(hash);
+      if (fromChat !== null) return fromChat;
+      return resolveDraftImageBytes(
+        hash,
+        draftImageByteTargetForHost(tabHostId),
+      );
+    },
+    [readChatAttachmentBytes, tabHostId],
+  );
   const promptStashSource = useChatPromptStashSource(taskId, onCancelQueueEdit);
   // Chat writes the draft store, but restore still requires the exact ready
   // editor generation that started the restore - a remount under the same
@@ -555,6 +573,11 @@ function ChatComposerImpl(props: ChatComposerProps) {
       draftReadOnly: authority.readOnly,
       onSubmitMessage,
       onSideChat,
+      targetHostId: tabHostId,
+      // The queued prompt this composer is pointed at, which is also what the
+      // tile's `onSubmitMessage` chooses its destination from - so it is part
+      // of the submit intent a preparation has to re-check before delivering.
+      queueEditTargetId: editingQueueItemId,
     });
   const attachmentPending = composerAttachmentPending(
     pastePending,

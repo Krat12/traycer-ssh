@@ -105,6 +105,8 @@ describe("chat-composer submit gate (path resolution)", () => {
           draftReadOnly: false,
           onSubmitMessage,
           onSideChat: null,
+          targetHostId: null,
+          queueEditTargetId: null,
         }),
       { initialProps: true },
     );
@@ -391,6 +393,8 @@ function mountSubmitHook(args: {
       draftReadOnly: false,
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
+      targetHostId: null,
+      queueEditTargetId: null,
     }),
   );
 }

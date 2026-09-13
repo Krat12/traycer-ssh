@@ -675,6 +675,8 @@ function mountSubmit(input: MountSubmitInput): {
         draftReadOnly: false,
         onSubmitMessage: props.onSubmitMessage,
         onSideChat: null,
+        targetHostId: null,
+        queueEditTargetId: null,
       }),
     {
       initialProps: toHookProps(input),

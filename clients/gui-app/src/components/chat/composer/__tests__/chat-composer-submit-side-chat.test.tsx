@@ -82,6 +82,8 @@ function mountSubmit(args: {
       draftReadOnly: false,
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: args.onSideChat,
+      targetHostId: null,
+      queueEditTargetId: null,
     }),
   );
 }

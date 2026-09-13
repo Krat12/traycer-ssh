@@ -61,6 +61,81 @@ export function appendImageAttachmentAtoms(
 }
 
 /**
+ * Every hash carried by an image node that has NO inline bytes of its own - the
+ * nodes whose rendering, stashing and sending all depend on some other store
+ * still holding the bytes.
+ *
+ * Deliberately not `collectImageAtoms().filter(...)`: an atom needs an `id` to
+ * exist at all, and a hash-only node with a malformed `id` is still a node the
+ * send has to account for.
+ */
+export function hashOnlyImageHashes(
+  content: JsonContent,
+): ReadonlyArray<string> {
+  const hashes = new Set<string>();
+  const visit = (node: JsonContent): void => {
+    if (node.type === "imageAttachment") {
+      const hash = hashOnlyImageHash(node);
+      if (hash !== null) hashes.add(hash);
+      return;
+    }
+    node.content?.forEach(visit);
+  };
+  visit(content);
+  return Array.from(hashes);
+}
+
+/** This node's hash iff it is an image node carrying no inline bytes. */
+function hashOnlyImageHash(node: JsonContent): string | null {
+  if (node.type !== "imageAttachment") return null;
+  const hash = stringValue(node.attrs?.hash);
+  if (hash === null) return null;
+  return stringValue(node.attrs?.b64content) === null ? hash : null;
+}
+
+/**
+ * Rewrite each hash-only image node whose hash is in `bytesByHash` to carry
+ * those bytes inline instead.
+ *
+ * The `hash` attr is DROPPED, not kept alongside: an image node carries exactly
+ * one payload, and this is the shape a fresh paste produces - which is what
+ * makes a re-inlined node indistinguishable on the wire from the inline path
+ * that has always been there. Nodes with nothing to inline keep their identity,
+ * so an unchanged subtree stays referentially equal for memoized renderers.
+ */
+export function inlineHashOnlyImageBytes(
+  content: JsonContent,
+  bytesByHash: ReadonlyMap<string, string>,
+): JsonContent {
+  if (bytesByHash.size === 0) return content;
+  return rewriteHashOnlyImageNodes(content, bytesByHash);
+}
+
+function rewriteHashOnlyImageNodes(
+  node: JsonContent,
+  base64ByHash: ReadonlyMap<string, string>,
+): JsonContent {
+  const hash = hashOnlyImageHash(node);
+  if (hash !== null) {
+    const b64content = base64ByHash.get(hash);
+    if (b64content === undefined) return node;
+    const { hash: _hash, ...rest } = node.attrs ?? {};
+    return { ...node, attrs: { ...rest, b64content } };
+  }
+  const children = node.content;
+  if (children === undefined) return node;
+  const next: JsonContent[] = [];
+  let changed = false;
+  for (const child of children) {
+    const rewritten = rewriteHashOnlyImageNodes(child, base64ByHash);
+    if (rewritten !== child) changed = true;
+    next.push(rewritten);
+  }
+  if (!changed) return node;
+  return { ...node, content: next };
+}
+
+/**
  * Content hash is the identity everywhere else (`excludeHashes`, the landing
  * image store), so exclusion is by hash - a pasted image that happens to share
  * a crop's file name must not vanish from the rendered message.

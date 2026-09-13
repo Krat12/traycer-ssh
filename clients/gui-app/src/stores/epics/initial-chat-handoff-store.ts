@@ -6,6 +6,8 @@ import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe
 import type { WorktreeIntent } from "@traycer/protocol/host/worktree-schemas";
 import type { ExplicitTilePlacement } from "@/lib/canvas/tile-open/intent";
 import type { EdgeDropPosition } from "@/stores/epics/canvas/tile-tree";
+import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
+import { blobHashesFromContent } from "@/lib/drafts/draft-write-codec";
 
 export type InitialChatHandoffStatus =
   | "pending"
@@ -426,3 +428,30 @@ function updateHandoff(
   });
   return updated;
 }
+
+/**
+ * A registered handoff's prompt is a GC root for its images.
+ *
+ * The new-chat create hands its document to this store and clears the composer
+ * draft SYNCHRONOUSLY, well before `epic.createChat` answers. Between those two
+ * moments the prompt exists only here, so a `landing-image-gc` reconcile in
+ * that window would reap the bytes of an image the initial message is still
+ * carrying - and the retry/fallback `send` the driver may run afterwards reads
+ * the same document. The root stands until the handoff is consumed or fails,
+ * which is strictly longer than "until `epic.createChat` returns" and is the
+ * span that actually matters.
+ *
+ * Registered here rather than in the draft mirror's root source so the walk
+ * lives beside the state it walks, mirroring `composer-draft-store.ts`.
+ */
+registerExtraImageRootSource({
+  hashes: () => {
+    const hashes: string[] = [];
+    for (const handoff of Object.values(
+      useInitialChatHandoffStore.getState().handoffs,
+    )) {
+      hashes.push(...blobHashesFromContent(handoff.content));
+    }
+    return hashes;
+  },
+});

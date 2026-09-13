@@ -146,6 +146,7 @@ import type { Attachment } from "@/lib/composer/types";
 import type { BrowserAnnotationRecord } from "@/lib/browser-view/annotation/browser-annotation-record";
 import { collectAnnotationImageHashes } from "@/lib/browser-view/annotation/browser-annotation-record";
 import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
+import { blobHashesFromContent } from "@/lib/drafts/draft-write-codec";
 import { addWithFifoEviction } from "@/lib/bounded-set";
 import type {
   RuntimeApprovalDecision,
@@ -2082,6 +2083,47 @@ function collectPendingAnnotationImageHashes(): ReadonlyArray<string> {
 
 registerExtraImageRootSource({
   hashes: collectPendingAnnotationImageHashes,
+});
+
+/**
+ * The same three slots, walked for the images in the recovery DOCUMENT rather
+ * than the annotation cards beside it.
+ *
+ * The annotation source above collects `browserAnnotations` only, which is the
+ * sidecar array - it says nothing about the `imageAttachment` nodes in the
+ * prompt itself. So a send whose upload failed, followed by a reconcile, lost
+ * the only bytes the restored draft could be re-inlined from: the composer had
+ * already cleared, the draft row was gone, and nothing else named the hash.
+ * Restoration hands the user back a prompt, and a prompt with a dead image in
+ * it is not the prompt they wrote.
+ *
+ * Separate from the annotation source rather than folded into it because the
+ * two answer different questions about the same records, and a reader of
+ * either should not have to untangle which half it is looking at.
+ */
+function collectPendingRestoreContentImageHashes(): ReadonlyArray<string> {
+  const hashes: string[] = [];
+  for (const sessionStore of liveChatSessionStores) {
+    const state = sessionStore.getState();
+    for (const pending of Object.values(state.pendingActions)) {
+      if (pending.restore !== null) {
+        hashes.push(...blobHashesFromContent(pending.restore.content));
+      }
+    }
+    for (const message of state.pendingUserMessages) {
+      hashes.push(...blobHashesFromContent(message.restore.content));
+    }
+    if (state.failedSendRestoration !== null) {
+      hashes.push(
+        ...blobHashesFromContent(state.failedSendRestoration.content),
+      );
+    }
+  }
+  return hashes;
+}
+
+registerExtraImageRootSource({
+  hashes: collectPendingRestoreContentImageHashes,
 });
 
 export function createChatSessionStore(
