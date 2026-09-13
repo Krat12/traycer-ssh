@@ -827,6 +827,14 @@ const PLAZA_WING_FIXTURES: ReadonlyArray<readonly [OfficeErrandKind, number]> =
 const PLAZA_FIXTURE_COL = 4;
 const PLAZA_WING_STEP = 23;
 const PLAZA_WING_PITCH = 3;
+/** A team board letters its own single tile, the one its art stands on. */
+const BOARD_PLATE_TILES = 1;
+/**
+ * The narrowest plate a NAME survives on. One tile is 25.6 px at close-up and a
+ * six-character name measures 48.8, so the ladder answers with initials there -
+ * a reading that looks like a different agent rather than like a short one.
+ */
+const PLATE_MIN_TILES = 2;
 const RECEPTION_COL = 3;
 const RECEPTION_WIDTH_TILES = 2;
 
@@ -1622,10 +1630,36 @@ function materializeRooms(
       pods: [],
       visitTile: { col, row: aisle },
     });
+    // A POD TOO NARROW TO LETTER BOTH ITS PLATE AND ITS BOARD CARRIES NO COUNT:
+    // the plate keeps the tile.
+    //
+    // The board stands on the pod's LAST tile, inside the plate's own span, so
+    // the two labels overlap horizontally in every pod whose name letters that
+    // far - and the only thing that ever separated them is vertical, the eight
+    // world pixels a `pod-plate` board hangs below a bare one. THAT CANNOT WORK
+    // AT ANY ZOOM: the separation scales with the camera and a plate's backing
+    // is a fixed fourteen pixels, so 8 world px is 12.8 at close-up and short by
+    // 1.2. Measured: 13 pairs in Towers at 309 and at 1,000, 2 at 12, 1 in
+    // Building - `TEAM-0-LEAD` printed 10.4 px into its own team's count.
+    //
+    // So the plate stops short of the tile its board letters, which is the rule
+    // T3 fixup 6 already wrote - a plate is its own arc segment wide - with the
+    // segment measured honestly: a board's tile is a FIXTURE's, like the
+    // partition beside it, not the plate's to letter over.
+    //
+    // And where that leaves the plate less than two tiles, the BOARD gives way
+    // instead: a two-desk pod cannot carry both readings, and a count on two
+    // desks is the fact those two desks already show, while a name cut to fit
+    // one tile comes out as manufactured initials (`A-ROOT` resolved to `AR`,
+    // measured) - which reads as wrong rather than as short, and is the rung
+    // T3 fixup 6 removed from the HQ board's ladder for that reason. The board
+    // PROP stays either way: it is furniture, and only its lettering is what a
+    // narrow pod has no room for.
+    const boardLettered = cols - BOARD_PLATE_TILES >= PLATE_MIN_TILES;
     sign(geometry, {
       kind: "plate",
       tile: { col, row: storey.row },
-      widthTiles: cols,
+      widthTiles: boardLettered ? cols - BOARD_PLATE_TILES : cols,
       text: text,
       ownerAgentId: owner,
       hostId: building.hostId,
@@ -1635,15 +1669,17 @@ function materializeRooms(
       // makes the renderer honour it rather than centring whatever it is given.
       rungs: roomRungs(packing.mode, room.solo, members.length),
     });
-    sign(geometry, {
-      kind: "board",
-      tile: { col: col + cols - 1, row: storey.row },
-      widthTiles: 1,
-      text: "",
-      ownerAgentId: owner,
-      hostId: building.hostId,
-      agentIds: members,
-    });
+    if (boardLettered) {
+      sign(geometry, {
+        kind: "board",
+        tile: { col: col + cols - 1, row: storey.row },
+        widthTiles: BOARD_PLATE_TILES,
+        text: "",
+        ownerAgentId: owner,
+        hostId: building.hostId,
+        agentIds: members,
+      });
+    }
     prop(geometry, "board", col + cols - 1, storey.row);
     if (
       col + cols < left + 21 &&
