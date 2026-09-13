@@ -5614,7 +5614,13 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
    *
    * The lever is FEED SETTLEMENT, which is what makes this sync rebuild rather
    * than extend: the first sync leaves `feedSettled` at its default false and
-   * the second turns it on, with the same roster and the same reduced motion.
+   * the second turns it on, with the same roster.
+   *
+   * MOTION GOES ON THEN REDUCED across the two, which this comment used to call
+   * "the same reduced motion" - wrong, and worth correcting because the ON half
+   * is load-bearing: the stroll that puts a body on the bench needs ticks to
+   * walk, so the first sync cannot be a reduced one. The fill sync is the
+   * reduced one, which is what makes the duplicate visible at zero ticks.
    *
    * TWO PREMISES ARE ASSERTED, not assumed, because the case is worthless if
    * settlement moved the furniture instead: the bench keeps its `seatId` AND its
@@ -5790,11 +5796,141 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
 
     // AND THE BENCH STILL WENT TO A WAITER, so this is not passing because the
     // claim quietly failed along with the departure.
-    const occupant = onSeatIn(scene, frameOf(scene), sitter.seat);
-    expect(occupant).not.toBe(sitter.id);
-    if (occupant !== null) {
-      expect(bookOf(scene).civicClaimOf(occupant)).toBe("lounge");
+    //
+    // A POSITIVE WITNESS, which the landed form was not: it asserted the
+    // occupant was not the departed agent and then read the claim under an
+    // `if`, and BOTH lines are satisfied by an EMPTY bench - the one outcome
+    // that would mean the departure and the claim had been lost together.
+    //
+    // NAMED IN THE BOOK FIRST, then drawn. Motion is on, so at the instant the
+    // body reaches the door its bench is EMPTY - measured: `expected null not to
+    // be null` - because the waiter is still crossing the courtyard to it. The
+    // claim is what "the bench went to a waiter" means at that moment; the
+    // arrival below is the same fact once the walk has had its ticks, and both
+    // are asserted of somebody who is not the agent that left.
+    const holder = bookOf(scene).occupant(sitter.seat.seatId);
+    expect(holder, `nobody took ${sitter.seat.seatId}`).not.toBeNull();
+    if (holder === null) return;
+    expect(holder).not.toBe(sitter.id);
+    expect(bookOf(scene).civicClaimOf(holder)).toBe("lounge");
+    let seated = false;
+    for (let step = 0; step < CIVIC_WALK_TICKS && !seated; step += 1) {
+      scene.tick(100);
+      seated = onSeatIn(scene, frameOf(scene), sitter.seat) === holder;
     }
+    expect(seated, `${holder} never reached ${sitter.seat.seatId}`).toBe(true);
+  });
+
+  /** Pixels between this agent's drawn feet and the seat it is walking to. */
+  function feetFromSeat(
+    scene: OfficeScene,
+    agentId: string,
+    seat: OfficeSeat,
+  ): number {
+    const here = characterRect(frameOf(scene), agentId);
+    const want = footRect(layoutOf(scene), seat.chairTile);
+    return Math.abs(here.x - want.x) + Math.abs(here.y - want.y);
+  }
+
+  /**
+   * READ W'S W1: the eviction has to be IDEMPOTENT for somebody already going
+   * home, because the target it reads is not debris.
+   *
+   * `yieldStrollsOnTakenSeats` asks the book every sync, and the answer does not
+   * change while the evicted stroller walks: the bench still belongs to its new
+   * claimant. The target cannot be cleared when the return starts either - it is
+   * still read on the way home, by `claimedSpotKeys`, which RESERVES the spot of
+   * somebody walking back from it, and by `slideCharacters`, which translates it
+   * when a growing layout moves the floor under a walker. Both are older than
+   * this eviction. So the missing half was the sweep's own question: is this
+   * character already on its way to its chair.
+   * Without it a second `returnToDesk` ran on every sync and `walkTo` restarted
+   * the walk from `startTileOf` - the ROUNDED tile - discarding the fraction the
+   * last tick had earned. At three tiles a second a 100ms tick earns 0.3 of one,
+   * so the rounding won every time and the walk never finished.
+   *
+   * TICK AND SYNC ALTERNATELY, which is what a live feed does. The input is the
+   * SAME OBJECT throughout: no roster, status or claim changes between them, so
+   * the only thing under test is the sweep meeting its own earlier work.
+   *
+   * THE FIRST ASSERTION IS THE ONE THAT NAMES THE DEFECT. A sync moves nobody -
+   * only ticks do - so the distance home is unchanged across one unless the walk
+   * was restarted, and a restart moves the walker BACK to the tile it had left.
+   * Arrival alone would red too, but it would red identically for a walk that
+   * merely dawdles, and the pair says which.
+   */
+  it("keeps an evicted stroller walking home across an unchanged sync", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 60, 9);
+    const idle = idleStatusById(epic);
+    const visible = existingIdsOf(epic);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const layout = layoutOf(scene);
+    if (
+      layout.floors
+        .flatMap((floor) => floor.errandSpots)
+        .every((spot) => spot.seatId === null)
+    ) {
+      context.skip(`${viewId} has no fixture that is also a seat`);
+      return;
+    }
+    const benchSeats = benchSeatsOf(layout);
+    const sitter = findSeatedStroller(scene, benchSeats);
+    if (sitter === null) {
+      throw new Error("no idle agent ever strolled to a bench");
+    }
+    // WHERE HOME IS, read the way `returnToDesk` reads it. A stroller holds no
+    // civic claim - `findSeatedStroller` requires that - so this is its own desk.
+    const home = bookOf(scene).effectiveSeat(sitter.id);
+    expect(home).not.toBeNull();
+    if (home === null) return;
+
+    const waiters = epic.agents
+      .filter((agent) => !agent.archived && agent.id !== sitter.id)
+      .map((agent) => agent.id)
+      .slice(0, benchSeats.length);
+    expect(waiters.length).toBe(benchSeats.length);
+    const waiting = new Map(idle);
+    for (const id of waiters) waiting.set(id, "awaiting");
+    // ONE INPUT, SYNCED REPEATEDLY. Motion is left on - the default - because a
+    // reduced-motion eviction seats the stroller at home outright and there is
+    // no walk to lose.
+    const claimed = sceneInput({
+      agents: epic.agents,
+      visibleAgentIds: visible,
+      statusById: waiting,
+    });
+    scene.sync(claimed);
+
+    // PREMISE: the bench changed hands and the stroller is WALKING, not sitting
+    // at home already. Without this the loop below could pass on a scene where
+    // no eviction ever happened.
+    expect(bookOf(scene).occupant(sitter.seat.seatId)).not.toBe(sitter.id);
+    expect(feetFromSeat(scene, sitter.id, home)).toBeGreaterThan(0);
+
+    let arrived = false;
+    for (let step = 0; step < CIVIC_WALK_TICKS && !arrived; step += 1) {
+      scene.tick(100);
+      const walked = feetFromSeat(scene, sitter.id, home);
+      scene.sync(claimed);
+      const synced = feetFromSeat(scene, sitter.id, home);
+      expect(
+        synced,
+        `sync ${String(step)} sent ${sitter.id} back from ${String(walked)} to ${String(synced)}`,
+      ).toBeLessThanOrEqual(walked);
+      arrived = onSeatIn(scene, frameOf(scene), home) === sitter.id;
+    }
+    expect(arrived, `${sitter.id} never got home from the bench`).toBe(true);
   });
 
   it("leaves outbreak overflow at its desk with its glyph when the ward is full", (context) => {
