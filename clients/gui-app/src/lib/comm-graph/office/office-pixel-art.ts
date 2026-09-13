@@ -938,15 +938,28 @@ function selectCharacterMap(ref: OfficeSpriteRef): SelectedMap {
   };
 }
 
+/**
+ * Whether this ref draws a prop flipped.
+ *
+ * ONE ANSWER, because two would drift - and did. `selectMap` decides what is
+ * drawn and `officeSpriteCacheKey` decides what that drawing is filed under,
+ * and a cache key that disagreed with the drawing about whether `facing`
+ * mattered handed back the wrong surface without ever calling `selectMap`.
+ *
+ * A prop outside the set ignores `facing` however it is set, so a stray
+ * `facing: "left"` on a desk can neither flip it nor give it a second entry.
+ */
+function isMirroredProp(ref: OfficeSpriteRef): boolean {
+  return MIRRORED_PROP_NAMES.has(ref.name) && ref.facing === "left";
+}
+
 function selectMap(ref: OfficeSpriteRef): SelectedMap {
   if (ref.name === "character") {
     return selectCharacterMap(ref);
   }
   return {
     map: PROP_MAPS[ref.name],
-    // A prop that is not in the set ignores `facing` however it is set, so a
-    // stray `facing: "left"` on a desk can never silently flip it.
-    mirror: MIRRORED_PROP_NAMES.has(ref.name) && ref.facing === "left",
+    mirror: isMirroredProp(ref),
   };
 }
 
@@ -1040,7 +1053,19 @@ export function officeSpriteCacheKey(
   theme: OfficeTheme,
 ): string {
   if (ref.name !== "character") {
-    return `${ref.name}|${theme}|${ref.tint ?? ""}`;
+    // THE KEY VARIES EXACTLY WHERE THE PIXELS DO. `facing` became a
+    // pixel-varying input for the mirrored names when `selectMap` started
+    // honouring it, and a key that ignored it meant the first facing drawn
+    // won for that name across every canvas: a van drawn facing right, then
+    // the same name and theme facing left, got the cached right-facing
+    // surface back without `selectMap` being consulted at all.
+    //
+    // What is appended is the MIRROR DECISION rather than the raw facing,
+    // which is the same thing `selectMap` computes. Every other prop's key is
+    // therefore byte-identical to what it was - a pin says so - and a facing
+    // that does not mirror (a desk's, or a van's `right`) adds no entry.
+    const mirrored = isMirroredProp(ref);
+    return `${ref.name}|${theme}|${ref.tint ?? ""}${mirrored ? "|left" : ""}`;
   }
   const appearance = ref.appearance;
   const look =
