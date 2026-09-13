@@ -6860,8 +6860,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: failures("replace-a", "replace-b"),
       }),
     );
-    // The road is full with this room's ambulance plus an unrelated room's
-    // ambulance; same-room coalescing makes two target-room vans impossible.
+    // In this immediate, unticked setup, the road is full with this room's
+    // ambulance plus an unrelated room's ambulance; same-room coalescing
+    // makes two target-room vans impossible. Later, a departing and arriving
+    // pair for one room is legal and is covered by its own case.
     const fullCap = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
     expect(fullCap).toHaveLength(2);
     expect(
@@ -6892,8 +6894,8 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
   it("keeps inherited ambulance riders waiting when a fire engine replaces their van", (context) => {
     const specialIds = new Map<number, string>([
       [0, "a"],
-      [1, "b"],
-      [2, "c"],
+      [39, "b"],
+      [1, "c"],
     ]);
     const agents: ReadonlyArray<OfficeAgentInput> = Array.from(
       { length: 40 },
@@ -6919,25 +6921,6 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       context.skip("this view has no road or two-bed infirmary yet (K2)");
       return;
     }
-    scene.sync(
-      sceneInput({
-        agents,
-        visibleAgentIds: visible,
-        statusById: failures("inherit-a", "inherit-b"),
-      }),
-    );
-    scene.sync(
-      sceneInput({
-        agents,
-        visibleAgentIds: visible,
-        statusById: failures("inherit-a", "inherit-b", "inherit-c"),
-      }),
-    );
-    expect(
-      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
-        (vehicle) => vehicle.vehicleKind,
-      ),
-    ).toContain("fire-engine");
     const projector = view.painter.projector(layout);
     const kerbs = layout.floors.flatMap((floor) =>
       floor.civic.flatMap((room) => {
@@ -6950,6 +6933,58 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     const atKerb = (vehicle: OfficeVehicleDrawable): boolean =>
       kerbs.some((point) => point.x === vehicle.x && point.y === vehicle.y);
     const names = infirmaryNames(layout);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("inherit-a", "inherit-b"),
+      }),
+    );
+    const waitForAmbulance = (): boolean => {
+      for (let step = 0; step < 500; step += 1) {
+        const standingAmbulance = vehicleDrawables(
+          scene.frame(1, WHOLE_WORLD),
+        ).some(
+          (vehicle) => vehicle.vehicleKind === "ambulance" && atKerb(vehicle),
+        );
+        if (standingAmbulance) return true;
+        scene.tick(100);
+      }
+      return false;
+    };
+    expect(
+      waitForAmbulance(),
+      "could not observe the old ambulance standing at its kerb",
+    ).toBe(true);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("inherit-a", "inherit-b", "inherit-c"),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+        (vehicle) => vehicle.vehicleKind,
+      ),
+    ).toContain("fire-engine");
+    const waitForBedlessRider = (): boolean => {
+      for (let step = 0; step < 200; step += 1) {
+        const frame = scene.frame(1, WHOLE_WORLD);
+        if (
+          !frame.awayAgentIds.has("inherit-c") &&
+          !namesInfirmary(names, scene.whereabouts("inherit-c") ?? "")
+        ) {
+          return true;
+        }
+        scene.tick(100);
+      }
+      return false;
+    };
+    expect(
+      waitForBedlessRider(),
+      "the threshold-triggering rider should settle at its fallback desk",
+    ).toBe(true);
     // Its own function to stay inside the complexity ceiling: a loop that
     // records four independent firsts is all branches, and inlining it puts
     // the case over on its own.
@@ -6995,6 +7030,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // that case the contract's 12s ceiling is the applicable rider bound.
     const riderBound = settledTick ?? kerbTick + 120;
     const minimumDwell = Math.max(40, Math.min(riderBound - kerbTick, 120));
+    expect(minimumDwell).toBeGreaterThan(40);
     expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
   });
 
@@ -7059,10 +7095,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       }
       scene.tick(100);
     }
-    if (!reachedKerb) {
-      context.skip("could not observe the ambulance standing at its kerb");
-      return;
-    }
+    expect(
+      reachedKerb,
+      "could not observe the ambulance standing at its kerb",
+    ).toBe(true);
     scene.frame(1, { x: 0, y: 0, width: 8, height: 8 });
     scene.sync(
       sceneInput({
@@ -7099,14 +7135,14 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         ]),
       }),
     );
-    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the first police car at its kerb");
-      return;
-    }
-    if (!waitForVehicleToLeaveKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the first police car departing");
-      return;
-    }
+    expect(
+      waitForVehicleAtKerb(scene, kerb, "police-car"),
+      "could not observe the first police car at its kerb",
+    ).toBe(true);
+    expect(
+      waitForVehicleToLeaveKerb(scene, kerb, "police-car"),
+      "could not observe the first police car departing",
+    ).toBe(true);
     scene.sync(
       sceneInput({
         agents: AGENTS,
@@ -7142,14 +7178,14 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         ]),
       }),
     );
-    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the first police car at its kerb");
-      return;
-    }
-    if (!waitForVehicleToLeaveKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the first police car departing");
-      return;
-    }
+    expect(
+      waitForVehicleAtKerb(scene, kerb, "police-car"),
+      "could not observe the first police car at its kerb",
+    ).toBe(true);
+    expect(
+      waitForVehicleToLeaveKerb(scene, kerb, "police-car"),
+      "could not observe the first police car departing",
+    ).toBe(true);
     scene.sync(
       sceneInput({
         agents: AGENTS,
@@ -7186,10 +7222,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: attention("join-a"),
       }),
     );
-    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the original police car at its kerb");
-      return;
-    }
+    expect(
+      waitForVehicleAtKerb(scene, kerb, "police-car"),
+      "could not observe the original police car at its kerb",
+    ).toBe(true);
     const joiners = ["join-b", "join-c", "join-d", "join-e"];
     let dwellTicks = 0;
     for (const [joinIndex, ticksUntilJoin] of [20, 30, 30, 30].entries()) {
@@ -7264,10 +7300,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         ]),
       }),
     );
-    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
-      context.skip("could not observe the police car at its kerb");
-      return;
-    }
+    expect(
+      waitForVehicleAtKerb(scene, kerb, "police-car"),
+      "could not observe the police car at its kerb",
+    ).toBe(true);
     for (let tick = 0; tick < 30; tick += 1) scene.tick(100);
     scene.sync(
       sceneInput({
@@ -7321,10 +7357,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: failures("standing-a", "standing-b", "standing-c"),
       }),
     );
-    if (!waitForVehicleAtKerb(scene, kerb, "fire-engine")) {
-      context.skip("could not observe the standing fire engine at its kerb");
-      return;
-    }
+    expect(
+      waitForVehicleAtKerb(scene, kerb, "fire-engine"),
+      "could not observe the standing fire engine at its kerb",
+    ).toBe(true);
     scene.sync(
       sceneInput({
         agents,
@@ -7344,6 +7380,11 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: failures("standing-c", "standing-d"),
       }),
     );
+    const standingDWhere = scene.whereabouts("standing-d") ?? "";
+    expect(
+      namesInfirmary(infirmaryNames(layout), standingDWhere),
+      "standing-d should have received the free infirmary bed",
+    ).toBe(true);
     const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
     expect(
       vehicles.filter((vehicle) => vehicle.vehicleKind === "fire-engine"),
@@ -7529,6 +7570,11 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // THE CEILING, which the lower bound alone never checked: a vehicle that
     // waited thirty seconds satisfied "capped at twelve" perfectly well,
     // because the watch runs for fifty and nothing here looked at the top.
+    // A position watch can observe one tick late at the ceiling: the source
+    // changes phase and resets elapsed at 12s, while the departing vehicle is
+    // still drawn at the kerb at elapsed zero. With 100ms ticks, a forced-
+    // ceiling fixture may therefore see its first off-kerb frame at tick 121;
+    // this two-agent fixture is not required to reach that boundary.
     expect(leftKerbTick - kerbTick).toBeLessThanOrEqual(120);
     // AND THAT THE RIDER IS WHAT SET IT. Without this the floor alone could
     // satisfy the bound above, and a vehicle that ignored its rider entirely
@@ -7868,6 +7914,70 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     expect(maxVehicles).toBe(1);
     expect(vehicleDrawables(sceneB.frame(1, WHOLE_WORLD))).toHaveLength(0);
     expect(sceneBTicks).toBeGreaterThan(sceneATicks);
+  });
+
+  it("viewport-gates a late join without changing the trip's departure time", (context) => {
+    const seed = sceneInput({ agents: AGENTS, visibleAgentIds: BOTH });
+    const probe = newVehicleScene();
+    probe.sync(seed);
+    const layout = layoutOf(probe);
+    const road = layout.floors[0].road;
+    const kerb = civicKerbPoint(layout, "help-desk");
+    if (road === null || kerb === null) {
+      context.skip("this view has no road or help-desk kerb yet (K2)");
+      return;
+    }
+
+    const dwellAfterArrival = (
+      join: "none" | "offscreen" | "onscreen",
+    ): number => {
+      const scene = newVehicleScene();
+      scene.sync(seed);
+      scene.sync(
+        sceneInput({
+          agents: AGENTS,
+          visibleAgentIds: BOTH,
+          statusById: attention("alpha"),
+        }),
+      );
+      expect(
+        waitForVehicleAtKerb(scene, kerb, "police-car"),
+        "could not observe the waiting police car at its kerb",
+      ).toBe(true);
+      for (let tick = 0; tick < 30; tick += 1) scene.tick(100);
+      if (join === "offscreen") {
+        // Mutant under test: viewport gate moved below `standingFor`.
+        scene.frame(1, { x: 0, y: 0, width: 8, height: 8 });
+      }
+      if (join !== "none") {
+        scene.sync(
+          sceneInput({
+            agents: AGENTS,
+            visibleAgentIds: BOTH,
+            statusById: attention("alpha", "beta"),
+          }),
+        );
+      }
+      for (let tick = 0; tick < 200; tick += 1) {
+        scene.tick(100);
+        const stillAtKerb = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+          (vehicle) =>
+            vehicle.vehicleKind === "police-car" && atPoint(vehicle, kerb),
+        );
+        if (!stillAtKerb) return tick + 1;
+      }
+      return -1;
+    };
+
+    const controlDwell = dwellAfterArrival("none");
+    const offscreenDwell = dwellAfterArrival("offscreen");
+    const onscreenDwell = dwellAfterArrival("onscreen");
+    expect(controlDwell).toBeGreaterThan(0);
+    expect(offscreenDwell).toBe(controlDwell);
+    // The positive control proves beta actually joins when the kerb is on
+    // screen: after 3s already elapsed, the 4s floor starts over at the join.
+    expect(onscreenDwell).toBeGreaterThanOrEqual(40);
+    expect(onscreenDwell).toBeGreaterThan(controlDwell);
   });
 
   it("draws exactly one drawable per vehicle and gives it no hit region", (context) => {
