@@ -3897,7 +3897,9 @@ export class OfficeScene {
       phase: "arrive",
       elapsedMs: 0,
       sinceJoinMs: 0,
-      facing: this.roadFacingAt(floor.road, 0, 1),
+      // The seed, and the one place a default is honest: a vehicle being
+      // created has no facing to keep.
+      facing: this.roadFacingAt(floor.road, 0, 1, "right"),
     });
   }
 
@@ -4014,7 +4016,13 @@ export class OfficeScene {
       const travelled = this.tilesTravelled(vehicle.elapsedMs);
       const legs = pathLength(road.tiles, 0, kerb);
       if (travelled < legs) {
-        vehicle.facing = this.facingAlong(road, 0, kerb, travelled);
+        vehicle.facing = this.facingAlong({
+          road,
+          from: 0,
+          to: kerb,
+          travelled,
+          current: vehicle.facing,
+        });
         return true;
       }
       vehicle.phase = "wait";
@@ -4046,12 +4054,13 @@ export class OfficeScene {
     const travelled = this.tilesTravelled(vehicle.elapsedMs);
     const legs = pathLength(road.tiles, kerb, road.tiles.length - 1);
     if (travelled >= legs) return false;
-    vehicle.facing = this.facingAlong(
+    vehicle.facing = this.facingAlong({
       road,
-      kerb,
-      road.tiles.length - 1,
+      from: kerb,
+      to: road.tiles.length - 1,
       travelled,
-    );
+      current: vehicle.facing,
+    });
     return true;
   }
 
@@ -4125,29 +4134,42 @@ export class OfficeScene {
    * would drive backwards there. A segment with no horizontal component at all
    * leaves the facing alone rather than picking one.
    */
-  private facingAlong(
-    road: OfficeRoad,
-    from: number,
-    to: number,
-    travelled: number,
-  ): OfficeFacing {
+  private facingAlong(args: {
+    readonly road: OfficeRoad;
+    readonly from: number;
+    readonly to: number;
+    readonly travelled: number;
+    /** What it points at now, which is the answer wherever there is no turn. */
+    readonly current: OfficeFacing;
+  }): OfficeFacing {
+    const { current, from, road, to, travelled } = args;
     const at = tileAlong(road.tiles, from, to, travelled);
-    return this.roadFacingAt(road, at.index, at.step);
+    return this.roadFacingAt(road, at.index, at.step, current);
   }
 
   private roadFacingAt(
     road: OfficeRoad,
     index: number,
     step: number,
+    current: OfficeFacing,
   ): OfficeFacing {
     const tiles = road.tiles;
     const next = index + step;
-    if (next < 0 || next >= tiles.length || index === next) return "right";
+    // OFF THE END OF THE ROAD IS NOT A DIRECTION. There is no next tile to
+    // take a bearing from, so the vehicle keeps the one it has - answering
+    // `right` here turned every van to face right as it ran out of road.
+    if (next < 0 || next >= tiles.length || index === next) return current;
     const here = this.footPoint(tiles[index].col, tiles[index].row);
     const there = this.footPoint(tiles[next].col, tiles[next].row);
     if (there.x > here.x) return "right";
     if (there.x < here.x) return "left";
-    return "right";
+    // A PURELY VERTICAL SEGMENT IS NOT A DIRECTION EITHER, which is what the
+    // doc above has always claimed and what this line did not do. Every road
+    // at this base is a straight run in `+col`, so no plan reaches it yet -
+    // but `OfficeRoad` is a polyline and the isometric lanes are promised, and
+    // on those a leg that projects straight down would have snapped a van to
+    // `right` mid-drive.
+    return current;
   }
 
   // ---- Character animation ------------------------------------------- //
