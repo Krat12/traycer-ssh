@@ -3374,9 +3374,24 @@ function roomIdOfTile(
 /**
  * Seat ids, and who owns each seat.
  *
- * The id is `"<host>/<floor>/<room>/<n>"`, and `n` counts within that room in
- * packing order - which is creation order, so an agent joining a room takes the
- * next number and leaves every number before it alone.
+ * The id is `"<host>/<room>/<n>"`, and `n` counts within that room in packing
+ * order - which is creation order, so an agent joining a room takes the next
+ * number and leaves every number before it alone.
+ *
+ * NO FLOOR ORDINAL, which is X3 and the same defect the civic room ids had. A
+ * floor index is a POSITION in the partition's host-id ordering, so one host
+ * arriving lexically earlier renamed every desk on every later storey: the book's
+ * claims named seats that no longer existed, and what a held desk is was decided
+ * again from the plan's own packing rather than from what the agent was holding.
+ * Nothing moved when it happened - measured, `host-b/0/root-b/2@10,11` becoming
+ * `host-b/1/root-b/2@10,11` - which is exactly why it survived so long.
+ *
+ * THE HOST ALREADY NAMES THE STOREY here: this view lays one floor per host, so
+ * the ordinal was never telling the ids apart. Measured over four fixtures -
+ * two-hosts at 120 and 12, many-roots at 60, triage at 309 - no `(host, room)`
+ * group spans two floors, so no two desks share a name without it. The storeyed
+ * pair are the opposite case and keep their ordinal: one host owns many storeys
+ * there, and `(host, room)` spans five of them at 120 agents.
  */
 function decorateDesks(
   placed: ReadonlyMap<string, PlacedDesk>,
@@ -3389,11 +3404,7 @@ function decorateDesks(
     const floorIndex = floorIndexOfRow(floors, desk.deskTile.row);
     const hostId = floors[floorIndex].hostId;
     const roomId = roomIdOfTile(rooms, desk.deskTile);
-    const group = [
-      hostId ?? SEAT_ID_NONE,
-      floorIndex,
-      roomId ?? SEAT_ID_NONE,
-    ].join("/");
+    const group = [hostId ?? SEAT_ID_NONE, roomId ?? SEAT_ID_NONE].join("/");
     const index = nextInRoom.get(group) ?? 0;
     nextInRoom.set(group, index + 1);
     desks.set(agentId, {

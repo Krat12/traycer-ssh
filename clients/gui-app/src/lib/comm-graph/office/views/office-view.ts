@@ -168,10 +168,13 @@ export interface OfficePainter {
    * occupant's box at. They took it from whichever prop the owner happened to
    * have, which for a patient means its own DESK: correct-looking while that
    * desk is on screen, and gone the moment the frame culls the building the
-   * patient came from. A bed nobody can hit is a bed with no hover card, nothing
-   * for a click to select and no ring when Find matches its occupant - the three
-   * readers that go through the regions - while the patient is plainly drawn
-   * lying in it.
+   * patient came from. What that costs is what reads the regions: no hover card
+   * and no click anywhere the FURNITURE is the only thing drawn, and a Find match
+   * that rings the body alone, because the ring is drawn over the regions the
+   * matched agent has and the bed's extent is no longer among them. The patient's
+   * own character still answers for the pixels its body covers - this was never a
+   * patient nobody could select - and the directory, the playback and the "where"
+   * line derive their answers elsewhere and never noticed.
    *
    * It is not the scene's sum to do. The depth scale is the painter's - the
    * isometric one biases per kind and breaks ties on `col + row`, and a number

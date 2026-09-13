@@ -6614,9 +6614,12 @@ export class OfficeScene {
     const actorDepths = deepestByOwner(actors);
     const entries: DepthOrderedRegion[] = [];
     // THE WHOLE SEAT, at the only depth all of it is at least as deep as. Its
-    // declared box (D53) is what culling, hover and the camera already use,
-    // and every point of it still resolves to its occupant - just no longer
-    // at the depth of whichever part happened to be drawn last.
+    // declared box (D53) is what culling, hover and the camera already use, and
+    // where a seat gets a region at all, every point of that box still resolves
+    // to its occupant - just no longer at the depth of whichever part happened to
+    // be drawn last. WHERE IT GETS ONE is `seatRegionDepth`'s answer: a painter
+    // that says its civic seat's furniture is not the seat's own gives it no
+    // region here, and that box then resolves to nobody.
     for (const seated of seats) {
       const agentId = seated.agentId;
       if (agentId === null) continue;
