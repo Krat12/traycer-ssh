@@ -1937,6 +1937,28 @@ export class OfficeScene {
       if (!this.errandMustEnd(character.agentId)) continue;
       this.returnToDesk(character);
     }
+    // NO CIVIC WALK SURVIVES A SUPPRESSED SYNC, whichever pass made it.
+    //
+    // The settlement at the top of this method only ever catches walks
+    // already in flight from an EARLIER sync: it runs before every pass that
+    // can create one. Each creator was therefore gated on its own, and the
+    // third of them was missed - `spawnAtDoor` routes a readmitted agent from
+    // the door to its EFFECTIVE seat, which may be a held civic chair, and
+    // consults nothing. `walkTo` (so `returnToDesk`) and `startCivicWalk` do
+    // consult it; `startQueueWalk` targets the counter and can never be civic.
+    //
+    // Stated once here instead, after the last creator, so a fourth door
+    // cannot open the same hole a fourth time. On `motionSuppressed()` rather
+    // than on the transition into it: a sync taken IN a suppressed mode owes
+    // the same stillness as the sync that entered one.
+    //
+    // Before the dispatch below, which asks who is still on their feet - so it
+    // reads the settled floor it already sees for the two gated creators.
+    //
+    // The scope comes free from the predicate: an ordinary readmitted agent
+    // holds no civic claim, so `walkingToCivicSeat` leaves it walking in from
+    // the door exactly as before.
+    if (this.motionSuppressed()) this.settleCivicWalks();
     // LAST, after all three passes and after the errand-end loop, because
     // every one of them is something a dispatch reads. A police car asks who
     // just got a queue slot, and the kerb wait asks who is still on their
