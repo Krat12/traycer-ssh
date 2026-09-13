@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentAppearance } from "@/lib/comm-graph/office/office-appearance";
+import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
@@ -25,13 +26,17 @@ import {
 import type {
   OfficeAgentInput,
   OfficeAgentStatus,
+  OfficeCivicKind,
+  OfficeCivicRoom,
   OfficeDrawable,
+  OfficeFloor,
   OfficeLayout,
   OfficeLod,
   OfficeRect,
   OfficeSeat,
   OfficeSceneInput,
   OfficeSize,
+  OfficeTileRect,
 } from "@/lib/comm-graph/office/office-types";
 import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type {
@@ -49,6 +54,7 @@ import {
   planTowers,
   TOWERS_VIEW,
 } from "../oblique/oblique-plan";
+import { OBLIQUE_FIXTURES } from "../oblique/oblique-painter";
 
 /**
  * A plate's width in the face it is ACTUALLY DRAWN IN, derived the same way
@@ -281,9 +287,18 @@ function assertPlanContract(layout: OfficeLayout, epic: OfficeTestEpic): void {
   assertSigns(layout, agentIds);
 }
 
+/**
+ * A STOREY'S OWN SLOTS per floor, which is what "nine seats per storey" counts.
+ *
+ * The civic seats on a plaza belong to the host's four rooms rather than to any
+ * storey's packing, and there are as many of them as the population asks for -
+ * at 309 agents the plaza carries eight beds and sixteen chairs, which would
+ * drown the number this is about.
+ */
 function seatsByFloor(layout: OfficeLayout): Map<number, number> {
   const result = new Map<number, number>();
   for (const seat of layout.seats.values()) {
+    if (seat.civicRoomId !== null) continue;
     result.set(seat.floorIndex, (result.get(seat.floorIndex) ?? 0) + 1);
   }
   return result;
@@ -680,7 +695,14 @@ describe("Building packing", () => {
       (seat) => !occupancy.has(seat.seatId) && seat.roomId !== null,
     );
     const freeBullpenSeats = [...before.seats.values()].filter(
-      (seat) => !occupancy.has(seat.seatId) && seat.roomId === null,
+      (seat) =>
+        !occupancy.has(seat.seatId) &&
+        seat.roomId === null &&
+        // A bed and a waiting-room chair carry no `roomId` either, and neither
+        // is a seat an ARRIVAL can be given: the seat book hands those out, for
+        // a crash or a wait, and hands them back. Counting them here would ask
+        // for more arrivals than there are desks to borrow.
+        seat.civicRoomId === null,
     );
     expect(freeRoomSeats.length).toBeGreaterThan(0);
     const template = source.agents.at(0);
@@ -1674,5 +1696,413 @@ describe("oblique painters: fixup 6 rule 4 - one reserve label per storey, not o
     // Not vacuous: at least one storey with an empty desk was actually
     // checked.
     expect(floorsChecked).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The plaza's four civic rooms.
+ *
+ * Towers and Building share one plaza builder, so every case here runs both
+ * modes at both viewports: the bay's width is a function of how many wings the
+ * viewport bought, and that is exactly the parameter the bed count rides on.
+ */
+describe("plaza civic rooms", () => {
+  const MODES: ReadonlyArray<readonly [string, typeof planTowers]> = [
+    ["towers", planTowers],
+    ["building", planBuilding],
+  ];
+  /** Every sprite this view stands up for an errand, from the recipe itself. */
+  const FIXTURE_SPRITES = new Set(
+    Object.values(OBLIQUE_FIXTURES).flatMap((parts) =>
+      parts.map((part) => part.name),
+    ),
+  );
+  const CIVIC_KINDS: ReadonlyArray<OfficeCivicKind> = [
+    "infirmary",
+    "waiting-room",
+    "help-desk",
+    "archive",
+  ];
+
+  interface PlazaCase {
+    readonly layout: OfficeLayout;
+    readonly floor: OfficeFloor;
+    readonly index: number;
+    readonly agents: number;
+    readonly label: string;
+  }
+
+  function plazasOf(layout: OfficeLayout): ReadonlyArray<number> {
+    return layout.floors.flatMap((floor, index) =>
+      floor.civic.length > 0 ? [index] : [],
+    );
+  }
+
+  /**
+   * Every plaza of every mode at every scale and viewport, one at a time.
+   *
+   * The driver exists because these cases would otherwise be four loops deep
+   * before their first assertion, and because it can carry the FALSIFIER for
+   * all of them: each case walks `floor.civic`, so a view that quietly stopped
+   * planning civic rooms would run no assertions at all and report green. The
+   * count check below is what turns that into a red.
+   */
+  function eachPlaza(
+    shape: OfficeTestEpicShape,
+    scales: ReadonlyArray<number>,
+    check: (entry: PlazaCase) => void,
+  ): void {
+    let seen = 0;
+    for (const [name, plan] of MODES) {
+      for (const agents of scales) {
+        for (const viewport of VIEWPORTS) {
+          const epic = makeTestEpic(shape, agents, 1);
+          const layout = plan(initialInput(epic, viewport));
+          const label = `${name}/${shape}/${agents}/${viewport.width}`;
+          const plazas = plazasOf(layout);
+          expect(
+            plazas.length,
+            `${label}: no storey plans a civic room`,
+          ).toBeGreaterThan(0);
+          for (const index of plazas) {
+            seen += 1;
+            check({
+              layout,
+              floor: layout.floors[index],
+              index,
+              agents,
+              label: `${label}/${index}`,
+            });
+          }
+        }
+      }
+    }
+    expect(seen, "no plaza was checked").toBeGreaterThan(0);
+  }
+
+  function roomOf(floor: OfficeFloor, kind: OfficeCivicKind): OfficeCivicRoom {
+    const found = floor.civic.find((room) => room.kind === kind);
+    if (found === undefined) throw new Error(`expected a ${kind}`);
+    return found;
+  }
+
+  function keysOf(rect: OfficeTileRect): ReadonlyArray<string> {
+    const keys: string[] = [];
+    for (let row = rect.row; row < rect.row + rect.rows; row += 1)
+      for (let col = rect.col; col < rect.col + rect.cols; col += 1)
+        keys.push(`${col}/${row}`);
+    return keys;
+  }
+
+  function civicKeysOf(floor: OfficeFloor): Set<string> {
+    return new Set(floor.civic.flatMap((room) => keysOf(room.bounds)));
+  }
+
+  function propsByTile(layout: OfficeLayout): Map<string, Set<string>> {
+    const found = new Map<string, Set<string>>();
+    for (const prop of layout.props) {
+      const key = `${prop.tile.col}/${prop.tile.row}`;
+      const bucket = found.get(key) ?? new Set<string>();
+      bucket.add(prop.sprite.name);
+      found.set(key, bucket);
+    }
+    return found;
+  }
+
+  it("gives every host's plaza the four rooms, and no other storey any", () => {
+    eachPlaza("two-hosts", [309], ({ layout, floor, index, label }) => {
+      // A ROOM IS PHYSICAL, so a host has one of each, on the one storey with a
+      // way in from outside. No aliases: an alias would draw the bay's block
+      // once per storey in the overview, and hand K3 two ids for one kerb.
+      expect(obliqueIsPlaza(layout, index), label).toBe(true);
+      expect(
+        floor.civic.map((room) => room.kind),
+        label,
+      ).toEqual(CIVIC_KINDS);
+      expect(floor.road, label).not.toBeNull();
+      for (const room of floor.civic) {
+        expect(room.floorIndex, `${label}/${room.kind}`).toBe(index);
+        expect(room.hostId, `${label}/${room.kind}`).toBe(floor.hostId);
+      }
+    });
+    for (const [name, plan] of MODES) {
+      const epic = makeTestEpic("two-hosts", 309, 1);
+      const layout = plan(initialInput(epic, VIEWPORTS[0]));
+      for (const [index, floor] of layout.floors.entries()) {
+        if (obliqueIsPlaza(layout, index)) continue;
+        expect(floor.civic, `${name}/${index}`).toEqual([]);
+        expect(floor.road, `${name}/${index}`).toBeNull();
+      }
+      // Every agent's host has a plaza it can be carried to.
+      const hosts = new Set(
+        plazasOf(layout).map((index) => layout.floors[index].hostId),
+      );
+      for (const agent of epic.agents)
+        expect(hosts.has(agent.hostId ?? null), name).toBe(true);
+      expect(hosts.size, name).toBe(
+        new Set(epic.agents.map((agent) => agent.hostId ?? null)).size,
+      );
+    }
+  });
+
+  it("sizes the ward and the chair run from the host's population", () => {
+    eachPlaza("triage", SCALES, ({ floor, agents, label }) => {
+      const want = civicCapacityFor(agents);
+      const beds = roomOf(floor, "infirmary").seatIds.length;
+      const chairs = roomOf(floor, "waiting-room").seatIds.length;
+      // THE FORMULA IN FULL, at every scale and both viewports: the bay is
+      // placed past the last wing's amenities, so the columns a bigger
+      // population buys are columns the ward gets.
+      expect(beds, `${label} beds`).toBe(want.beds);
+      expect(chairs, `${label} chairs`).toBe(want.chairs);
+      // Said separately, so a view that fell back on the contract's floor of
+      // two would still be visible as a shortfall rather than as a formula.
+      expect(beds, `${label} beds`).toBeGreaterThanOrEqual(2);
+      expect(chairs, `${label} chairs`).toBeGreaterThanOrEqual(2);
+      // Standing at a counter is not sitting down, and nobody sits in a door.
+      expect(roomOf(floor, "help-desk").seatIds, label).toEqual([]);
+      expect(roomOf(floor, "archive").seatIds, label).toEqual([]);
+    });
+  });
+
+  it("runs one lane along the plaza's front and kerbs the doors on it", () => {
+    eachPlaza("two-hosts", [309], ({ floor, label }) => {
+      const road = floor.road;
+      if (road === null) throw new Error(`expected a road for ${label}`);
+
+      // The plaza's own aisle row: the entrance stands on it, the reception
+      // queue forms on it, and the stroll lane runs along it.
+      expect(road.entryTile.row, label).toBe(floor.doorTile.row);
+      for (const tile of floor.receptionQueueTiles)
+        expect(tile.row, label).toBe(road.entryTile.row);
+
+      // A THROUGH-ROAD THAT NEVER REVERSES: a vehicle drives in past every kerb
+      // and out the far end, so K3 only ever needs `right` and its mirror.
+      expect(road.entryTile, label).not.toEqual(road.exitTile);
+      expect(
+        new Set(road.tiles.map((tile) => `${tile.col}/${tile.row}`)).size,
+        label,
+      ).toBe(road.tiles.length);
+      expect(road.tiles.at(0), label).toEqual(road.entryTile);
+      expect(road.tiles.at(-1), label).toEqual(road.exitTile);
+      for (const [i, tile] of road.tiles.entries()) {
+        expect(tile.row, label).toBe(road.entryTile.row);
+        if (i > 0) expect(tile.col, label).toBe(road.tiles[i - 1].col + 1);
+      }
+      // Its own building's lane, entered from that building's own gap.
+      expect(road.entryTile.col, label).toBe(floor.bounds.col);
+      expect(road.exitTile.col, label).toBe(
+        floor.bounds.col + floor.bounds.cols - 1,
+      );
+
+      const onRoad = new Set(
+        road.tiles.map((tile) => `${tile.col}/${tile.row}`),
+      );
+      for (const room of floor.civic) assertKerb(room, onRoad, label);
+    });
+  });
+
+  /** A door is never a road tile, no lane runs through a room, and C6's pair. */
+  function assertKerb(
+    room: OfficeCivicRoom,
+    onRoad: ReadonlySet<string>,
+    label: string,
+  ): void {
+    const at = `${label}/${room.kind}`;
+    expect(onRoad.has(`${room.doorTile.col}/${room.doorTile.row}`), at).toBe(
+      false,
+    );
+    for (const key of keysOf(room.bounds))
+      expect(onRoad.has(key), `${at}/${key}`).toBe(false);
+    const kerb = room.kerbTile;
+    // Only the two rooms something drives to name a kerb (C6).
+    if (room.kind === "waiting-room" || room.kind === "archive") {
+      expect(kerb, at).toBeNull();
+      return;
+    }
+    if (kerb === null) throw new Error(`expected a kerb for ${at}`);
+    expect(onRoad.has(`${kerb.col}/${kerb.row}`), at).toBe(true);
+    expect(
+      Math.abs(kerb.col - room.doorTile.col) +
+        Math.abs(kerb.row - room.doorTile.row),
+      at,
+    ).toBe(1);
+  }
+
+  it("stands the bay and the chair run clear of everything already there", () => {
+    eachPlaza("triage", SCALES, ({ layout, floor, label }) => {
+      const civic = civicKeysOf(floor);
+
+      // THE BAY IS PLACED PAST THE AMENITIES, by arithmetic that mirrors the one
+      // laying them. Reading the fixture sprite names back out of the recipe is
+      // what makes this a guard against those two drifting rather than a second
+      // copy of one of them.
+      for (const prop of layout.props) {
+        if (!FIXTURE_SPRITES.has(prop.sprite.name)) continue;
+        const key = `${prop.tile.col}/${prop.tile.row}`;
+        expect(civic.has(key), `${label}/${prop.sprite.name}/${key}`).toBe(
+          false,
+        );
+      }
+      // And nobody strolls, queues or takes a coffee through a civic room.
+      const visited = [
+        ...floor.errandSpots.map((spot) => spot.tile),
+        ...floor.errandSpots.flatMap((spot) =>
+          spot.actionTile === null ? [] : [spot.actionTile],
+        ),
+        ...floor.receptionQueueTiles,
+        ...floor.corridorTiles,
+      ];
+      for (const tile of visited)
+        expect(
+          civic.has(`${tile.col}/${tile.row}`),
+          `${label}/${tile.col}`,
+        ).toBe(false);
+    });
+  });
+
+  it("leaves every bed and chair reachable from the plaza's entrance", () => {
+    eachPlaza("triage", [309], ({ layout, floor, index, label }) => {
+      const seats = [...layout.seats.values()].filter(
+        (seat) => seat.civicRoomId !== null && seat.floorIndex === index,
+      );
+      expect(seats.length, label).toBeGreaterThan(0);
+      for (const seat of seats) {
+        // A bed is LAIN ON: its own tile is the occupant's, so the grid has to
+        // route there. The goal tile always enters, so what this proves is that
+        // the tile has a walkable neighbour to arrive from.
+        expect(
+          findOfficePath(layout, floor.doorTile, seat.chairTile),
+          `${label}/${seat.seatId}`,
+        ).not.toBeNull();
+      }
+    });
+  });
+
+  it("screens the ward, marks its door, and opens records onto nothing", () => {
+    eachPlaza("triage", [309], ({ layout, floor, label }) => {
+      const props = propsByTile(layout);
+      const ward = roomOf(floor, "infirmary");
+      // Glazed down the bay's left-hand column, and the screen BLOCKS: the
+      // plaza sees the ward through it and nobody walks in sideways.
+      for (let row = ward.bounds.row; row < ward.doorTile.row; row += 1) {
+        const at = `${label}/${row}`;
+        expect(props.get(`${ward.bounds.col}/${row}`), at).toContain(
+          "glass-partition",
+        );
+        expect(layout.walkable[row][ward.bounds.col], at).toBe(false);
+      }
+      // The cross goes ON the doorway, which stays walkable - beside it is the
+      // one tile the way in leads to, and a blocking prop there seals the ward.
+      expect(
+        props.get(`${ward.doorTile.col}/${ward.doorTile.row}`),
+        label,
+      ).toContain("cross-sign");
+      expect(layout.walkable[ward.doorTile.row][ward.doorTile.col], label).toBe(
+        true,
+      );
+
+      const archive = roomOf(floor, "archive");
+      const door = archive.doorTile;
+      expect(props.get(`${door.col}/${door.row}`), label).toContain(
+        "records-door",
+      );
+      // Walkable, because an archived agent walks INTO it - and it opens on the
+      // gap between buildings, which has no floor, so it joins nothing.
+      expect(layout.walkable[door.row][door.col], label).toBe(true);
+      if (door.col > 0)
+        expect(layout.walkable[door.row][door.col - 1], label).toBe(false);
+    });
+  });
+
+  it("names each room on its own plate, clear of the plaza's own", () => {
+    eachPlaza("two-hosts", [309], ({ layout, floor, label }) => {
+      const plates = layout.signs.filter((sign) => sign.kind === "civic");
+      expect(plates.length, label).toBeGreaterThan(0);
+      for (const room of floor.civic) {
+        const at = `${label}/${room.kind}`;
+        const plate = plates.find(
+          (candidate) => candidate.civicRoomId === room.civicRoomId,
+        );
+        if (plate === undefined) throw new Error(`no plate for ${at}`);
+        expect(plate.text, at).toBe(room.name);
+        expect(plate.tile, at).toEqual(room.signTile);
+        // A civic plate names the ROOM, never an agent, so it is always drawn.
+        expect(plate.ownerAgentId, at).toBeNull();
+        expect(plate.hostId, at).toBe(room.hostId);
+      }
+      expect(plates.length, label).toBe(
+        plazasOf(layout).reduce(
+          (sum, index) => sum + layout.floors[index].civic.length,
+          0,
+        ),
+      );
+      // The plaza's own name now stops where the ward's bay starts.
+      const area = layout.signs.find(
+        (sign) =>
+          sign.kind === "area" &&
+          sign.hostId === floor.hostId &&
+          sign.text === "Plaza",
+      );
+      if (area === undefined) throw new Error(`expected a Plaza sign ${label}`);
+      expect(area.tile.col + area.widthTiles, label).toBe(
+        roomOf(floor, "infirmary").bounds.col,
+      );
+    });
+  });
+
+  it("draws the beds and chairs from the seats, and the bay at the overview", () => {
+    for (const [label, view] of [
+      ["towers", TOWERS_VIEW],
+      ["building", BUILDING_VIEW],
+    ] as const) {
+      const epic = makeTestEpic("triage", 309, 1);
+      const layout = view.plan(initialInput(epic, VIEWPORTS[0]));
+      const painter = view.painter;
+      const seatsOfKind = (kind: string): ReadonlyArray<OfficeSeat> =>
+        [...layout.seats.values()].filter((seat) => seat.kind === kind);
+      const bed = seatsOfKind("bed").at(0);
+      const chair = seatsOfKind("lounge").at(0);
+      if (bed === undefined) throw new Error(`${label} planned no bed`);
+      if (chair === undefined) throw new Error(`${label} planned no chair`);
+
+      const spritesOf = (
+        seat: OfficeSeat,
+        agentId: string | null,
+      ): ReadonlyArray<string> =>
+        painter
+          .seatProps(layout, seat, idleDeskState(agentId), 2)
+          .flatMap((world) =>
+            world.drawable.kind === "sprite"
+              ? [world.drawable.sprite.name]
+              : [],
+          );
+      // A CIVIC SEAT IS FURNITURE LIKE ANY OTHER SEAT: its art comes out of
+      // `seatProps`, where the per-seat drawable budget can count it.
+      expect(spritesOf(bed, null), label).toEqual(["bed"]);
+      expect(spritesOf(bed, "agent-1"), label).toEqual(["bed", "bed-occupied"]);
+      expect(spritesOf(chair, null), label).toEqual(["lounge-chair"]);
+      expect(spritesOf(chair, "agent-1"), label).toEqual(["lounge-chair"]);
+      // Nothing of a seat is drawn at the overview; the block map speaks there.
+      expect(
+        painter.seatProps(layout, bed, idleDeskState(null), 0),
+        label,
+      ).toEqual([]);
+
+      const blocks = painter.floor(
+        layout,
+        { col: 0, row: 0, cols: layout.cols, rows: layout.rows },
+        0,
+      );
+      const civic = blocks.filter(
+        (drawable) => drawable.kind === "block" && drawable.fill === "civic",
+      );
+      const rooms = plazasOf(layout).reduce(
+        (sum, index) => sum + layout.floors[index].civic.length,
+        0,
+      );
+      expect(rooms, label).toBeGreaterThan(0);
+      expect(civic, label).toHaveLength(rooms);
+    }
   });
 });
