@@ -85,8 +85,21 @@ function HostImportToast(props: {
   const progressVisibleRef = useRef(false);
 
   useEffect(() => {
+    // The flow taking the screen holds NEW toasts below, but a progress toast
+    // already up is `duration: Infinity` and would sit frozen over the tour;
+    // take it down too. The flag is cleared BEFORE the dismiss so the toast's
+    // own `onDismiss` reads it as ours, not as the user closing the run's
+    // toast - the run and its bookkeeping are untouched, and on release the
+    // progress toast comes back, or the summary shows if the run finished
+    // meanwhile.
+    if (onboardingBusy) {
+      if (progressVisibleRef.current) {
+        progressVisibleRef.current = false;
+        toast.dismiss(toastId);
+      }
+      return;
+    }
     if (run.status === "starting" || run.status === "running") {
-      if (onboardingBusy) return;
       const runKey = run.runId ?? "starting";
       // A dismissal during "starting" was aimed at this same run; carry it
       // over when the host's `started` frame swaps the key to the real id.
@@ -129,7 +142,6 @@ function HostImportToast(props: {
     }
 
     if (run.status === "complete") {
-      if (onboardingBusy) return;
       if (run.runId === null || completedRunRef.current === run.runId) return;
       completedRunRef.current = run.runId;
       progressVisibleRef.current = false;
