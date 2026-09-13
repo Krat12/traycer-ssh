@@ -97,6 +97,33 @@ function settledScene(): OfficeScene {
   return scene;
 }
 
+/** A vehicle dispatched on the Floor, with its rider already back at a desk. */
+function sceneWithVehicle(): OfficeScene {
+  const scene = new OfficeScene(testView(layoutOffice), null);
+  scene.sync(input({}));
+  // Dispatch is viewport- and band-gated from the last drawn frame, so seed a
+  // close-up whole-world frame before the status transition.
+  scene.frame(1, WHOLE_WORLD);
+  scene.sync(
+    input({
+      statusById: new Map<string, OfficeAgentStatus>([["beta", "attention"]]),
+    }),
+  );
+  // Clear the rider's attention after dispatch so the lod-0 assertion isolates
+  // the vehicle rather than a static queue-standing character.
+  scene.sync(input({ statusById: new Map<string, OfficeAgentStatus>() }));
+  scene.tick(3000);
+  return scene;
+}
+
+function vehicleCount(frame: OfficeFrame): number {
+  const drawables =
+    frame.world === null
+      ? [...frame.props, ...frame.actors]
+      : frame.world.map((entry) => entry.drawable);
+  return drawables.filter((drawable) => drawable.kind === "vehicle").length;
+}
+
 /**
  * A layout offering ONLY these errand kinds. Weights decide between the
  * options a floor has, so pinning the options is the only way to drive one
@@ -399,6 +426,26 @@ describe("OfficeScene.isAnimating band split", () => {
     ).not.toBeNull();
 
     expect(scene.isAnimating(2)).toBe(true);
+    expect(scene.isAnimating(0)).toBe(false);
+  });
+
+  it("keeps animating at close-up while a vehicle is standing on the road", () => {
+    const scene = sceneWithVehicle();
+    expect(vehicleCount(frameOf(scene))).toBeGreaterThan(0);
+    expect(scene.isAnimating(1)).toBe(true);
+  });
+
+  it("does not animate an empty road at close-up", () => {
+    const scene = settledScene();
+    expect(vehicleCount(frameOf(scene))).toBe(0);
+    expect(scene.isAnimating(1)).toBe(false);
+  });
+
+  it("does not keep overview animating for a vehicle that overview does not draw", () => {
+    const scene = sceneWithVehicle();
+    expect(vehicleCount(frameOf(scene))).toBeGreaterThan(0);
+    // Like paper balls, a vehicle is close-up-only art; lod 0 must not hold the
+    // frame gate open for a trip that can remain live for many seconds.
     expect(scene.isAnimating(0)).toBe(false);
   });
 
