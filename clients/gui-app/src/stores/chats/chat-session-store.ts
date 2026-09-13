@@ -212,6 +212,7 @@ export type ChatStreamClientHandle = Pick<
   | "sendAction"
   | "close"
   | "sameTurnSteeringProtocolSupported"
+  | "draftBlobBridgeSupported"
   // The two windowed READS. Required rather than optional even though every
   // implementation but the real client is a test double: the store calls them
   // unconditionally, and an optional method invoked through `?.()` is a silent
@@ -854,6 +855,8 @@ export interface ChatSessionState {
    * the plain-Enter queue alias until steer support is confirmed.
    */
   readonly steerProtocolSupported: boolean;
+  /** Own stream's draft-blob bridge capability; false until open and on disconnect. */
+  readonly draftBlobBridgeSupported: boolean;
   /** `chat.subscribe@1.7` support for detached interview delivery retries. */
   readonly interviewDeliveryRetryProtocolSupported: boolean;
   /**
@@ -6354,6 +6357,9 @@ export function createChatSessionStoreWithNotificationDependencies(
             runStatus: status === "closed" ? "idle" : state.runStatus,
             activeTurn: status === "closed" ? null : state.activeTurn,
             steerProtocolSupported: resolveSteerProtocolSupported(),
+            draftBlobBridgeSupported:
+              status === "open" &&
+              (streamClient?.draftBlobBridgeSupported() ?? false),
             interviewDeliveryRetryProtocolSupported:
               resolveInterviewDeliveryRetryProtocolSupported(),
             fatalClose: resolveFatalClose(),
@@ -6526,6 +6532,7 @@ export function createChatSessionStoreWithNotificationDependencies(
       runStatus: "idle",
       activeTurn: null,
       steerProtocolSupported: false,
+      draftBlobBridgeSupported: false,
       interviewDeliveryRetryProtocolSupported: false,
       turnInProgress: undefined,
       pendingApprovals: [],
@@ -6616,6 +6623,7 @@ export function createChatSessionStoreWithNotificationDependencies(
         set({
           connectionStatus: "connecting",
           steerProtocolSupported: false,
+          draftBlobBridgeSupported: false,
           interviewDeliveryRetryProtocolSupported: false,
           fatalClose: null,
           snapshotLoaded: false,
@@ -7736,6 +7744,8 @@ export function createChatSessionStoreWithNotificationDependencies(
         memory.chatWindows.detach(holderId);
         memory.accountant.release(BUDGET_PLANE_IDS.chatWindows, holderId);
         closeStreamClient();
+        // Disposal suppresses the stream's close callback; no live session remains.
+        set({ draftBlobBridgeSupported: false });
       },
     };
   });

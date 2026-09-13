@@ -318,6 +318,7 @@ export function publishedChatSessionState(
     runStatus: "idle",
     activeTurn: null,
     steerProtocolSupported: false,
+    draftBlobBridgeSupported: false,
     interviewDeliveryRetryProtocolSupported: false,
     turnInProgress: false,
     pendingApprovals: [],

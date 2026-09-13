@@ -1032,14 +1032,35 @@ function blockDeltaServerFrameSchema<EventSchema extends z.ZodType>(
   });
 }
 
+function buildChatActionAckServerFrameSchema<ActionSchema extends z.ZodType>(
+  actionSchema: ActionSchema,
+) {
+  return z.object({
+    kind: z.literal("actionAck"),
+    ...textFrameFields,
+    ...chatReferenceFields,
+    clientActionId: z.string(),
+    action: actionSchema,
+    status: chatActionAckStatusSchema,
+    reason: z.string().nullable(),
+    code: z.string().nullable(),
+    // For background stop-all, task ids whose provider stop request was accepted
+    // even when the aggregate action is rejected for partial failure. Defaulted
+    // so a `chat.subscribe@1.0` host (no background-items support) still
+    // parses - it never emits a background-stop ack, so `[]` is the correct
+    // reading, not a lossy fallback.
+    backgroundStopTaskIds: z.array(z.string()).default([]),
+  });
+}
+
 // Common frame membership through chat.subscribe 1.8. Add newer frame kinds
 // to the current list rather than changing this shared historical factory.
 // Order-preserving factory for the common (non-blockDelta) shared frames. The
 // three sender-bearing frames (`messageAccepted`/`queueChanged`/`eventAppended`)
 // are parameterized so the released `chat.subscribe@1.0–1.3` lines can bind the
 // pre-`inReplyTo` frozen chat-tree while the live line binds the current one;
-// `action` is parameterized because `actionAck` echoes the action-kind enum,
-// which grew on `1.6` (`stopBackgroundSession`) after `1.5` shipped; and the
+// `actionAck` is parameterized because it echoes the action-kind enum, which
+// grew on `1.6`, and gains the optional draft-image refusal cause on `1.10`; the
 // two interview lifecycle frames are parameterized because `1.7` grows both
 // (selection evidence, canonical outcome, saved drafts, and the detached
 // delivery projection).
@@ -1050,34 +1071,19 @@ function buildChatSubscribeCommonServerFrameSchemas<
   MessageSchema extends z.ZodType,
   QueueSchema extends z.ZodType,
   EventSchema extends z.ZodType,
-  ActionSchema extends z.ZodType,
+  ActionAckSchema extends z.ZodObject<{ kind: z.ZodLiteral<"actionAck"> }>,
   InterviewAnsweredSchema extends z.ZodType,
   InterviewErroredSchema extends z.ZodType,
 >(schemas: {
   readonly message: MessageSchema;
   readonly queue: QueueSchema;
   readonly event: EventSchema;
-  readonly action: ActionSchema;
+  readonly actionAck: ActionAckSchema;
   readonly interviewAnswered: InterviewAnsweredSchema;
   readonly interviewErrored: InterviewErroredSchema;
 }) {
   return [
-    z.object({
-      kind: z.literal("actionAck"),
-      ...textFrameFields,
-      ...chatReferenceFields,
-      clientActionId: z.string(),
-      action: schemas.action,
-      status: chatActionAckStatusSchema,
-      reason: z.string().nullable(),
-      code: z.string().nullable(),
-      // For background stop-all, task ids whose provider stop request was accepted
-      // even when the aggregate action is rejected for partial failure. Defaulted
-      // so a `chat.subscribe@1.0` host (no background-items support) still
-      // parses - it never emits a background-stop ack, so `[]` is the correct
-      // reading, not a lossy fallback.
-      backgroundStopTaskIds: z.array(z.string()).default([]),
-    }),
+    schemas.actionAck,
     z.object({
       kind: z.literal("messageAccepted"),
       ...textFrameFields,
@@ -1182,7 +1188,7 @@ const chatSubscribeCommonServerFrameSchemasV18 =
     message: userMessageSchemaV18,
     queue: chatQueueStateSchema,
     event: chatEventSchema,
-    action: chatActionSchema,
+    actionAck: buildChatActionAckServerFrameSchema(chatActionSchema),
     interviewAnswered: interviewAnsweredServerFrameSchema,
     interviewErrored: interviewErroredServerFrameSchema,
   });
@@ -1193,7 +1199,7 @@ const chatSubscribeCommonServerFrameSchemasPreInReplyTo =
     message: userMessageSchemaPreInReplyTo,
     queue: chatQueueStateSchemaPreInReplyTo,
     event: chatEventSchemaPreInReplyTo,
-    action: chatActionSchemaV15,
+    actionAck: buildChatActionAckServerFrameSchema(chatActionSchemaV15),
     interviewAnswered: interviewAnsweredServerFrameSchemaPreSettlement,
     interviewErrored: interviewErroredServerFrameSchemaPreSettlement,
   });
@@ -1211,7 +1217,7 @@ const chatSubscribeCommonServerFrameSchemasPreManagedCommand =
     // rides this released line, and a released client's strict enum accepts
     // neither the new harness nor the new event type.
     event: chatEventSchemaPreReasonix,
-    action: chatActionSchemaV15,
+    actionAck: buildChatActionAckServerFrameSchema(chatActionSchemaV15),
     interviewAnswered: interviewAnsweredServerFrameSchemaPreSettlement,
     interviewErrored: interviewErroredServerFrameSchemaPreSettlement,
   });
@@ -1229,7 +1235,23 @@ const chatSubscribeSharedServerFrameSchemasV18 = [
   blockDeltaServerFrameSchema(runtimeEventSchema),
 ];
 const chatSubscribeSharedServerFrameSchemas = [
-  ...chatSubscribeSharedServerFrameSchemasV18,
+  ...buildChatSubscribeCommonServerFrameSchemas({
+    message: userMessageSchemaV18,
+    queue: chatQueueStateSchema,
+    event: chatEventSchema,
+    actionAck: buildChatActionAckServerFrameSchema(chatActionSchema).extend({
+      /**
+       * Meaningful only for status `rejected` and code `MISSING_ATTACHMENT_BYTES`.
+       * Hosts must omit it otherwise, and for peers below chat.subscribe 1.10.
+       */
+      cause: z
+        .enum(["unsupported-format", "too-large", "not-on-host"])
+        .optional(),
+    }),
+    interviewAnswered: interviewAnsweredServerFrameSchema,
+    interviewErrored: interviewErroredServerFrameSchema,
+  }),
+  blockDeltaServerFrameSchema(runtimeEventSchema),
 ];
 
 // Frozen live-shape shared frames for `chat.subscribe@1.3` (workflow-bearing
@@ -2479,7 +2501,7 @@ const chatSubscribeCommonServerFrameSchemasV16 =
     message: userMessageSchemaV16,
     queue: chatQueueStateSchemaV16,
     event: chatEventSchemaPreReasonix,
-    action: chatActionSchemaV16,
+    actionAck: buildChatActionAckServerFrameSchema(chatActionSchemaV16),
     interviewAnswered: interviewAnsweredServerFrameSchemaPreSettlement,
     interviewErrored: interviewErroredServerFrameSchemaPreSettlement,
   });
@@ -2856,6 +2878,19 @@ const chatRangeResponseSchemaV18 = z.object({
   truncatedAtOrdinal: z.number().int().nonnegative().optional(),
 });
 
+// Frozen before the 1.10 actionAck cause; all other 1.9 validators stay shared.
+const chatSubscribeWindowedServerFrameSchemaV19 = z.discriminatedUnion("kind", [
+  chatSubscribeWindowedSnapshotServerFrameSchema,
+  chatSubscribeSkeletonChunkServerFrameSchema,
+  chatSubscribeAccumulatedChangesServerFrameSchema,
+  chatSubscribeIndexChangedServerFrameSchema,
+  chatSubscribeRangeServerFrameSchema,
+  chatSubscribeTurnStateChangedServerFrameSchema,
+  chatSubscribeManagedCommandsChangedServerFrameSchema,
+  chatSubscribeHeldUpdatesChangedServerFrameSchema,
+  ...chatSubscribeSharedServerFrameSchemasV18,
+]);
+
 export const chatSubscribeWindowedServerFrameSchema = z.discriminatedUnion(
   "kind",
   [
@@ -2999,6 +3034,27 @@ export const chatSubscribeV18 = defineStreamRpcContract({
 export const chatSubscribeV19 = defineStreamRpcContract({
   method: "chat.subscribe",
   schemaVersion: { major: 1, minor: 9 } as const,
+  openRequestSchema: chatSubscribeOpenRequestSchema,
+  serverFrameSchema: chatSubscribeWindowedServerFrameSchemaV19,
+  clientFrameSchema: chatSubscribeWindowedClientFrameSchema,
+});
+
+/**
+ * The host materializes hash-only draft images into epic attachments at send.
+ * Rejected `MISSING_ATTACHMENT_BYTES` action acknowledgements may carry a typed
+ * `cause`: unsupported-format, too-large, or not-on-host. All other frames,
+ * client frames and the open request retain the 1.9 shape.
+ *
+ * Streams have no registry downgrade bridge. The host emission authority
+ * (`projectWindowedFrameForVersion` / `emitWindowedFrameToSubscriber` in
+ * chat-session-manager.ts) already calls `projectChatServerFrameForVersion`
+ * from `chat-frame-compat.ts`, which applies `projectChatActionAckForVersion`
+ * to acknowledgements, stripping cause below 1.10.
+ * A client gates draft-blob sends on its OWN session's negotiated version.
+ */
+export const chatSubscribeV110 = defineStreamRpcContract({
+  method: "chat.subscribe",
+  schemaVersion: { major: 1, minor: 10 } as const,
   openRequestSchema: chatSubscribeOpenRequestSchema,
   serverFrameSchema: chatSubscribeWindowedServerFrameSchema,
   clientFrameSchema: chatSubscribeWindowedClientFrameSchema,

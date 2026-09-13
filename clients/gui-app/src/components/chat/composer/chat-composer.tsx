@@ -164,6 +164,8 @@ interface ChatComposerProps {
    * that predates same-turn steering.
    */
   readonly steerProtocolSupported: boolean;
+  /** Own live stream's draft-blob bridge capability, reserved for submit preparation. */
+  readonly draftBlobBridgeSupported: boolean;
   /**
    * Reads the live active turn at submit time (not a reactive prop) so the
    * settings-drift comparison for a Cmd+Enter steer never re-creates the submit

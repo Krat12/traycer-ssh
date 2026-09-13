@@ -1763,6 +1763,7 @@ function useChatTileSessionViewModel(
       runStatus: s.runStatus,
       activeTurn: s.activeTurn,
       steerProtocolSupported: s.steerProtocolSupported,
+      draftBlobBridgeSupported: s.draftBlobBridgeSupported,
       interviewDeliveryRetryProtocolSupported:
         s.interviewDeliveryRetryProtocolSupported,
       turnInProgress: s.turnInProgress,
@@ -3138,6 +3139,7 @@ function useChatTileSessionViewModel(
       activeTurnStatus: composerActiveTurnStatus,
       steerCapable,
       steerProtocolSupported,
+      draftBlobBridgeSupported: state.draftBlobBridgeSupported,
       getActiveTurnForSteer,
       stopDisabled,
       onStopTurn: chatActions.stopTurn,
@@ -3146,6 +3148,7 @@ function useChatTileSessionViewModel(
       composerActiveTurnStatus,
       steerCapable,
       steerProtocolSupported,
+      state.draftBlobBridgeSupported,
       getActiveTurnForSteer,
       stopDisabled,
       chatActions.stopTurn,

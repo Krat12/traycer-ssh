@@ -266,6 +266,7 @@ import {
   chatSubscribeV17,
   chatSubscribeV18,
   chatSubscribeV19,
+  chatSubscribeV110,
 } from "@traycer/protocol/host/agent/gui/contracts";
 import {
   agentTuiGenerateTitleV10,
@@ -11168,7 +11169,7 @@ const HOST_STREAM_RPC_REGISTRY_DEFINITION = {
   ...HOST_STREAM_RPC_REGISTRY_OTHER_DEFINITION,
   "chat.subscribe": {
     1: {
-      latestMinor: 9,
+      latestMinor: 10,
       versions: {
         0: {
           contract: chatSubscribeV10,
@@ -11203,6 +11204,12 @@ const HOST_STREAM_RPC_REGISTRY_DEFINITION = {
         // subscriber rather than sending a frame it cannot decode.
         9: {
           contract: chatSubscribeV19,
+        },
+        // @1.10 signals draft-blob materialization at send and adds the optional
+        // typed cause to MISSING_ATTACHMENT_BYTES rejection acknowledgements.
+        // The host uses projectChatActionAckForVersion to strip it below 1.10.
+        10: {
+          contract: chatSubscribeV110,
         },
       },
     },

@@ -16,6 +16,7 @@ import {
   chatSubscribeV17,
   chatSubscribeV18,
   chatSubscribeV19,
+  chatSubscribeV110,
   createImageResolutionUpdatedFrame,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import {
@@ -2272,22 +2273,25 @@ describe("chat.subscribe@1.6 (image generation)", () => {
 });
 
 describe("chat.subscribe registry membership", () => {
-  it("registers chat.subscribe major 1 latestMinor 9 as chatSubscribeV19", () => {
+  it("registers chat.subscribe major 1 latestMinor 10 as chatSubscribeV110", () => {
     const entry = hostStreamRpcRegistry["chat.subscribe"];
     expect(entry).toBeDefined();
     // Registering `8` was the switch to the windowed line: a stream minor
     // negotiates to the highest the peers share, so that line flipping to `8`
     // was the moment `1.8`-capable peers started exchanging windowed frames.
     // `9` is windowed too - it differs from `8` only in the session-anchor
-    // union reachable through `rowContext`.
-    expect(entry[1].latestMinor).toBe(9);
+    // union reachable through `rowContext`; `10` adds draft-blob bridge
+    // capability and the typed missing-attachment rejection cause.
+    expect(entry[1].latestMinor).toBe(10);
     expect(entry[1].versions[6].contract).toBe(chatSubscribeV16);
     expect(entry[1].versions[7].contract).toBe(chatSubscribeV17);
     expect(entry[1].versions[8].contract).toBe(chatSubscribeV18);
     expect(entry[1].versions[9].contract).toBe(chatSubscribeV19);
+    expect(entry[1].versions[10].contract).toBe(chatSubscribeV110);
     expect(chatSubscribeV17.schemaVersion).toEqual({ major: 1, minor: 7 });
     expect(chatSubscribeV18.schemaVersion).toEqual({ major: 1, minor: 8 });
     expect(chatSubscribeV19.schemaVersion).toEqual({ major: 1, minor: 9 });
+    expect(chatSubscribeV110.schemaVersion).toEqual({ major: 1, minor: 10 });
   });
 
   // `cli-v1.3.0` / `host-v1.3.0` shipped `@1.8`, so it is frozen at the

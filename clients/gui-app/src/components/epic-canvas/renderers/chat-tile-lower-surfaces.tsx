@@ -154,6 +154,8 @@ export interface ChatLowerTurnState {
    * can steer at all, keeping a new renderer from steering a <=1.4 host.
    */
   readonly steerProtocolSupported: boolean;
+  /** Own live stream's draft-blob bridge capability. */
+  readonly draftBlobBridgeSupported: boolean;
   /** Reads the live active turn at submit time for the Cmd+Enter drift check. */
   readonly getActiveTurnForSteer: () => ChatActiveTurn | null;
   readonly stopDisabled: boolean;
@@ -314,6 +316,7 @@ export function ChatLowerInteractionSurfaces(
   const turnStopDisabled = props.turn.stopDisabled;
   const turnSteerCapable = props.turn.steerCapable;
   const turnSteerProtocolSupported = props.turn.steerProtocolSupported;
+  const turnDraftBlobBridgeSupported = props.turn.draftBlobBridgeSupported;
   const turnGetActiveTurnForSteer = props.turn.getActiveTurnForSteer;
 
   // Intercept the composer Stop button: when this chat has active
@@ -332,6 +335,7 @@ export function ChatLowerInteractionSurfaces(
       activeTurnStatus: turnActiveTurnStatus,
       steerCapable: turnSteerCapable,
       steerProtocolSupported: turnSteerProtocolSupported,
+      draftBlobBridgeSupported: turnDraftBlobBridgeSupported,
       getActiveTurnForSteer: turnGetActiveTurnForSteer,
       stopDisabled: turnStopDisabled,
       onStopTurn: requestStopTurn,
@@ -340,6 +344,7 @@ export function ChatLowerInteractionSurfaces(
       turnActiveTurnStatus,
       turnSteerCapable,
       turnSteerProtocolSupported,
+      turnDraftBlobBridgeSupported,
       turnGetActiveTurnForSteer,
       turnStopDisabled,
       requestStopTurn,
@@ -1104,6 +1109,7 @@ function LiveChatComposer(props: {
       activeTurnStatus={model.turn.activeTurnStatus}
       steerCapable={model.turn.steerCapable}
       steerProtocolSupported={model.turn.steerProtocolSupported}
+      draftBlobBridgeSupported={model.turn.draftBlobBridgeSupported}
       getActiveTurnForSteer={model.turn.getActiveTurnForSteer}
       editingQueueItemId={model.queue.editingItem?.queueItemId ?? null}
       onCancelQueueEdit={model.queue.onCancelEdit}

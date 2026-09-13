@@ -219,6 +219,7 @@ function noopChatStreamClientFactory() {
   return {
     sendAction: () => undefined,
     sameTurnSteeringProtocolSupported: () => true,
+    draftBlobBridgeSupported: () => true,
     requestTranscriptRange: () => undefined,
     requestResnapshot: () => undefined,
     close: () => undefined,
@@ -361,6 +362,7 @@ function buildTestChatHandleWithFrames(
           sent.push(frame);
         },
         sameTurnSteeringProtocolSupported: () => true,
+        draftBlobBridgeSupported: () => true,
         requestTranscriptRange: () => undefined,
         requestResnapshot: () => undefined,
         close: () => undefined,
@@ -1103,6 +1105,7 @@ describe("epic-parking - B1: retention-pool / warm-session key", () => {
       streamClientFactory: () => ({
         sendAction: () => undefined,
         sameTurnSteeringProtocolSupported: () => true,
+        draftBlobBridgeSupported: () => true,
         requestTranscriptRange: () => undefined,
         requestResnapshot: () => undefined,
         close: () => undefined,
