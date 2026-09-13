@@ -269,3 +269,111 @@ export function makeTestEpic(
   }
   return { agents, statusById };
 }
+
+/**
+ * A STATUS SCRIPT: one `statusById` per sync, to be driven in order.
+ *
+ * The populations above are a topology and a resting state; a script is what
+ * HAPPENS to one. They are separate because the civic layer's behaviour is a
+ * function of status transitions - a bed is claimed on the sync a status
+ * arrives and released on the sync it leaves - and a single frozen map cannot
+ * express either end of that.
+ */
+export type OfficeStatusScript = ReadonlyArray<
+  ReadonlyMap<string, OfficeAgentStatus>
+>;
+
+/**
+ * The agents a script acts on: live, unarchived, and all on ONE floor.
+ *
+ * One floor because every civic rule is per-storey - a floor's beds are its
+ * own, and an outbreak spread over three buildings would be three small
+ * outbreaks that never fill anything. The first host with enough agents wins,
+ * so the same call gives the same floor on any machine.
+ */
+function scriptSubjects(
+  epic: OfficeTestEpic,
+  count: number,
+): ReadonlyArray<string> {
+  const byHost = new Map<string, string[]>();
+  for (const agent of epic.agents) {
+    if (agent.archived) continue;
+    const key = agent.hostId ?? "";
+    const bucket = byHost.get(key);
+    if (bucket === undefined) byHost.set(key, [agent.id]);
+    else bucket.push(agent.id);
+  }
+  for (const bucket of byHost.values()) {
+    if (bucket.length >= count) return bucket.slice(0, count);
+  }
+  // No single floor is big enough: take the biggest there is rather than
+  // nothing, so a script is still a script on a two-agent epic.
+  let best: ReadonlyArray<string> = [];
+  for (const bucket of byHost.values()) {
+    if (bucket.length > best.length) best = bucket;
+  }
+  return best.slice(0, count);
+}
+
+/** `base` with `ids` overridden to `status`. */
+function withStatus(
+  base: ReadonlyMap<string, OfficeAgentStatus>,
+  ids: ReadonlyArray<string>,
+  status: OfficeAgentStatus,
+): ReadonlyMap<string, OfficeAgentStatus> {
+  const next = new Map(base);
+  for (const id of ids) next.set(id, status);
+  return next;
+}
+
+/**
+ * `count` agents on one floor crash in a SINGLE sync, then recover one at a
+ * time.
+ *
+ * All at once on purpose: the interesting case is not one crash, it is
+ * `count` claims resolved in one pass against a ward that may hold fewer -
+ * which is what proves C2's cap and C3's arrival order. Recovering one at a
+ * time is the other half: each freed bed must go to the earliest agent still
+ * waiting for one, and a recovered agent must walk home.
+ */
+export function outbreakScript(
+  epic: OfficeTestEpic,
+  count: number,
+): OfficeStatusScript {
+  const subjects = scriptSubjects(epic, count);
+  const steps = [withStatus(epic.statusById, subjects, "failure")];
+  for (let healed = 1; healed <= subjects.length; healed += 1) {
+    steps.push(
+      withStatus(
+        withStatus(epic.statusById, subjects.slice(healed), "failure"),
+        subjects.slice(0, healed),
+        "idle",
+      ),
+    );
+  }
+  return steps;
+}
+
+/**
+ * More `awaiting` agents on one floor than its lounge holds, then one clears.
+ *
+ * `count` is the number that WAIT, and a caller picks it above
+ * `civicCapacityFor(floorSize).chairs` so the overflow is real. The last step
+ * frees exactly one chair, because "who gets the chair that just came free" is
+ * the question C3 answers and two at once would not distinguish an ordered
+ * queue from a lucky sort.
+ */
+export function waitingScript(
+  epic: OfficeTestEpic,
+  count: number,
+): OfficeStatusScript {
+  const subjects = scriptSubjects(epic, count);
+  return [
+    withStatus(epic.statusById, subjects, "awaiting"),
+    withStatus(
+      withStatus(epic.statusById, subjects.slice(1), "awaiting"),
+      subjects.slice(0, 1),
+      "idle",
+    ),
+  ];
+}

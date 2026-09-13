@@ -50,6 +50,7 @@ import {
 } from "@/lib/comm-graph/office/office-status";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { OfficeSeatBook } from "@/lib/comm-graph/office/office-seat-book";
+import type { OfficeSeatWant } from "@/lib/comm-graph/office/office-seat-book";
 import type { OfficePopulation } from "@/lib/comm-graph/office/office-population";
 import {
   OFFICE_CHARACTER_HEIGHT,
@@ -79,6 +80,7 @@ import {
   type OfficeSize,
   type OfficeSpriteName,
   type OfficeTilePos,
+  type OfficeCivicRoom,
   type OfficeTileRect,
   type OfficeWorldDrawable,
 } from "@/lib/comm-graph/office/office-types";
@@ -408,6 +410,7 @@ type OfficeErrand =
   | "errand-return"
   | "queue-out"
   | "queue-stand"
+  | "civic-out"
   | "leaving"
   | "returning";
 
@@ -416,9 +419,24 @@ type OfficeErrand =
  * itself passes through, walk home included, as the doc above requires.
  *
  * The others are not errands and are not capped. `arriving` and `leaving` are
- * an agent's own life happening, `queue-*` is a summons somebody asked for, and
+ * an agent's own life happening, `queue-out` is a summons somebody asked for,
+ * `civic-out` is the same summons with a bed or a chair at the end of it, and
  * `returning` is what ends every one of those - refusing any of them because
  * the floor is busy would leave an agent standing where the scene put it.
+ *
+ * There is deliberately no `civic-stay` beside `queue-stand`. A queueing agent
+ * STANDS on a tile the plan does not call a seat, so its errand is the only
+ * record that it is there; an agent in a bed is in a seat the BOOK owns, so
+ * `effectiveSeat` answers where it is and `settleInChair` ends the walk exactly
+ * as it ends a walk to a moved desk. A second name for "sitting down" would be
+ * a second answer to a question already answered.
+ *
+ * C1 is why `civic-*` belongs on this side of the line: a claim is WALKED LIKE
+ * A SUMMONS. A crashed agent that had to wait for an errand slot would sit at
+ * its desk with a crashed screen while thirty-two colleagues watered plants,
+ * and the bed it had already been given would stand empty for as long as that
+ * took. The cap is there to stop the floor looking like a fire drill; it is not
+ * a queue for the infirmary.
  */
 const AWAY_ERRANDS: ReadonlySet<OfficeErrand> = new Set<OfficeErrand>([
   "errand-out",
@@ -1649,6 +1667,16 @@ export class OfficeScene {
     // scrub back off a reserve ends at the cubby rather than on a seat the
     // agent no longer holds.
     this.rehomeCharacters(reclaimed);
+    // RECEPTION, THEN ROOMS, THEN DESKS, and the order is the contract's.
+    //
+    // The counter goes first because `attention` is the one status that still
+    // wants a person rather than a room, and both passes below have to see a
+    // queue that is already settled. The civic pass goes before the wake pass
+    // because a cubby agent that crashed needs a bed, not a reserve desk -
+    // `updateSeatClaims` already declines to claim for an agent headed to the
+    // counter, and now declines for one holding a bed or a chair too.
+    this.updateReceptionQueue();
+    this.updateCivicClaims();
     this.updateSeatClaims();
     // An errand ends on the sync that ends it, not on the tick after: playback
     // starting or an agent picking work back up are both seen here first.
@@ -1657,7 +1685,6 @@ export class OfficeScene {
       if (!this.errandMustEnd(character.agentId)) continue;
       this.returnToDesk(character);
     }
-    this.updateReceptionQueue();
 
     if (input.pulseKey !== this.lastPulseKey) {
       this.lastPulseKey = input.pulseKey;
@@ -1800,6 +1827,12 @@ export class OfficeScene {
     const seat = this.seats.effectiveSeat(agentId);
     if (seat === null) return null;
     if (seat.kind === "cubby") return "Quiet stack";
+    // A civic seat carries its room on itself, which is the only way to name
+    // it: `roomId` is the TEAM's room and a bed belongs to no team, and the
+    // tile lookup below would answer with whatever the plan calls the floor
+    // the infirmary happens to stand on.
+    const civic = this.civicRoomOfSeat(layout, seat);
+    if (civic !== null) return civic.name;
     const room = this.roomOfSeat(seat);
     if (room !== null) return room.name;
     return this.placeNameAt(layout, seat.chairTile, seat.floorIndex);
@@ -2240,7 +2273,7 @@ export class OfficeScene {
   }
 
   private startLeaving(character: OfficeCharacter): void {
-    const door = this.floorOfAgent(character.agentId).doorTile;
+    const door = this.departureDoorOf(character.agentId);
     const start = this.startTileOf(character);
     const path = findOfficePath(this.currentLayout, start, door);
     if (path === null || path.length === 0) {
@@ -2258,6 +2291,22 @@ export class OfficeScene {
     character.queueTile = null;
     character.waitMs = 0;
     character.hurrying = false;
+  }
+
+  /**
+   * An archived agent leaves through the ARCHIVE's door where its floor has
+   * one, and through the building's own entrance where it does not.
+   *
+   * C5: the archive is a door with a counter rather than a room somebody sits
+   * in, so walking into it is the whole of being archived. Every view that
+   * plans no civic rooms keeps the entrance, which is what it always used.
+   */
+  private departureDoorOf(agentId: string): OfficeTilePos {
+    const floor = this.floorOfAgent(agentId);
+    for (const room of floor.civic) {
+      if (room.kind === "archive") return room.doorTile;
+    }
+    return floor.doorTile;
   }
 
   private depart(agentId: string): void {
@@ -2280,9 +2329,21 @@ export class OfficeScene {
     );
   }
 
+  /**
+   * C4: A CRASHED AGENT GOES TO THE INFIRMARY, NOT TO THE COUNTER.
+   *
+   * This read `attention || failure`, because before there was an infirmary the
+   * counter was the only place an office could send somebody who needed help.
+   * Now `failure` has somewhere of its own to be, and sending it to both would
+   * be two summonses for one agent - it would queue at reception, get a bed
+   * from `updateCivicClaims`, and walk out of the queue again on the next sync.
+   *
+   * What is left at the counter is `attention`: a person is needed, which is
+   * what a front desk is for.
+   */
   private needsReception(agentId: string): boolean {
     const status = this.statusOf(agentId);
-    if (status !== "attention" && status !== "failure") return false;
+    if (status !== "attention") return false;
     if (!this.visibleAgentIds.has(agentId)) return false;
     if (this.archivedIds.has(agentId)) return false;
     return this.characters.has(agentId);
@@ -2401,6 +2462,204 @@ export class OfficeScene {
     character.idleMs = 0;
     character.errand = "queue-out";
     character.queueTile = slot;
+    character.waitMs = 0;
+    character.errandTarget = null;
+    character.filler = null;
+    character.hurrying = false;
+  }
+
+  // ---- The civic layer ------------------------------------------------ //
+
+  /** Walking to a bed or a chair. Sitting down in one is not an errand. */
+  private inCivicWalk(character: OfficeCharacter): boolean {
+    return character.errand === "civic-out";
+  }
+
+  /**
+   * The civic seat this agent's STATUS asks for, or `null` for a status that
+   * asks for nothing.
+   *
+   * C4: a crash goes to a bed, a wait goes to a chair, and `attention` is the
+   * one that still wants a person rather than a room - it queues at the counter
+   * instead, which is `needsReception`.
+   */
+  private civicWantOf(agentId: string): OfficeSeatWant | null {
+    if (!this.visibleAgentIds.has(agentId)) return null;
+    if (this.archivedIds.has(agentId)) return null;
+    const status = this.statusOf(agentId);
+    if (status === "failure") return "bed";
+    if (status === "awaiting") return "lounge";
+    return null;
+  }
+
+  /**
+   * Who gets the next free bed: the agent that has been waiting for one
+   * longest.
+   *
+   * C3, and it is a list for the same reason the reception queue is one -
+   * "who started needing this first" is not recoverable from the statuses,
+   * which say only who needs it NOW. Kept per `(floor, kind)` because a bed on
+   * storey two is not a bed storey seven is queueing for, and a chair is not a
+   * bed. Newcomers within a single sync break their tie by id, so the order is
+   * still a function of the data and two runs of the same history agree.
+   */
+  private civicOrder = new Map<string, string[]>();
+
+  private civicOrderKey(agentId: string, want: OfficeSeatWant): string {
+    return `${this.floorIndexOfAgent(agentId)}/${want}`;
+  }
+
+  /**
+   * WHO WANTS A ROOM, and the order in which they asked - per `(floor, kind)`.
+   *
+   * C3. "Who started needing this first" is not recoverable from the statuses,
+   * which say only who needs one now, so the order is KEPT rather than
+   * re-derived: an agent that has been waiting keeps its place, one that has
+   * stopped asking is dropped from it, and newcomers within a single sync break
+   * their tie by id so the order is still a function of the data.
+   *
+   * The whole list is built before any seat is handed out. Serving as the scan
+   * goes would let the first agent in canonical order take a bed the queue it
+   * belongs to had not been assembled for yet, which is the reception queue's
+   * own reason for the same shape.
+   *
+   * Separated from the claiming below because they answer different questions -
+   * this one is bookkeeping over statuses, that one hands out seats and starts
+   * walks - and because the pair together read past what the complexity budget
+   * allows for one method.
+   */
+  private civicArrivalOrder(): {
+    readonly wantById: ReadonlyMap<string, OfficeSeatWant>;
+    readonly served: ReadonlyArray<string>;
+  } {
+    const wantById = new Map<string, OfficeSeatWant>();
+    const needyByKey = new Map<string, Set<string>>();
+    for (const agentId of this.characters.keys()) {
+      const want = this.civicWantOf(agentId);
+      if (want === null) continue;
+      wantById.set(agentId, want);
+      const key = this.civicOrderKey(agentId, want);
+      const needy = needyByKey.get(key);
+      if (needy === undefined) needyByKey.set(key, new Set([agentId]));
+      else needy.add(agentId);
+    }
+    for (const [key, order] of Array.from(this.civicOrder)) {
+      const needy = needyByKey.get(key);
+      if (needy === undefined) {
+        this.civicOrder.delete(key);
+        continue;
+      }
+      this.civicOrder.set(
+        key,
+        order.filter((agentId) => needy.has(agentId)),
+      );
+    }
+    const served: string[] = [];
+    for (const [key, needy] of needyByKey) {
+      const order = this.civicOrder.get(key) ?? [];
+      const known = new Set(order);
+      const newcomers = Array.from(needy)
+        .filter((agentId) => !known.has(agentId))
+        .sort();
+      const next = [...order, ...newcomers];
+      this.civicOrder.set(key, next);
+      served.push(...next);
+    }
+    return { wantById, served };
+  }
+
+  /**
+   * Beds and chairs, from the statuses, once per sync.
+   *
+   * Runs BEFORE `updateSeatClaims` because a cubby agent that crashed needs a
+   * bed rather than a reserve desk, and after `updateReceptionQueue` because
+   * `attention` is the counter's and this pass must not see it.
+   */
+  private updateCivicClaims(): void {
+    const { wantById, served } = this.civicArrivalOrder();
+
+    // A status that STOPPED asking is released first, everywhere, before any
+    // seat is handed out: the bed an agent has just recovered from is a bed the
+    // next one can have on this same sync rather than the next.
+    for (const agentId of this.seats.knownAgentIds()) {
+      const held = this.seats.civicClaimOf(agentId);
+      if (held === null) continue;
+      if (wantById.get(agentId) === held) continue;
+      this.seats.endClaim(agentId);
+      const character = this.characters.get(agentId);
+      if (character !== undefined) this.returnToDesk(character);
+    }
+
+    for (const agentId of served) {
+      const want = wantById.get(agentId);
+      if (want === undefined) continue;
+      if (this.seats.civicClaimOf(agentId) === want) continue;
+      const character = this.characters.get(agentId);
+      if (character === undefined) continue;
+      const seat = this.seats.claim(agentId, {
+        roomId: null,
+        floorIndex: this.floorIndexOfAgent(agentId),
+        wants: want,
+        // C2: the ward is as big as it is. An agent that finds it full keeps
+        // its desk and its glyph and stays on this list, so the next bed to
+        // come free is its rather than whoever sorts first.
+        shortfall: "none",
+      });
+      if (seat === null) continue;
+      this.startCivicWalk(character, seat);
+    }
+  }
+
+  /**
+   * The walk to a bed or a chair: the reception queue's walk, ending in a SEAT.
+   *
+   * Arrival is `settleInChair`, which is what makes the pose, the facing and
+   * `seated` the seat's own answers - a bed is a seat the book owns, so there
+   * is nothing about being in one that the character has to remember itself.
+   */
+  private startCivicWalk(character: OfficeCharacter, seat: OfficeSeat): void {
+    const start = this.startTileOf(character);
+    // NO HANDOVER, deliberately, and this is C1's "walked like a SUMMONS"
+    // read as a rule about the desk rather than about the walk.
+    //
+    // The handover is for a seat an agent has genuinely left for a new home -
+    // a wake taking a reserve, a re-layout moving its chair - and it works by
+    // suppressing the old seat's own props so the departing silhouette can
+    // stand in for them. A bed is not a new home: the desk is still this
+    // agent's desk, still drawn, and still showing the crashed monitor that is
+    // the whole reason it is in the infirmary. The reception queue, which is
+    // the other summons, sets no handover for exactly the same reason.
+    //
+    // Setting one here cost two visible things, both caught by cases: the
+    // crashed screen vanished from the desk the moment its owner lay down,
+    // and the desk stopped being painted at all, which the plan-perf
+    // denominator counts.
+    if (this.reducedMotion) {
+      this.settleInChair(character);
+      return;
+    }
+    if (start.col === seat.chairTile.col && start.row === seat.chairTile.row) {
+      this.settleInChair(character);
+      return;
+    }
+    const path = findOfficePath(this.currentLayout, start, seat.chairTile);
+    // No route means no walk, and the claim still stands: the agent is in the
+    // book's bed without having crossed the floor to it, which is the same
+    // answer `returnToDesk` gives a seat it cannot reach. It is never a
+    // teleport mid-frame - `settleInChair` puts it there in one piece.
+    if (path === null || path.length === 0) {
+      this.settleInChair(character);
+      return;
+    }
+    character.col = start.col;
+    character.row = start.row;
+    character.seated = false;
+    character.path = path;
+    character.pathIndex = 0;
+    character.walkPhaseMs = 0;
+    character.idleMs = 0;
+    character.errand = "civic-out";
+    character.queueTile = null;
     character.waitMs = 0;
     character.errandTarget = null;
     character.filler = null;
@@ -3940,6 +4199,13 @@ export class OfficeScene {
         ? "walk1"
         : "walk2";
     }
+    // IN A BED OR A CHAIR, the room decides the body and the status decides
+    // only the glyph above it. A crashed agent lying in the infirmary is drawn
+    // as the nap room draws a sleeper and an awaiting one as the sofa draws a
+    // sitter - both of which are `sit`, the same pose those errands already
+    // use - rather than slumped over a monitor it is nowhere near. The crashed
+    // SCREEN stays behind at its desk, where the monitor is.
+    if (this.seats.civicClaimOf(character.agentId) !== null) return "sit";
     const status = this.statusOf(character.agentId);
     if (status === "working") {
       return this.typingPose(character.agentId, TYPING_FRAME_MS);
@@ -4208,6 +4474,20 @@ export class OfficeScene {
     if (occupant !== null) return occupant;
     const assignee = this.seats.assignee(seat.seatId);
     if (assignee === null || !this.visibleAgentIds.has(assignee)) return null;
+    // A DESK WHOSE OWNER IS IN THE WARD still belongs to that owner, and still
+    // shows what its owner's screen is doing. This is the same answer the
+    // handover below gives for an agent mid-walk, for the same reason: the
+    // agent exists, it is simply not sitting here. Without it a crashed agent's
+    // monitor stops being crashed the instant it lies down - and the desk stops
+    // being painted at all, which is a workstation blinking out of the office
+    // and a seat the plan-perf denominator counts but the painter never emits.
+    //
+    // Not a cubby: the quiet stack's slot is not furniture with a front to
+    // draw, and it is meant to go the moment its occupant walks out of it
+    // (F19).
+    if (seat.kind !== "cubby" && this.seats.civicClaimOf(assignee) !== null) {
+      return assignee;
+    }
     // An OPEN handover, not merely an agent out of its chair. Every later
     // walk - a queue-out, an errand, a trip home - would otherwise reopen a
     // handover that finished the moment this agent first sat down.
@@ -5077,6 +5357,10 @@ export class OfficeScene {
         this.visibleAgentIds.has(agentId) &&
         !this.archivedIds.has(agentId) &&
         isOfficeHotStatus(this.statusById.get(agentId));
+      // A bed or a chair OUTRANKS a reserve desk: an agent that holds one is
+      // where its status says it should be, and claiming a desk for it here
+      // would hold a second seat empty for as long as it was in the ward.
+      if (this.seats.civicClaimOf(agentId) !== null) continue;
       if (hot && !this.needsReception(agentId)) {
         this.seats.claim(agentId, {
           roomId: assigned.roomId,
@@ -5111,9 +5395,19 @@ export class OfficeScene {
     layout: OfficeLayout,
     character: OfficeCharacter,
   ): string {
-    if (this.inReceptionQueue(character)) return "Reception";
+    // C7: the counter people queue at IS the help desk, so it is called that
+    // wherever it is named - there was never a second reception.
+    if (this.inReceptionQueue(character)) return "Help desk";
     if (character.errand === "arriving" || character.errand === "leaving") {
       return "Lobby";
+    }
+    // A civic walker is named by where it is GOING, not by the corridor it is
+    // crossing: "Walking to the Sick bay" is the useful answer while somebody
+    // is halfway there, and the tile lookup below would say "Open floor".
+    if (this.inCivicWalk(character)) {
+      const seat = this.seats.effectiveSeat(character.agentId);
+      const room = seat === null ? null : this.civicRoomOfSeat(layout, seat);
+      if (room !== null) return room.name;
     }
     const target = character.errandTarget;
     if (target !== null && target.kind === "visit") return "Visiting";
@@ -5126,6 +5420,20 @@ export class OfficeScene {
       tile,
       this.floorIndexOfAgent(character.agentId),
     );
+  }
+
+  /** The civic room a seat belongs to, or `null` for a seat that names none. */
+  private civicRoomOfSeat(
+    layout: OfficeLayout,
+    seat: OfficeSeat,
+  ): OfficeCivicRoom | null {
+    const civicRoomId = seat.civicRoomId;
+    if (civicRoomId === null) return null;
+    const floor = layout.floors[seat.floorIndex] ?? layout.floors[0];
+    for (const room of floor.civic) {
+      if (room.civicRoomId === civicRoomId) return room;
+    }
+    return null;
   }
 
   /**

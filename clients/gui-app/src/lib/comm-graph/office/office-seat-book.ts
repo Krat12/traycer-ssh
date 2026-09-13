@@ -417,7 +417,32 @@ export class OfficeSeatBook {
     this.claims.clear();
     this.claimShortfall.clear();
     this.refresh();
+    // CIVIC FIRST, and in the caller's order, for the same reason the scene
+    // runs its civic pass before its wake pass: a crashed agent wants a bed
+    // rather than a reserve desk, and a bed handed out after the desks would
+    // be handed to whoever was left. Without this a seek would land every
+    // bedded agent back at its own desk - the claims would be rebuilt from
+    // statuses that plainly say `failure` and nothing would be holding a bed.
+    const civic = new Set<string>();
     for (const agentId of order) {
+      const status = statusById.get(agentId);
+      const wants = status === "failure" ? "bed" : "lounge";
+      if (status !== "failure" && status !== "awaiting") continue;
+      const seat = this.assignedSeat(agentId);
+      if (seat === null) continue;
+      const claimed = this.claim(agentId, {
+        roomId: null,
+        floorIndex: seat.floorIndex,
+        wants,
+        // C2 on a scrub as much as live: a ward that was full at the cursor
+        // stays full, and the overflow is at its desk rather than in
+        // `needsCapacity` asking for a bigger one.
+        shortfall: "none",
+      });
+      if (claimed !== null) civic.add(agentId);
+    }
+    for (const agentId of order) {
+      if (civic.has(agentId)) continue;
       const seat = this.assignedSeat(agentId);
       if (seat === null || seat.kind !== "cubby") continue;
       if (!isOfficeHotStatus(statusById.get(agentId))) continue;
