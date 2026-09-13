@@ -41,6 +41,12 @@ const STATIC_PROPS: ReadonlySet<OfficeSpriteName> = new Set([
   "partition",
   "board",
   "reception",
+  // The civic bay's fittings: its glazed screen, the cross over its doorway and
+  // the archive's door. Fixed pieces of the plaza, like the reception counter -
+  // the beds and the chairs inside are SEATS and are drawn from `layout.seats`.
+  "glass-partition",
+  "cross-sign",
+  "records-door",
 ]);
 interface ObliqueFixturePart {
   readonly name: OfficeSpriteName;
@@ -145,7 +151,16 @@ function overviewBlocks(
       tiles,
     ),
   );
-  return [...buildings, ...storeys];
+  // After the storeys, so a bay inside the plaza is the block a reader sees. At
+  // this zoom the ward and the waiting room are the two regions on a plaza
+  // worth telling apart from the amenities around them. Walked from the floors'
+  // own `civic` rather than from `layout.rooms`, which this view never reads.
+  const civic = layout.floors.flatMap((floor) =>
+    floor.civic.flatMap((room) =>
+      clippedBlock({ ...room.bounds, fill: "civic" }, tiles),
+    ),
+  );
+  return [...buildings, ...storeys, ...civic];
 }
 function floor(
   layout: OfficeLayout,
@@ -207,6 +222,78 @@ function envelopeStack(count: number): OfficeSpriteName {
   if (count === 2) return "envelope-stack-2";
   return "envelope-stack-3";
 }
+/**
+ * A CIVIC SEAT IS FURNITURE LIKE ANY OTHER SEAT, so the bed and the chair are
+ * drawn from `layout.seats`, the way a desk is. Standing them up as plan props
+ * instead would put a seat's art where the per-seat drawable budget cannot
+ * count it, and `office-plan-perf`'s denominator is that budget. The turned-down
+ * sheet is the one piece that changes: it rides the desk-state cache key, so the
+ * ward repaints when a bed is taken and at no other time.
+ *
+ * Both sprites are exactly their tiles - 32x16 for a two-tile bed, 16x16 for a
+ * chair - so the tile's own corner is where they go, with no anchoring.
+ */
+function civicSeatProps(
+  seat: OfficeSeat,
+  point: { readonly x: number; readonly y: number },
+  foot: number,
+  owner: string | null,
+): OfficeWorldDrawable[] {
+  const bed = seat.kind === "bed";
+  const paint = { ownerAgentId: owner, alpha: 1 };
+  const civic = [
+    entry({ name: bed ? "bed" : "lounge-chair" }, point, foot, paint),
+  ];
+  if (bed && owner !== null)
+    civic.push(entry({ name: "bed-occupied" }, point, foot + 0.1, paint));
+  return civic;
+}
+/** A cubby, tinted to its occupant, boxed up or with a silhouette inside it. */
+function cubbySeatProps(
+  state: OfficeDeskState,
+  point: { readonly x: number; readonly y: number },
+  foot: number,
+  lod: OfficeLod,
+): OfficeWorldDrawable[] {
+  const owner = state.agentId;
+  const cubby = [
+    entry(
+      {
+        name: "cubby",
+        tint:
+          state.accentId === null
+            ? undefined
+            : agentAppearance(state.accentId, "chat", null).shirt,
+      },
+      point,
+      foot + 0.1,
+      { ownerAgentId: owner, alpha: 1 },
+    ),
+  ];
+  if (state.sheeted)
+    cubby.push(
+      entry({ name: "box" }, point, foot + 0.2, {
+        ownerAgentId: owner,
+        alpha: 1,
+      }),
+    );
+  else if (owner !== null && lod < 2)
+    cubby.push(
+      entry({ name: "silhouette" }, point, foot, {
+        ownerAgentId: owner,
+        alpha: 0.55,
+      }),
+    );
+  // The scene supplies the dimmed, front-facing character at close-up.
+  return cubby;
+}
+/**
+ * The seat-kind dispatch, and then a desk at length.
+ *
+ * The two short kinds are lifted out rather than nested here: this view now
+ * paints four of them, and the desk alone is already at the complexity the
+ * linter allows a function.
+ */
 function seatProps(
   layout: OfficeLayout,
   seat: OfficeSeat,
@@ -218,41 +305,10 @@ function seatProps(
   const y = seat.deskTile.row * OFFICE_TILE;
   const foot = (seat.chairTile.row + 1) * OFFICE_TILE;
   const owner = state.agentId;
-  if (seat.kind === "cubby") {
-    const cubby = [
-      entry(
-        {
-          name: "cubby",
-          tint:
-            state.accentId === null
-              ? undefined
-              : agentAppearance(state.accentId, "chat", null).shirt,
-        },
-        { x: x, y: y },
-        foot + 0.1,
-        {
-          ownerAgentId: owner,
-          alpha: 1,
-        },
-      ),
-    ];
-    if (state.sheeted)
-      cubby.push(
-        entry({ name: "box" }, { x: x, y: y }, foot + 0.2, {
-          ownerAgentId: owner,
-          alpha: 1,
-        }),
-      );
-    else if (owner !== null && lod < 2)
-      cubby.push(
-        entry({ name: "silhouette" }, { x: x, y: y }, foot, {
-          ownerAgentId: owner,
-          alpha: 0.55,
-        }),
-      );
-    // The scene supplies the dimmed, front-facing character at close-up.
-    return cubby;
-  }
+  if (seat.kind === "bed" || seat.kind === "lounge")
+    return civicSeatProps(seat, { x: x, y: y }, foot, owner);
+  if (seat.kind === "cubby")
+    return cubbySeatProps(state, { x: x, y: y }, foot, lod);
   const result: OfficeWorldDrawable[] = [
     entry({ name: "desk-front" }, { x: x, y: y + 24 }, foot + 0.1, {
       ownerAgentId: owner,

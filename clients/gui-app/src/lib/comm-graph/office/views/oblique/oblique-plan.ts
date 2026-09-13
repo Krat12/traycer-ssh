@@ -3,10 +3,13 @@ import type {
   OfficeHostPopulation,
   OfficePopulationMember,
 } from "@/lib/comm-graph/office/office-population";
+import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type {
   OfficeAgentInput,
+  OfficeCivicKind,
+  OfficeCivicRoom,
   OfficeDesk,
   OfficeErrandKind,
   OfficeErrandSpot,
@@ -14,6 +17,7 @@ import type {
   OfficeFloor,
   OfficeLayout,
   OfficeProp,
+  OfficeRoad,
   OfficeRoom,
   OfficeSeat,
   OfficeSign,
@@ -729,14 +733,36 @@ function walk(geometry: Geometry, col: number, row: number): void {
   geometry.walkable[row][col] = true;
 }
 /**
- * Every piece of lettering these two views plan names a host, an area, a room
- * plate or a board - never a civic room, because neither view plans one yet.
- * K2 gives the plaza's bays their signs and passes the id through then.
+ * Lettering that names a host, an area, a room plate or a board - everything
+ * this view writes except a civic plate, which `civicSign` writes instead
+ * because it is the one kind that carries a room id.
  */
 type ObliqueSign = Omit<OfficeSign, "civicRoomId">;
 
 function sign(geometry: Geometry, value: ObliqueSign): void {
   geometry.signs.push({ ...value, civicRoomId: null });
+}
+/**
+ * A civic plate names its ROOM rather than an agent, so it is always drawn, and
+ * it carries the room's id so that a counter can be read off the room under the
+ * cursor instead of being baked into the text at plan time.
+ *
+ * Each of the four rooms hangs its plate at its own top-left corner and takes
+ * its own width, which is what keeps the four off each other on the one storey
+ * they share: the ward's is the only plate on the plaza's top row, and the
+ * other three sit on the front walk, columns apart.
+ */
+function civicSign(geometry: Geometry, room: OfficeCivicRoom): void {
+  geometry.signs.push({
+    kind: "civic",
+    tile: room.signTile,
+    widthTiles: room.bounds.cols,
+    text: room.name,
+    ownerAgentId: null,
+    hostId: room.hostId,
+    agentIds: [],
+    civicRoomId: room.civicRoomId,
+  });
 }
 interface SpotPlacement {
   readonly kind: OfficeErrandKind;
@@ -762,6 +788,39 @@ function placeFixture(
     prop(geometry, part.name, tile.col + part.col, tile.row + part.row);
   }
 }
+/**
+ * The amenities along wing 0's plaza, in the order they are laid.
+ *
+ * Hoisted out of `plazaProps` because the civic bay is placed PAST them and has
+ * to know where they stop without laying them a second time.
+ */
+const PLAZA_FIXTURES: ReadonlyArray<readonly [OfficeErrandKind, number]> = [
+  ["cafe", 2],
+  ["cafe", 2],
+  ["coffee", 1],
+  ["sofa", 2],
+  ["pingpong", 2],
+  ["nap", 1],
+  ["nap", 1],
+  ["read", 1],
+  ["treadmill", 1],
+  ["cooler", 1],
+  ["water-plant", 1],
+];
+/** What every wing after the first adds: two tables and two nap spots. */
+const PLAZA_WING_FIXTURES: ReadonlyArray<readonly [OfficeErrandKind, number]> =
+  [
+    ["cafe", 2],
+    ["cafe", 2],
+    ["nap", 1],
+    ["nap", 1],
+  ];
+const PLAZA_FIXTURE_COL = 4;
+const PLAZA_WING_STEP = 23;
+const PLAZA_WING_PITCH = 3;
+const RECEPTION_COL = 3;
+const RECEPTION_WIDTH_TILES = 2;
+
 function plazaProps(
   geometry: Geometry,
   building: Building,
@@ -769,22 +828,9 @@ function plazaProps(
 ): OfficeErrandSpot[] {
   const spots: OfficeErrandSpot[] = [];
   const row = building.plazaRow;
-  const start = building.col + 4;
-  const fixtures: ReadonlyArray<readonly [OfficeErrandKind, number]> = [
-    ["cafe", 2],
-    ["cafe", 2],
-    ["coffee", 1],
-    ["sofa", 2],
-    ["pingpong", 2],
-    ["nap", 1],
-    ["nap", 1],
-    ["read", 1],
-    ["treadmill", 1],
-    ["cooler", 1],
-    ["water-plant", 1],
-  ];
+  const start = building.col + PLAZA_FIXTURE_COL;
   let col = start;
-  for (const [i, [kind, width]] of fixtures.entries()) {
+  for (const [i, [kind, width]] of PLAZA_FIXTURES.entries()) {
     const tile = { col, row: row + (kind === "pingpong" ? 3 : 1) };
     placeFixture(geometry, kind, tile);
     for (let dx = 0; dx < width; dx += 1)
@@ -836,13 +882,15 @@ function plazaProps(
   }
   // Every additional wing gets two tables and two nap spots, each a fixture.
   for (let wing = 1; wing < building.wings; wing += 1) {
-    for (let i = 0; i < 4; i += 1) {
-      const tile = { col: start + wing * 23 + i * 3, row: row + 1 };
+    for (const [i, [kind, width]] of PLAZA_WING_FIXTURES.entries()) {
+      const tile = {
+        col: start + wing * PLAZA_WING_STEP + i * PLAZA_WING_PITCH,
+        row: row + 1,
+      };
       if (tile.col + 2 >= building.col + building.width) continue;
-      const kind = i < 2 ? "cafe" : "nap";
       placeFixture(geometry, kind, tile);
-      geometry.walkable[tile.row][tile.col] = false;
-      if (kind === "cafe") geometry.walkable[tile.row][tile.col + 1] = false;
+      for (let dx = 0; dx < width; dx += 1)
+        geometry.walkable[tile.row][tile.col + dx] = false;
       spots.push(
         spot({
           kind: kind,
@@ -855,17 +903,332 @@ function plazaProps(
       );
     }
   }
-  prop(geometry, "reception", building.col + 3, row + 3);
-  geometry.walkable[row + 3][building.col + 3] = false;
-  geometry.walkable[row + 3][building.col + 4] = false;
+  prop(geometry, "reception", building.col + RECEPTION_COL, row + 3);
+  for (let dx = 0; dx < RECEPTION_WIDTH_TILES; dx += 1)
+    geometry.walkable[row + 3][building.col + RECEPTION_COL + dx] = false;
   return spots;
 }
-function floorFor(
+
+// ---- The plaza's civic rooms ------------------------------------------- //
+//
+// A HOST'S FOUR CIVIC ROOMS ARE PHYSICAL, so it has one of each, and they live
+// on its PLAZA storey: the only storey with a way in from outside, and the only
+// one a vehicle can reach. Every other storey carries `civic: []` and
+// `road: null`. An agent that crashes on storey seven walks down to these beds
+// the one way this view joins storeys at all, which is the stairwell.
+
+/** How many of the plaza band's five rows the bay takes: all but the lane. */
+const PLAZA_BAY_ROWS = 4;
+/** Its screen's column apart, the narrowest ward that still holds two beds. */
+const PLAZA_BAY_MIN_COLS = 3;
+/** The bay's front walk, and so the row its door stands in. */
+const PLAZA_BAY_DOOR_ROW = 3;
+const BED_WIDTH_TILES = 2;
+/** Beds on the bay's first and third rows, so each row has a clear one under it. */
+const PLAZA_BED_ROWS: ReadonlyArray<number> = [0, 2];
+/** Where the chair run starts: one clear tile past the pingpong's right spot. */
+const PLAZA_LOUNGE_COL = 14;
+/** The plaza's aisle row, which is also its street. */
+const PLAZA_ROAD_ROW = 4;
+
+/** The last column any plaza amenity occupies, every wing's counted. */
+function plazaFixturesEnd(building: Building): number {
+  const start = building.col + PLAZA_FIXTURE_COL;
+  let end = start - 1;
+  for (const [, width] of PLAZA_FIXTURES) end += width;
+  for (let wing = 1; wing < building.wings; wing += 1) {
+    for (const [i, [, width]] of PLAZA_WING_FIXTURES.entries()) {
+      const col = start + wing * PLAZA_WING_STEP + i * PLAZA_WING_PITCH;
+      // The wing loop's own clipping guard, so a fixture this building is too
+      // narrow to hold does not push the bay off the end of the plaza.
+      if (col + 2 >= building.col + building.width) continue;
+      end = Math.max(end, col + width - 1);
+    }
+  }
+  return end;
+}
+
+/**
+ * The screened bay at the plaza's far end: everything past the last wing's
+ * amenities, out to the inside face of the right-hand wall.
+ *
+ * PAST THE AMENITIES RATHER THAN AT A FIXED COLUMN, which is what makes this
+ * ward a parameter instead of a fixed room: one wing leaves it six columns and
+ * four beds, and every wing after that leaves it room for the formula's eight.
+ * The clamp is an invariant rather than a branch - the guard above already
+ * keeps three columns clear - but a ward with nowhere to put two beds is not a
+ * ward, so it is written down instead of assumed.
+ */
+function plazaBay(building: Building): OfficeTileRect {
+  const wall = building.col + building.width - 1;
+  const col = Math.min(
+    plazaFixturesEnd(building) + 1,
+    wall - PLAZA_BAY_MIN_COLS,
+  );
+  return {
+    col,
+    row: building.plazaRow,
+    cols: wall - col,
+    rows: PLAZA_BAY_ROWS,
+  };
+}
+
+/**
+ * The lane along the plaza's front: the aisle row, wall to wall.
+ *
+ * This view's lobby row, used exactly as the Floor's is - the entrance stands
+ * on it, the reception queue forms on it, and the stroll lane runs along it -
+ * so it is the row a vehicle pulls up on. Drawn, never searched: the queue
+ * standing on it is people to drive past, not a wall to route around.
+ *
+ * ONE ROAD PER BUILDING, entered from that building's own four-column gap
+ * rather than from the world's left edge, so two hosts never share a kerb. It
+ * runs one way across the plaza and out the other side: a vehicle passes every
+ * kerb on it without ever turning back along its own tiles.
+ */
+function plazaRoad(building: Building): OfficeRoad {
+  const row = building.plazaRow + PLAZA_ROAD_ROW;
+  const tiles: OfficeTilePos[] = [];
+  for (let col = building.col; col < building.col + building.width; col += 1)
+    tiles.push({ col, row });
+  return { entryTile: tiles[0], tiles, exitTile: tiles[tiles.length - 1] };
+}
+
+/**
+ * The road tile a door in this column opens straight onto - the tile one step
+ * out, because every civic door in this view stands on the row above the lane.
+ *
+ * The fallback cannot fire for a door inside the building, and it is deliberate
+ * that it returns a tile the adjacency case will reject rather than a plausible
+ * one: a kerb that stopped being next to its door should fail loudly.
+ */
+function kerbBelow(road: OfficeRoad, col: number): OfficeTilePos {
+  return road.tiles.find((tile) => tile.col === col) ?? road.entryTile;
+}
+
+function civicRoomIdOf(
+  hostId: string | null,
+  floorIndex: number,
+  kind: OfficeCivicKind,
+): string {
+  return [hostKey(hostId), floorIndex, "civic", kind].join("/");
+}
+
+interface CivicSeatRun {
+  readonly civicRoomId: string;
+  readonly kind: "bed" | "lounge";
+  readonly tiles: ReadonlyArray<OfficeTilePos>;
+  readonly floorIndex: number;
+  readonly hostId: string | null;
+}
+
+/**
+ * One seat per bed or chair, numbered in the order the furniture was laid.
+ *
+ * The ids are `"<roomId>/<i>"`, which makes them stable for the reason a desk's
+ * id is: the room is a function of the host's agent count, and the n-th bed
+ * keeps its number whatever else on the plaza moves.
+ */
+function civicSeatRun(run: CivicSeatRun): OfficeSeat[] {
+  const { civicRoomId, kind, tiles, floorIndex, hostId } = run;
+  return tiles.map((tile, index) => ({
+    seatId: `${civicRoomId}/${index}`,
+    kind,
+    // A bed is LAIN ON and a chair is SAT IN, so the occupant's tile is the
+    // furniture's own - there is no chair beside it to walk to.
+    deskTile: tile,
+    chairTile: tile,
+    facing: "down",
+    hitTiles: { width: kind === "bed" ? BED_WIDTH_TILES : 1, height: 1 },
+    // Oblique paints a seat on its own tiles; the tiles box already fits.
+    hitBox: null,
+    floorIndex,
+    // A civic seat belongs to no ROOM RUN: it is the bay's, and the bay is the
+    // plaza's. `roomId` names a run of desks everywhere else in this view.
+    roomId: null,
+    hostId,
+    manager: false,
+    civicRoomId,
+  }));
+}
+
+interface PlazaCivic {
+  readonly rooms: ReadonlyArray<OfficeCivicRoom>;
+  readonly seats: ReadonlyArray<OfficeSeat>;
+  readonly road: OfficeRoad;
+}
+
+/**
+ * The plaza's four civic rooms, their furniture and the street they face.
+ *
+ * Two of the four are places that were already standing here and are given
+ * their record now: the help desk IS the reception (C7), and the archive is a
+ * door in the outer wall. Only the ward and the chair run are new furniture.
+ */
+function buildPlazaCivic(
+  geometry: Geometry,
   building: Building,
-  bounds: OfficeTileRect,
-  corridorTiles: OfficeTilePos[],
-  errandSpots: OfficeErrandSpot[],
-): OfficeFloor {
+  floorIndex: number,
+  agents: number,
+): PlazaCivic {
+  const road = plazaRoad(building);
+  const bay = plazaBay(building);
+  const capacity = civicCapacityFor(agents);
+  const hostId = building.hostId;
+  const walkRow = building.plazaRow + PLAZA_BAY_DOOR_ROW;
+
+  // The ward is glazed down its left-hand column so the plaza can see in, with
+  // the gap at the bottom for the way through. The screen is the only thing
+  // here that blocks: a bed is a tile somebody lies down ON, so bed tiles stay
+  // open, and the two clear rows between them mean every bed has a walkable
+  // neighbour - all `findOfficePath` needs, since a goal tile always enters.
+  for (let row = 0; row < PLAZA_BAY_DOOR_ROW; row += 1) {
+    prop(geometry, "glass-partition", bay.col, bay.row + row);
+    geometry.walkable[bay.row + row][bay.col] = false;
+  }
+  const perRow = Math.floor((bay.cols - 1) / BED_WIDTH_TILES);
+  const bedCount = Math.min(capacity.beds, perRow * PLAZA_BED_ROWS.length);
+  const bedTiles: OfficeTilePos[] = [];
+  for (const row of PLAZA_BED_ROWS) {
+    for (let i = 0; i < perRow && bedTiles.length < bedCount; i += 1) {
+      bedTiles.push({
+        col: bay.col + 1 + i * BED_WIDTH_TILES,
+        row: bay.row + row,
+      });
+    }
+  }
+  const wardDoor: OfficeTilePos = { col: bay.col, row: walkRow };
+  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  // The cross goes ON the doorway rather than beside it. Beside it would be the
+  // one tile the way in leads to, and a blocking prop there would seal the ward.
+  prop(geometry, "cross-sign", wardDoor.col, wardDoor.row);
+  const beds = civicSeatRun({
+    civicRoomId: wardId,
+    kind: "bed",
+    tiles: bedTiles,
+    floorIndex,
+    hostId,
+  });
+
+  // The chair run waits along the plaza's front, between the pingpong and the
+  // ward, facing the lane the way the reception queue does.
+  const loungeCol = building.col + PLAZA_LOUNGE_COL;
+  const loungeId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const chairCount = Math.min(
+    capacity.chairs,
+    Math.max(0, bay.col - loungeCol),
+  );
+  const chairs = civicSeatRun({
+    civicRoomId: loungeId,
+    kind: "lounge",
+    tiles: Array.from({ length: chairCount }, (_unused, i) => ({
+      col: loungeCol + i,
+      row: walkRow,
+    })),
+    floorIndex,
+    hostId,
+  });
+
+  // The counter's own end, where the bell is and where the queue forms. NOT the
+  // building's entrance, which stands on the lane itself: a door that is a road
+  // tile is a door a vehicle drives through.
+  const receptionTile: OfficeTilePos = {
+    col: building.col + RECEPTION_COL,
+    row: walkRow,
+  };
+  const deskDoor: OfficeTilePos = {
+    col: receptionTile.col + RECEPTION_WIDTH_TILES,
+    row: walkRow,
+  };
+
+  // The records door, in the near outer wall on the far side of the entrance
+  // from the counter, so the way out and the way to the archive are never the
+  // same walk. Punched walkable like the entrance beside it: an archived agent
+  // walks INTO it, and the column outside is the gap between buildings, which
+  // has no floor - so opening it joins nothing. A row up from the lane, because
+  // nothing drives to the archive and its door is not a kerb.
+  const archiveDoor: OfficeTilePos = { col: building.col, row: walkRow };
+  geometry.walkable[archiveDoor.row][archiveDoor.col] = true;
+  prop(geometry, "records-door", archiveDoor.col, archiveDoor.row);
+
+  const rooms: ReadonlyArray<OfficeCivicRoom> = [
+    {
+      civicRoomId: wardId,
+      kind: "infirmary",
+      bounds: bay,
+      doorTile: wardDoor,
+      signTile: { col: bay.col, row: bay.row },
+      name: "Dispensary",
+      seatIds: beds.map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      kerbTile: kerbBelow(road, wardDoor.col),
+    },
+    {
+      civicRoomId: loungeId,
+      kind: "waiting-room",
+      bounds: { col: loungeCol, row: walkRow, cols: chairCount, rows: 1 },
+      // A one-row room's way in is its own first tile, the way the archive's is.
+      doorTile: { col: loungeCol, row: walkRow },
+      signTile: { col: loungeCol, row: walkRow },
+      name: "Waiting room",
+      seatIds: chairs.map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      // Nothing drives to the waiting room (C6), so it names no kerb.
+      kerbTile: null,
+    },
+    {
+      civicRoomId: civicRoomIdOf(hostId, floorIndex, "help-desk"),
+      kind: "help-desk",
+      // THE COUNTER'S OWN ROW AND NOTHING ABOVE IT. The row above is where the
+      // plaza's amenities put the tiles they are used FROM, so a room that
+      // reached up into it would be a room with a coffee queue inside it. The
+      // Floor's front desk can take the row in front of its counter because
+      // that floor's queue stands there; this plaza's queue stands on the lane.
+      bounds: {
+        col: receptionTile.col,
+        row: walkRow,
+        cols: RECEPTION_WIDTH_TILES + 1,
+        rows: 1,
+      },
+      doorTile: deskDoor,
+      signTile: receptionTile,
+      name: "Front desk",
+      // Standing at a counter is not sitting down, so it carries no seats.
+      seatIds: [],
+      floorIndex,
+      hostId,
+      kerbTile: kerbBelow(road, deskDoor.col),
+    },
+    {
+      civicRoomId: civicRoomIdOf(hostId, floorIndex, "archive"),
+      kind: "archive",
+      bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
+      doorTile: archiveDoor,
+      signTile: archiveDoor,
+      name: "Records",
+      seatIds: [],
+      floorIndex,
+      hostId,
+      // Nobody is collected from the archive (C6).
+      kerbTile: null,
+    },
+  ];
+  return { rooms, seats: [...beds, ...chairs], road };
+}
+
+interface FloorRequest {
+  readonly building: Building;
+  readonly bounds: OfficeTileRect;
+  readonly corridorTiles: OfficeTilePos[];
+  readonly errandSpots: OfficeErrandSpot[];
+  /** The plaza storey's four rooms; every other storey's is empty (ruling 1b). */
+  readonly civic: ReadonlyArray<OfficeCivicRoom>;
+  readonly road: OfficeRoad | null;
+}
+function floorFor(request: FloorRequest): OfficeFloor {
+  const { building, bounds, corridorTiles, errandSpots } = request;
   return {
     hostId: building.hostId,
     bounds,
@@ -885,10 +1248,8 @@ function floorFor(
     gameRoom: null,
     areaSigns: [],
     amenities: [],
-    // No civic rooms and no street here yet: K1 plans them on the Floor only,
-    // and K2 fills these in with the plaza's own bays and the ground row.
-    civic: [],
-    road: null,
+    civic: request.civic,
+    road: request.road,
   };
 }
 function paintStairs(
@@ -943,10 +1304,13 @@ function paintBuilding(
     hostId: building.hostId,
     agentIds: [],
   });
+  // The plaza's own name stops where the ward's bay starts. It used to run to
+  // the far wall, which is now somebody else's plate.
+  const areaCol = building.col + 3;
   sign(geometry, {
     kind: "area",
-    tile: { col: building.col + 3, row: building.plazaRow },
-    widthTiles: building.width - 4,
+    tile: { col: areaCol, row: building.plazaRow },
+    widthTiles: plazaBay(building).col - areaCol,
     text: "Plaza",
     ownerAgentId: null,
     hostId: building.hostId,
@@ -1260,23 +1624,41 @@ function materializeRooms(
   }
 }
 function materializeStorey(context: PlanContext, storey: Storey): void {
-  const { packing, geometry } = context;
+  const { packing, geometry, input } = context;
   const location = storeyLocation(packing, storey);
-  const { building, bounds } = location;
+  const { building, bounds, plaza } = location;
   const corridors = paintAisle(context, location);
   const spots = paintStoreySpots(context, storey, location);
   materializeSeats(context, storey, location);
   materializeRooms(context, storey, location);
+  // The four rooms are the HOST's, sized from everyone it is running, and they
+  // stand on its plaza alone. Every other storey reaches them by the stairwell.
+  const civic = plaza
+    ? buildPlazaCivic(
+        geometry,
+        building,
+        storey.id,
+        input.agents.filter((agent) => agent.hostId === building.hostId).length,
+      )
+    : null;
+  if (civic !== null) {
+    for (const seat of civic.seats) geometry.seats.set(seat.seatId, seat);
+    for (const room of civic.rooms) civicSign(geometry, room);
+  }
   const spotTiles = new Set(
     spots.map((item) => `${item.tile.col}/${item.tile.row}`),
   );
   geometry.floors.push(
-    floorFor(
+    floorFor({
       building,
       bounds,
-      corridors.filter((tile) => !spotTiles.has(`${tile.col}/${tile.row}`)),
-      spots,
-    ),
+      corridorTiles: corridors.filter(
+        (tile) => !spotTiles.has(`${tile.col}/${tile.row}`),
+      ),
+      errandSpots: spots,
+      civic: civic?.rooms ?? [],
+      road: civic?.road ?? null,
+    }),
   );
 }
 function aliasHqBoards(packing: ObliquePacking, geometry: Geometry): void {
