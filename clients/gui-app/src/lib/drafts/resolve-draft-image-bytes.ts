@@ -13,7 +13,9 @@
  *     the blob methods, when the upload never happened, and when the owner host
  *     is not the host this surface targets.
  *  3. **The cloud `image-attachment` blob** that `DraftPublicationService`
- *     already publishes. This leg is T6's; see {@link readCloudDraftImageBytes}.
+ *     already publishes. Missing when the draft was never published, and when
+ *     nothing has told this window where the blob lives - see
+ *     `cloud-draft-image-recovery.ts`.
  *
  * So the resolver tries them in that order - cheapest and most local first -
  * and answers `null` rather than throwing when none of them has the bytes. A
@@ -32,6 +34,7 @@ import type { ImageBytes } from "@/lib/attachments/image-bytes";
 import { getImageBytes } from "@/lib/composer/landing-image-store";
 import { appLogger, describeLogError } from "@/lib/logger";
 
+import { readCloudDraftImageBytes } from "./cloud-draft-image-recovery";
 import {
   readDraftBlobsIntoLocalStore,
   type DraftBlobClient,
@@ -125,17 +128,9 @@ async function readHostDraftImageBytes(
   }
 }
 
-/**
- * Leg 3, the cloud `image-attachment` blob. T6 (client cloud-blob recovery)
- * fills this in; until then a draft whose bytes reached neither this window nor
- * the target host resolves nowhere, and the node stays hash-only for the host's
- * guard - which is exactly the behaviour the failure table already specifies
- * for "local bytes gone and the host has none".
- *
- * A typed `null` rather than an absent leg on purpose: the resolution ORDER is
- * part of this module's contract, and a leg that does not exist yet still has
- * to hold its place in it.
- */
-function readCloudDraftImageBytes(_hash: string): Promise<ImageBytes | null> {
-  return Promise.resolve(null);
-}
+// Leg 3 is `readCloudDraftImageBytes` from `cloud-draft-image-recovery.ts`: the
+// published `image-attachment` blob, read through whatever host this DEVICE
+// runs, digest-verified on the way into this window's partition. It is last
+// because it is the only leg that leaves the device, and it answers `null` for
+// a hash no cloud draft has named - which keeps this module's contract
+// unchanged for every surface that never sees a replica.
