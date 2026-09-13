@@ -234,6 +234,79 @@ function nextAvailableTour(
   return null;
 }
 
+/**
+ * A user who reached the task panels on their own, from one of the two tours
+ * that lead there. The tour they left is finished - `done` for terminal-mode,
+ * `bypassed` for submit-prompt - and anything the chain would have shown
+ * between it and the panels is bypassed: shown as replayable, never counted
+ * as done. A Settings replay ends on its own tour and never jumps.
+ */
+function detourFlow(
+  data: OnboardingFlowData,
+  fromTourId: TourId,
+): OnboardingFlowData {
+  if (fromTourId !== "terminal-mode" && fromTourId !== "submit-prompt") {
+    return data;
+  }
+  const finished: TourProgress = {
+    status: fromTourId === "terminal-mode" ? "done" : "bypassed",
+    stepId: null,
+    completedAt: fromTourId === "terminal-mode" ? Date.now() : null,
+  };
+  const afterFinish: OnboardingFlowData = {
+    ...data,
+    tours: withTour(data, fromTourId, finished),
+  };
+  if (data.chainScope === "single" || data.branch === null) {
+    return completeChainOf(afterFinish);
+  }
+  return activate(
+    { ...afterFinish, tours: bypassBetween(afterFinish, fromTourId) },
+    "task-panels",
+  );
+}
+
+/**
+ * Every tour strictly between `from` and task-panels in the branch order
+ * that is not already done becomes bypassed.
+ */
+function bypassBetween(
+  data: OnboardingFlowData,
+  from: TourId,
+): Readonly<Record<TourId, TourProgress>> {
+  if (data.branch === null) return data.tours;
+  const order = BRANCH_TOUR_ORDER[data.branch];
+  const fromIndex = order.indexOf(from);
+  const toIndex = order.indexOf("task-panels");
+  if (fromIndex < 0 || toIndex <= fromIndex) return data.tours;
+  let tours = data.tours;
+  for (const between of order.slice(fromIndex + 1, toIndex)) {
+    if (tours[between].status === "done") continue;
+    tours = { ...tours, [between]: { ...AVAILABLE_TOUR, status: "bypassed" } };
+  }
+  return tours;
+}
+
+/** The tour is finished; the chain moves on, or ends. */
+function finishTourFlow(
+  data: OnboardingFlowData,
+  tourId: TourId,
+): OnboardingFlowData {
+  const afterFinish: OnboardingFlowData = {
+    ...data,
+    tours: withTour(data, tourId, {
+      status: "done",
+      stepId: null,
+      completedAt: Date.now(),
+    }),
+  };
+  if (data.chainScope === "single") return completeChainOf(afterFinish);
+  const following = nextAvailableTour(afterFinish, tourId);
+  return following === null
+    ? completeChainOf(afterFinish)
+    : activate(afterFinish, following);
+}
+
 function advanceFlow(
   data: OnboardingFlowData,
   expectedTourId: TourId,
@@ -246,66 +319,13 @@ function advanceFlow(
   const current = data.tours[expectedTourId];
   const currentStep = current.stepId ?? firstStepOf(expectedTourId);
   if (currentStep !== expectedStepId) return data;
-
-  if (reason === "detour") {
-    // A user who reached the task panels on their own, from the two tours
-    // that lead there. Anything the chain would have shown between here and
-    // the panels is bypassed - shown as replayable, never counted as done.
-    if (
-      expectedTourId !== "terminal-mode" &&
-      expectedTourId !== "submit-prompt"
-    ) {
-      return data;
-    }
-    const finished: TourProgress = {
-      status: expectedTourId === "terminal-mode" ? "done" : "bypassed",
-      stepId: null,
-      completedAt: expectedTourId === "terminal-mode" ? Date.now() : null,
-    };
-    const afterFinish: OnboardingFlowData = {
-      ...data,
-      tours: withTour(data, expectedTourId, finished),
-    };
-    // A Settings replay ends on its own tour; it never jumps to the panels.
-    if (data.chainScope === "single" || data.branch === null) {
-      return completeChainOf(afterFinish);
-    }
-    const order = BRANCH_TOUR_ORDER[data.branch];
-    const from = order.indexOf(expectedTourId);
-    const to = order.indexOf("task-panels");
-    let tours = afterFinish.tours;
-    if (from >= 0 && to > from) {
-      for (const between of order.slice(from + 1, to)) {
-        if (tours[between].status === "done") continue;
-        tours = {
-          ...tours,
-          [between]: { ...AVAILABLE_TOUR, status: "bypassed" },
-        };
-      }
-    }
-    return activate({ ...afterFinish, tours }, "task-panels");
-  }
-
+  if (reason === "detour") return detourFlow(data, expectedTourId);
   const next = nextStepOf(expectedTourId, currentStep);
-  if (next !== null) {
-    return {
-      ...data,
-      tours: withTour(data, expectedTourId, { ...current, stepId: next }),
-    };
-  }
-  const afterFinish: OnboardingFlowData = {
+  if (next === null) return finishTourFlow(data, expectedTourId);
+  return {
     ...data,
-    tours: withTour(data, expectedTourId, {
-      status: "done",
-      stepId: null,
-      completedAt: Date.now(),
-    }),
+    tours: withTour(data, expectedTourId, { ...current, stepId: next }),
   };
-  if (data.chainScope === "single") return completeChainOf(afterFinish);
-  const following = nextAvailableTour(afterFinish, expectedTourId);
-  return following === null
-    ? completeChainOf(afterFinish)
-    : activate(afterFinish, following);
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────
