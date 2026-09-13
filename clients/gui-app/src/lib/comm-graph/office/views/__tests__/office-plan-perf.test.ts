@@ -682,20 +682,54 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
       0,
     );
     const steps = Math.ceil((longest / 6) * 10) + 60;
+    // HOW MANY WERE EXTANT AT ONE TIME, which is the claim in the title and
+    // is not what `seenVehicles` measures. That one SUMS sightings across
+    // kerbs and ticks, so a single vehicle seen twice reaches two and a scene
+    // capped at one vehicle satisfies it completely - the case would have gone
+    // on passing against a `MAX_VEHICLES = 1` build while claiming to measure
+    // the budget under two. The whole world is the right frame for it: two
+    // trips for different rooms are rarely inside one kerb's rect, and a
+    // vehicle mid-drive is inside none of them.
+    let mostAtOnce = 0;
+    const wholeWorld: OfficeRect = {
+      x: 0,
+      y: 0,
+      width: world.width,
+      height: world.height,
+    };
+    const extant = (): number => {
+      const frame = scene.frame(1, wholeWorld);
+      return frame.world === null
+        ? frame.actors.filter((drawable) => drawable.kind === "vehicle").length
+        : frame.world.filter((entry) => entry.drawable.kind === "vehicle")
+            .length;
+    };
     for (let step = 0; step < steps; step += 1) {
       for (const rect of kerbs) seenVehicles += measure(rect);
-      if (seenVehicles > 0 && step > 0) break;
+      mostAtOnce = Math.max(mostAtOnce, extant());
+      // BOTH, before stopping: two on the road together AND one of them
+      // actually sighted at a kerb. Either alone ends the sweep too early -
+      // the pair exists within a tick or two of dispatch, long before anybody
+      // has driven anywhere, and stopping at the first sighting is what let
+      // the weaker assertion look satisfied.
+      if (mostAtOnce >= 2 && seenVehicles > 0 && step > 0) break;
       scene.tick(100);
     }
 
     // ANTI-VACUITY, and the whole point of the case: a budget that holds
     // because no vehicle was ever on the road proves nothing about vehicles.
-    // Driven by the DATA - a view whose floors carry no road cannot dispatch,
-    // and at this base only one does. The cross-view guard is outside the
-    // `describe.each`, where a run that dispatched nowhere at all is caught.
+    // Driven by the DATA - a view whose floors carry no road cannot dispatch.
+    // The cross-view guard is outside the `describe.each`, where a run that
+    // dispatched nowhere at all is caught.
     const drives = layout.floors.some((floor) => floor.road !== null);
-    if (drives) expect(seenVehicles).toBeGreaterThan(0);
-    else expect(seenVehicles).toBe(0);
+    if (drives) {
+      expect(seenVehicles).toBeGreaterThan(0);
+      // The title's own claim, asserted rather than assumed.
+      expect(mostAtOnce).toBe(2);
+    } else {
+      expect(seenVehicles).toBe(0);
+      expect(mostAtOnce).toBe(0);
+    }
     expect(worst).toBeGreaterThan(0);
   });
 

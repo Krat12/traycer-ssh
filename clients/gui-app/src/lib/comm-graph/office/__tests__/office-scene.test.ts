@@ -7427,12 +7427,32 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     expect(settledTick).not.toBeNull();
     if (kerbTick === null || leftKerbTick === null || settledTick === null)
       return;
-    // This is the falsifier: dispatch before the claim/rehome passes sees the
-    // rider still at the desk and leaves after the 4s minimum. The contract
-    // requires the greater of that floor and the rider settlement, capped at
-    // 12s, so it must survive at least this many 100ms ticks at the kerb.
-    const minimumDwell = Math.max(40, Math.min(settledTick - kerbTick, 120));
+    // WHAT THIS FALSIFIES, stated correctly. An earlier version of this
+    // comment claimed the case catches a dispatch moved before the claim and
+    // rehome passes, on the reasoning that such a dispatch would "see the
+    // rider still at its desk and count it settled". It would not:
+    // `everyRiderSettled` is read in `advanceVehicle`, on the tick, long after
+    // the sync that dispatched - and nothing caches a settled flag at dispatch
+    // time. Moving dispatch earlier breaks the BED GATE instead, because
+    // `civicClaimOf` answers null before the claim pass and no ambulance is
+    // summoned at all. That is a real red, in a different case.
+    //
+    // What this case actually pins is the WAIT ITSELF, from both ends: a
+    // vehicle that leaves before its rider has settled, and one that never
+    // leaves at all.
+    const riderDwell = settledTick - kerbTick;
+    const minimumDwell = Math.max(40, Math.min(riderDwell, 120));
     expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
+    // THE CEILING, which the lower bound alone never checked: a vehicle that
+    // waited thirty seconds satisfied "capped at twelve" perfectly well,
+    // because the watch runs for fifty and nothing here looked at the top.
+    expect(leftKerbTick - kerbTick).toBeLessThanOrEqual(120);
+    // AND THAT THE RIDER IS WHAT SET IT. Without this the floor alone could
+    // satisfy the bound above, and a vehicle that ignored its rider entirely
+    // and left at four seconds would pass every assertion in this case. It
+    // holds only because the walk to the ward is longer than the floor, which
+    // is a fact about the fixture and so is asserted rather than assumed.
+    expect(riderDwell).toBeGreaterThan(40);
   });
 
   it("never dispatches while reduced motion is on", () => {
