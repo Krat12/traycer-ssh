@@ -1,6 +1,10 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import { XIcon } from "lucide-react";
 import type { TooltipRenderProps } from "react-joyride";
+import {
+  armFocusNextCard,
+  consumeFocusNextCard,
+} from "@/components/onboarding/tour/tour-activation";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 
@@ -25,13 +29,6 @@ import { Kbd } from "@/components/ui/kbd";
 export const TOUR_TOOLTIP_TITLE_ID = "onboarding-tour-title";
 export const TOUR_TOOLTIP_BODY_ID = "onboarding-tour-body";
 
-/**
- * Keyboard Next moves focus into the NEXT card (a mouse click leaves focus
- * where the pointer put it). A click with `detail === 0` is a keyboard
- * activation; the flag is read by the next card that mounts.
- */
-let focusNextCard = false;
-
 export function OnboardingTourTooltip(
   props: TooltipRenderProps,
 ): React.ReactElement {
@@ -39,14 +36,17 @@ export function OnboardingTourTooltip(
     props;
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Keyboard Next moves focus into the NEXT card (a mouse click leaves focus
+  // where the pointer put it). A click with `detail === 0` is a keyboard
+  // activation; the intent is scoped to the current activation and is never
+  // armed by a final Finish (see `tour-activation.ts`).
   useEffect(() => {
-    if (!focusNextCard) return;
-    focusNextCard = false;
+    if (!consumeFocusNextCard()) return;
     cardRef.current?.focus({ preventScroll: true });
   }, []);
 
   const handlePrimary = (event: MouseEvent<HTMLElement>): void => {
-    if (event.detail === 0) focusNextCard = true;
+    if (event.detail === 0 && !isLastStep) armFocusNextCard();
     primaryProps.onClick(event);
   };
 

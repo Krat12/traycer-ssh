@@ -27,6 +27,11 @@ import {
   type StepPresentation,
 } from "@/components/onboarding/tour/tour-steps";
 import {
+  getActivationToken,
+  startActivationWatch,
+  subscribeActivation,
+} from "@/components/onboarding/tour/tour-activation";
+import {
   createTargetTracker,
   cssAttributeValue,
   observeTourTargets,
@@ -307,6 +312,16 @@ export function useOnboardingTourController(): OnboardingTourController {
   const modalSuspended = suspension === "suspended";
   const run = chainActive && active !== null && suspension === "settled";
 
+  // ── Activation token ────────────────────────────────────────────────────
+  // See `tour-activation.ts`: moves synchronously with a chain start / pause
+  // / end / replay or an identity change, and drops pending receipts.
+  useEffect(() => startActivationWatch(), []);
+  const activation = useSyncExternalStore(
+    subscribeActivation,
+    getActivationToken,
+    getActivationToken,
+  );
+
   // ── Presence ────────────────────────────────────────────────────────────
   const setTourBusy = useOnboardingPresenceStore((state) => state.setTourBusy);
   useEffect(() => {
@@ -414,10 +429,12 @@ export function useOnboardingTourController(): OnboardingTourController {
         };
       }
       if (tourId === "history") {
-        return {
-          node: resolveAnchor(scope, "landing-history"),
-          scrollNode: resolveHistoryRow(scope, historyEpicIdsRef.current),
-        };
+        // Unresolved until the first imported/unseen row is mounted
+        // (decision 19): unrelated rows already in the list are not the
+        // lesson's, and without a row the timeout fallback must run.
+        const row = resolveHistoryRow(scope, historyEpicIdsRef.current);
+        if (row === null) return { node: null, scrollNode: null };
+        return { node: resolveAnchor(scope, "landing-history"), scrollNode: row };
       }
       return {
         node: resolveAnchor(scope, TOUR_LESSONS[tourId].anchor),
@@ -542,6 +559,7 @@ export function useOnboardingTourController(): OnboardingTourController {
       // Closed over the epoch and ids this renderer was built for: a late
       // event from a replaced renderer, a stale replay or another lesson
       // reaches no store action.
+      if (getActivationToken() !== activation) return;
       if (tracker.getSnapshot().epoch !== epoch || active === null) return;
       if (data.step.id !== active.tourId) return;
       const store = useOnboardingFlowStore.getState();
@@ -595,7 +613,7 @@ export function useOnboardingTourController(): OnboardingTourController {
           return;
       }
     },
-    [epoch, active, guardedAdvance, tracker],
+    [activation, epoch, active, guardedAdvance, tracker],
   );
 
   // ── Lesson predicates ───────────────────────────────────────────────────
@@ -608,7 +626,7 @@ export function useOnboardingTourController(): OnboardingTourController {
   const folderBaselineRef = useRef<{ key: string; paths: ReadonlySet<string> } | null>(null);
   const folderBaselineKey =
     chainActive && activeTourId === "add-folder"
-      ? `${activeTourId}|${draftId ?? ""}|${hostId ?? ""}|${flow.chainScope}`
+      ? `${activation}|${activeTourId}|${draftId ?? ""}|${hostId ?? ""}`
       : null;
   useEffect(() => {
     if (folderBaselineKey === null) {
@@ -646,29 +664,27 @@ export function useOnboardingTourController(): OnboardingTourController {
     const latest: LandingAttemptDispatch | undefined =
       dispatches[dispatches.length - 1];
     if (latest === undefined || latest.draftId !== draftId) return;
+    // The lesson is bound to a host for life: an attempt on another host is
+    // not this lesson's, however the draft matches.
+    if (hostId !== null && latest.hostId !== hostId) return;
     if (latest.attemptId === attemptId) return;
+    // Both landing lessons wait on both kinds: a Start is the A2 detour, a
+    // sent prompt during the mode lesson completes mode AND prompt.
     const relevant =
-      (active.tourId === "submit-prompt") ||
-      (active.tourId === "terminal-mode" && latest.kind === "tui-accepted");
+      active.tourId === "submit-prompt" || active.tourId === "terminal-mode";
     if (!relevant) return;
     setContext({ attemptId: latest.attemptId, hostId: latest.hostId });
-  }, [chainActive, active, draftId, attemptId, dispatchSequence, setContext]);
+  }, [chainActive, active, draftId, hostId, attemptId, dispatchSequence, setContext]);
 
-  // Accepted receipts: prompt-accepted completes the prompt lesson;
-  // tui-accepted (accepted Start) detours mode/prompt to the panels. Every
-  // id must match; a receipt is consumed once, for one lesson.
+  // Accepted receipts: prompt-accepted completes the prompt lesson (and,
+  // arriving during the mode lesson, completes mode and prompt both - the
+  // user sent a real prompt); tui-accepted (accepted Start) detours mode or
+  // prompt to the panels. Every id must match; a receipt is consumed once.
   useEffect(() => {
     if (!chainActive || active === null || context === null) return;
     if (receipt === undefined || !receiptMatchesContext(receipt, context)) return;
     const tourId = active.tourId;
-    const reason: AdvanceReason | null =
-      receipt.kind === "prompt-accepted" && tourId === "submit-prompt"
-        ? "auto"
-        : receipt.kind === "tui-accepted" &&
-            (tourId === "terminal-mode" || tourId === "submit-prompt")
-          ? "detour"
-          : null;
-    if (reason === null) return;
+    if (tourId !== "terminal-mode" && tourId !== "submit-prompt") return;
     useLandingReceiptsStore.getState().consume(receipt.attemptId);
     setContext({
       epicId: receipt.epicId,
@@ -676,7 +692,17 @@ export function useOnboardingTourController(): OnboardingTourController {
       hostId: receipt.hostId,
       attemptId: null,
     });
-    guardedAdvance(tourId, active.stepId, reason);
+    if (receipt.kind === "tui-accepted") {
+      guardedAdvance(tourId, active.stepId, "detour");
+      return;
+    }
+    guardedAdvance(tourId, active.stepId, "auto");
+    if (tourId === "terminal-mode") {
+      const following = selectActiveStep(useOnboardingFlowStore.getState());
+      if (following !== null && following.tourId === "submit-prompt") {
+        guardedAdvance(following.tourId, following.stepId, "auto");
+      }
+    }
   }, [chainActive, active, context, receipt, setContext, guardedAdvance]);
 
   // history: the user opened a task - the focused ref became an epic that
@@ -684,7 +710,9 @@ export function useOnboardingTourController(): OnboardingTourController {
   // unrelated epic already focused at entry is not that.
   const historyBaselineRef = useRef<string | null>(null);
   const historyEntryKey =
-    chainActive && activeTourId === "history" ? `history|${draftId ?? ""}` : null;
+    chainActive && activeTourId === "history"
+      ? `${activation}|history|${draftId ?? ""}`
+      : null;
   useEffect(() => {
     if (historyEntryKey === null) {
       historyBaselineRef.current = null;
@@ -713,12 +741,6 @@ export function useOnboardingTourController(): OnboardingTourController {
       stopObserving();
     };
   }, [historyEntryKey, active, setContext, guardedAdvance]);
-
-  // Chain end / replay / identity change: nothing pending survives.
-  useEffect(() => {
-    if (chainActive) return;
-    useLandingReceiptsStore.getState().reset();
-  }, [chainActive]);
 
   const presentationOut: TourPresentation =
     !chainActive || active === null

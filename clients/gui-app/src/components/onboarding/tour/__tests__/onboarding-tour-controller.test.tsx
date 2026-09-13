@@ -4,6 +4,11 @@ import type { EventData, Props as JoyrideProps } from "react-joyride";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingTour } from "@/components/onboarding/tour/onboarding-tour";
 import {
+  armFocusNextCard,
+  consumeFocusNextCard,
+  resetActivationForTests,
+} from "@/components/onboarding/tour/tour-activation";
+import {
   resetTourDismissalForTests,
   wasTourDismissedThisLaunch,
 } from "@/components/onboarding/tour/use-onboarding-tour-controller";
@@ -20,6 +25,7 @@ import {
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
 import { tabItemId } from "@/stores/tabs/layout";
 import { useTabsStore } from "@/stores/tabs/store";
@@ -308,6 +314,7 @@ beforeEach(() => {
   joyride.mounts = 0;
   analyticsTrack.mockClear();
   resetTourDismissalForTests();
+  resetActivationForTests();
   resetModalPresenceForTests();
   useOnboardingFlowStore.setState({ ...INITIAL_FLOW });
   useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
@@ -327,6 +334,7 @@ beforeEach(() => {
     mostRecentTabIdByEpicId: {},
   });
   useSettingsStore.setState({ composerMode: "chat" });
+  useImportedUnseenStore.setState({ unseen: {} });
   useRemoteFolderPickerStore.getState().settle(null);
   if (typeof Element.prototype.checkVisibility !== "function") {
     Object.defineProperty(Element.prototype, "checkVisibility", {
@@ -759,7 +767,8 @@ describe("lesson predicates", () => {
     });
     expect(flow().activeTourId).toBe("submit-prompt");
     expect(flow().context?.attemptId).toBeNull();
-    // The right attempt on the WRONG host is not this lesson's either.
+    // The same draft on the WRONG host is not this lesson's either: never
+    // captured, and its receipt never matched.
     act(() => {
       generation = receipts.announce({
         kind: "prompt-accepted",
@@ -768,9 +777,9 @@ describe("lesson predicates", () => {
         hostId: "host-other",
       });
     });
-    expect(flow().context?.attemptId).toBe("attempt-host");
+    expect(flow().context?.attemptId).toBeNull();
+    expect(flow().context?.hostId).toBe(HOST_ID);
     act(() => {
-      flow().setContext({ hostId: HOST_ID });
       receipts.emit(
         {
           kind: "prompt-accepted",
@@ -888,6 +897,140 @@ describe("lesson predicates", () => {
       step: "submit-prompt",
       action: "auto",
     });
+  });
+
+  it("a prompt accepted DURING terminal-mode completes mode and prompt (both done, none bypassed) and lands on the panels", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true));
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    act(() => {
+      flow().advance("add-folder", "add-folder", "next");
+    });
+    const receipts = useLandingReceiptsStore.getState();
+    let generation = 0;
+    act(() => {
+      generation = receipts.announce({
+        kind: "prompt-accepted",
+        attemptId: "prompt-early",
+        draftId: DRAFT_ID,
+        hostId: HOST_ID,
+      });
+      receipts.emit(
+        {
+          kind: "prompt-accepted",
+          attemptId: "prompt-early",
+          draftId: DRAFT_ID,
+          epicId: EPIC_ID,
+          tabId: EPIC_TAB_ID,
+          hostId: HOST_ID,
+        },
+        generation,
+      );
+    });
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(flow().tours["terminal-mode"].status).toBe("done");
+    expect(flow().tours["submit-prompt"].status).toBe("done");
+    expect(flow().context).toMatchObject({ epicId: EPIC_ID, tabId: EPIC_TAB_ID });
+    expect(analyticsTrack).toHaveBeenCalledWith("onboarding_tour_step", {
+      tour: "submit-prompt",
+      step: "submit-prompt",
+      action: "auto",
+    });
+  });
+
+  it("a same-tour replay while the chain is active invalidates the old attempt's receipt and the old renderer's callback", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-send"], true));
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    act(() => {
+      flow().advance("add-folder", "add-folder", "next");
+      flow().advance("terminal-mode", "terminal-mode", "next");
+    });
+    const receipts = useLandingReceiptsStore.getState();
+    let generation = 0;
+    act(() => {
+      generation = receipts.announce({
+        kind: "prompt-accepted",
+        attemptId: "old-attempt",
+        draftId: DRAFT_ID,
+        hostId: HOST_ID,
+      });
+    });
+    expect(flow().context?.attemptId).toBe("old-attempt");
+    const oldRenderer = currentProps();
+    // Settings replays the very same tour while it is active.
+    act(() => {
+      flow().replayTour("submit-prompt");
+      flow().setContext({ draftId: DRAFT_ID, hostId: HOST_ID });
+    });
+    expect(flow().chainScope).toBe("single");
+    // The old attempt's receipt lands late: dropped (generation moved).
+    act(() => {
+      receipts.emit(
+        {
+          kind: "prompt-accepted",
+          attemptId: "old-attempt",
+          draftId: DRAFT_ID,
+          epicId: EPIC_ID,
+          tabId: EPIC_TAB_ID,
+          hostId: HOST_ID,
+        },
+        generation,
+      );
+    });
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("submit-prompt");
+    // The old renderer's Next lands late: rejected (activation moved).
+    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    expect(flow().chain).toBe("active");
+    // The replay's own Next still works.
+    next();
+    expect(flow().chain).toBe("completed");
+  });
+
+  it("history: unrelated rows do not anchor the lesson; the first imported row mounting does, and scrolls to it", async () => {
+    const surface = keep(mountDraftSurface(DRAFT_ID, ["landing-history"], true));
+    const container = surface.anchors["landing-history"];
+    if (container === undefined) throw new Error("container missing");
+    const unrelated = sized(document.createElement("li"));
+    unrelated.setAttribute("data-epic-id", "epic-unrelated");
+    container.append(unrelated);
+    act(() => {
+      useImportedUnseenStore.setState({ unseen: { [EPIC_ID]: undefined } });
+    });
+    render(<OnboardingTour />);
+    startChain("sessions");
+    let step = props().steps[props().stepIndex ?? 0];
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(step.target()).toBeNull();
+    const imported = sized(document.createElement("li"));
+    imported.setAttribute("data-epic-id", EPIC_ID);
+    await mutate(() => {
+      container.append(imported);
+    });
+    step = props().steps[props().stepIndex ?? 0];
+    if (step === undefined || typeof step.target !== "function" || typeof step.scrollTarget !== "function") {
+      throw new Error("expected function targets");
+    }
+    expect(step.target()).toBe(container);
+    expect(step.scrollTarget()).toBe(imported);
+  });
+
+  it("keyboard Finish does not arm the next-card focus; keyboard Next does, for the same activation only", () => {
+    // Direct unit of the intent store the card reads.
+    armFocusNextCard();
+    expect(consumeFocusNextCard()).toBe(true);
+    expect(consumeFocusNextCard()).toBe(false);
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    armFocusNextCard();
+    act(() => {
+      // A replay moves the activation: the armed intent no longer applies.
+      flow().replayTour("add-folder");
+    });
+    expect(consumeFocusNextCard()).toBe(false);
   });
 
   it("history: a task the user opens (new focused epic with its surface mounted) advances to the panels with that epic as context; the epic focused at entry does not", () => {
