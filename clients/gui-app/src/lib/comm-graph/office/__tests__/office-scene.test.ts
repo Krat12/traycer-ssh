@@ -5848,6 +5848,14 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     return new Map<string, OfficeAgentStatus>(ids.map((id) => [id, "failure"]));
   }
 
+  function attention(
+    ...ids: ReadonlyArray<string>
+  ): ReadonlyMap<string, OfficeAgentStatus> {
+    return new Map<string, OfficeAgentStatus>(
+      ids.map((id) => [id, "attention"]),
+    );
+  }
+
   function hasInfirmary(layout: OfficeLayout): boolean {
     return layout.floors.some((floor) =>
       floor.civic.some(
@@ -5862,6 +5870,75 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         .flatMap((floor) => floor.civic)
         .filter((room) => room.kind === "infirmary")
         .map((room) => room.name),
+    );
+  }
+
+  function civicKerbPoint(
+    layout: OfficeLayout,
+    roomKind: OfficeCivicRoom["kind"],
+  ): OfficePoint | null {
+    const room = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find(
+        (candidate) =>
+          candidate.kind === roomKind && candidate.kerbTile !== null,
+      );
+    if (room === undefined || room.kerbTile === null) return null;
+    return view.painter
+      .projector(layout)
+      .project(room.kerbTile.col + 0.5, room.kerbTile.row + 1);
+  }
+
+  function atPoint(
+    vehicle: OfficeVehicleDrawable,
+    point: OfficePoint,
+  ): boolean {
+    return vehicle.x === point.x && vehicle.y === point.y;
+  }
+
+  function waitForVehicleAtKerb(
+    scene: OfficeScene,
+    point: OfficePoint,
+    vehicleKind: OfficeVehicleDrawable["vehicleKind"],
+  ): boolean {
+    for (let step = 0; step < 500; step += 1) {
+      const vehicle = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+        (candidate) =>
+          candidate.vehicleKind === vehicleKind && atPoint(candidate, point),
+      );
+      if (vehicle !== undefined) return true;
+      scene.tick(100);
+    }
+    return false;
+  }
+
+  function waitForVehicleToLeaveKerb(
+    scene: OfficeScene,
+    point: OfficePoint,
+    vehicleKind: OfficeVehicleDrawable["vehicleKind"],
+  ): boolean {
+    for (let step = 0; step < 500; step += 1) {
+      scene.tick(100);
+      const vehicle = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+        (candidate) => candidate.vehicleKind === vehicleKind,
+      );
+      if (vehicle === undefined || !atPoint(vehicle, point)) return true;
+    }
+    return false;
+  }
+
+  function wardAgents(
+    prefix: string,
+    hostId: string,
+    count: number,
+  ): ReadonlyArray<OfficeAgentInput> {
+    const named = ["a", "b", "c", "d"];
+    return Array.from({ length: count }, (_unused, index) =>
+      agent({
+        id: `${prefix}-${named.at(index) ?? `filler-${index}`}`,
+        hostId,
+        createdAt: index + 1,
+      }),
     );
   }
 
@@ -6274,6 +6351,335 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       scene.tick(100);
     }
     expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+  });
+
+  it("does not let a departing trip absorb a newcomer", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    const kerb = civicKerbPoint(layout, "help-desk");
+    if (layout.floors[0].road === null || kerb === null) {
+      context.skip("this view has no road or help-desk kerb yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+        ]),
+      }),
+    );
+    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the first police car at its kerb");
+      return;
+    }
+    if (!waitForVehicleToLeaveKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the first police car departing");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+        ]),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).filter(
+        (vehicle) => vehicle.vehicleKind === "police-car",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("allows a departing and arriving trip for one room to share the road", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    const kerb = civicKerbPoint(layout, "help-desk");
+    if (layout.floors[0].road === null || kerb === null) {
+      context.skip("this view has no road or help-desk kerb yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+        ]),
+      }),
+    );
+    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the first police car at its kerb");
+      return;
+    }
+    if (!waitForVehicleToLeaveKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the first police car departing");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+        ]),
+      }),
+    );
+    // The cap bounds this legal overlap; it does not forbid a new arrival
+    // merely because its room's previous trip is departing.
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(2);
+  });
+
+  it("lets the original trip depart after recurrent joins cross its twelve-second ceiling", (context) => {
+    const ids = ["join-a", "join-b", "join-c", "join-d", "join-e"];
+    const agents: ReadonlyArray<OfficeAgentInput> = ids.map((id, index) =>
+      agent({ id, hostId: "join-host", createdAt: index + 1 }),
+    );
+    const visible = new Set(ids);
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    const kerb = civicKerbPoint(layout, "help-desk");
+    if (layout.floors[0].road === null || kerb === null) {
+      context.skip("this view has no road or help-desk kerb yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: attention("join-a"),
+      }),
+    );
+    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the original police car at its kerb");
+      return;
+    }
+    const joiners = ["join-b", "join-c", "join-d", "join-e"];
+    let dwellTicks = 0;
+    for (const [joinIndex, ticksUntilJoin] of [20, 30, 30, 30].entries()) {
+      for (let tick = 0; tick < ticksUntilJoin; tick += 1) {
+        scene.tick(100);
+        dwellTicks += 1;
+      }
+      const joiner = joiners[joinIndex];
+      if (joinIndex > 0) {
+        scene.sync(
+          sceneInput({
+            agents,
+            visibleAgentIds: visible,
+            statusById: attention("join-a"),
+          }),
+        );
+      }
+      scene.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds: visible,
+          statusById: attention("join-a", joiner),
+        }),
+      );
+      expect(
+        scene.frame(1, WHOLE_WORLD).awayAgentIds.has(joiner),
+        `${viewId} ${joiner} did not leave its desk`,
+      ).toBe(true);
+      expect(
+        vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+          (vehicle) =>
+            vehicle.vehicleKind === "police-car" && atPoint(vehicle, kerb),
+        ),
+      ).toBe(true);
+    }
+    let originalLeftAt: number | null = null;
+    for (let tick = 0; tick < 200; tick += 1) {
+      scene.tick(100);
+      dwellTicks += 1;
+      const stillAtKerb = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+        (vehicle) =>
+          vehicle.vehicleKind === "police-car" && atPoint(vehicle, kerb),
+      );
+      if (!stillAtKerb) {
+        originalLeftAt = dwellTicks;
+        break;
+      }
+    }
+    expect(originalLeftAt).not.toBeNull();
+    if (originalLeftAt === null) return;
+    // On the unfixed tree, each join resets the same clock as the twelve-second
+    // ceiling, so the original trip's dwell exceeds 120 ticks. The fixed tree
+    // leaves at the ceiling despite joins arriving less than four seconds apart.
+    expect(originalLeftAt).toBeLessThanOrEqual(130);
+  });
+
+  it("GUARD: a join restarts the four-second kerb floor", (context) => {
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    const kerb = civicKerbPoint(layout, "help-desk");
+    if (layout.floors[0].road === null || kerb === null) {
+      context.skip("this view has no road or help-desk kerb yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+        ]),
+      }),
+    );
+    if (!waitForVehicleAtKerb(scene, kerb, "police-car")) {
+      context.skip("could not observe the police car at its kerb");
+      return;
+    }
+    for (let tick = 0; tick < 30; tick += 1) scene.tick(100);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+          ["beta", "attention"],
+        ]),
+      }),
+    );
+    let leftAfterJoin: number | null = null;
+    for (let tick = 0; tick < 200; tick += 1) {
+      scene.tick(100);
+      const vehicle = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+        (candidate) => candidate.vehicleKind === "police-car",
+      );
+      if (vehicle === undefined || !atPoint(vehicle, kerb)) {
+        leftAfterJoin = tick;
+        break;
+      }
+    }
+    expect(leftAfterJoin).not.toBeNull();
+    if (leftAfterJoin === null) return;
+    expect(leftAfterJoin).toBeGreaterThanOrEqual(40);
+  });
+
+  it("lets a standing engine absorb a fresh below-threshold failure with a bed free", (context) => {
+    const agents = wardAgents("standing", "standing-host", 80);
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    const infirmary = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "infirmary");
+    const kerb = civicKerbPoint(layout, "infirmary");
+    if (
+      layout.floors[0].road === null ||
+      infirmary === undefined ||
+      infirmary.seatIds.length < 4 ||
+      kerb === null
+    ) {
+      context.skip("this view has no road or four-bed infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("standing-a", "standing-b", "standing-c"),
+      }),
+    );
+    if (!waitForVehicleAtKerb(scene, kerb, "fire-engine")) {
+      context.skip("could not observe the standing fire engine at its kerb");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("standing-c"),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+        (vehicle) => vehicle.vehicleKind === "fire-engine",
+      ),
+    ).toBe(true);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("standing-c", "standing-d"),
+      }),
+    );
+    const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(
+      vehicles.filter((vehicle) => vehicle.vehicleKind === "fire-engine"),
+    ).toHaveLength(1);
+    expect(
+      vehicles.some((vehicle) => vehicle.vehicleKind === "ambulance"),
+    ).toBe(false);
+  });
+
+  it("GUARD: resumes an ambulance for the ward after its engine has departed", (context) => {
+    const agents = wardAgents("resumed", "resumed-host", 80);
+    const visible = new Set(agents.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(sceneInput({ agents, visibleAgentIds: visible }));
+    const layout = layoutOf(scene);
+    const infirmary = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "infirmary");
+    if (
+      layout.floors[0].road === null ||
+      infirmary === undefined ||
+      infirmary.seatIds.length < 4
+    ) {
+      context.skip("this view has no road or four-bed infirmary yet (K2)");
+      return;
+    }
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("resumed-a", "resumed-b", "resumed-c"),
+      }),
+    );
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+        (vehicle) => vehicle.vehicleKind === "fire-engine",
+      ),
+    ).toBe(true);
+    for (let step = 0; step < 500; step += 1) {
+      if (vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length === 0) break;
+      scene.tick(100);
+    }
+    expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD))).toHaveLength(0);
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("resumed-c"),
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: failures("resumed-c", "resumed-d"),
+      }),
+    );
+    const vehicles = vehicleDrawables(scene.frame(1, WHOLE_WORLD));
+    expect(
+      vehicles.filter((vehicle) => vehicle.vehicleKind === "ambulance"),
+    ).toHaveLength(1);
+    expect(
+      vehicles.some((vehicle) => vehicle.vehicleKind === "fire-engine"),
+    ).toBe(false);
   });
 
   it("GUARD: seeds silently when an epic opens with a failure already present", (context) => {
