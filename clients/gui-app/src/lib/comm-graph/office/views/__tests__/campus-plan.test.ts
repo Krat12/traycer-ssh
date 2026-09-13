@@ -14,6 +14,7 @@ import {
   OFFICE_TILE,
   type OfficeAgentInput,
   type OfficeAgentStatus,
+  type OfficeCivicRoom,
   type OfficeDrawable,
   type OfficeErrandSpot,
   type OfficeFloor,
@@ -28,6 +29,7 @@ import {
   type OfficeWorldDrawable,
 } from "@/lib/comm-graph/office/office-types";
 import {
+  civicPlateWidth,
   measureCampus,
   planCampus,
 } from "@/lib/comm-graph/office/views/isometric/campus-plan";
@@ -494,7 +496,7 @@ function signProblems(
  */
 function gardenSpotsOf(layout: OfficeLayout): {
   readonly all: ReadonlyArray<OfficeErrandSpot>;
-  readonly benchPair: ReadonlyArray<OfficeErrandSpot>;
+  readonly benchRow: ReadonlyArray<OfficeErrandSpot>;
 } {
   const all = layout.floors.flatMap((floor) =>
     floor.errandSpots.filter((spot) => spot.kind === "garden"),
@@ -505,9 +507,17 @@ function gardenSpotsOf(layout: OfficeLayout): {
     if (bucket === undefined) byFixture.set(spot.fixtureId, [spot]);
     else bucket.push(spot);
   }
-  const benchPair = [...byFixture.values()].find((spots) => spots.length === 2);
-  if (benchPair === undefined) throw new Error("expected a two-seat bench");
-  return { all, benchPair };
+  // THE LARGEST BUCKET IS THE BENCH ROW, and it is a row rather than the pair it
+  // used to be: Campus's waiting room IS this row, so it holds
+  // `civicCapacityFor().chairs` sitting places and they all share ONE fixture id
+  // so that everybody on it rallies with everybody else. The strolls across the
+  // lawn belong to no fixture and sit in buckets of one.
+  const benchRow = [...byFixture.values()].reduce<OfficeErrandSpot[]>(
+    (widest, spots) => (spots.length > widest.length ? spots : widest),
+    [],
+  );
+  if (benchRow.length < 2) throw new Error("expected a bench row");
+  return { all, benchRow };
 }
 
 /**
@@ -817,9 +827,15 @@ describe("planCampus", () => {
 
   describe("projected bounds at 1,000 agents", () => {
     // Measured directly against `measureCampus` and the projector's own
-    // bounds: 105 x 117 tiles, 3,552 x 1,820 projected px. Campus reads no
+    // bounds: 105 x 121 tiles, 3,616 x 1,852 projected px. Campus reads no
     // aspect, so the fit is viewport-independent of shape but not of the
     // viewport itself - each viewport gets its own pinned fit.
+    //
+    // FOUR ROWS TALLER than before the civic quarter, and the four are the sick
+    // bay's band: three rows of ward plus the one-tile gap under the packed
+    // shelves. The COLUMNS did not move - the courtyard's longer bench row fits
+    // inside the width the packer had already budgeted at this size, and the ward
+    // is narrower than the district's content - so the whole cost here is rows.
     const input1280 = inputFor("triage", 1000, VIEWPORT_1280);
     const layout1280 = planCampus(input1280);
     const size1280 = measureCampus(input1280);
@@ -827,9 +843,9 @@ describe("planCampus", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout1280.cols, rows: layout1280.rows }).toEqual({
         cols: 105,
-        rows: 117,
+        rows: 121,
       });
-      expect(size1280).toEqual({ width: 3552, height: 1820 });
+      expect(size1280).toEqual({ width: 3616, height: 1852 });
     });
 
     it("agrees with the projector's own bounds", () => {
@@ -842,7 +858,7 @@ describe("planCampus", () => {
         VIEWPORT_1280.width / size1280.width,
         VIEWPORT_1280.height / size1280.height,
       );
-      expect(fit).toBeCloseTo(0.36, 2);
+      expect(fit).toBeCloseTo(0.35, 2);
     });
 
     it("pins the fit at 680x440", () => {
@@ -857,7 +873,13 @@ describe("planCampus", () => {
   });
 
   describe("projected bounds at 309 agents", () => {
-    // Measured: 65 x 80 tiles, 2,320 x 1,204 px.
+    // Measured: 65 x 89 tiles, 2,464 x 1,276 px.
+    //
+    // NINE rows taller, where 1,000 agents only grew by four. Four of the nine
+    // are the sick bay's band, which every district pays; the other five are a
+    // SHELF the packer added, because the courtyard's longer bench row no longer
+    // leaves room beside it for the cabin that used to sit there. At 1,000 the
+    // budget is wide enough that it did not.
     const input = inputFor("triage", 309, VIEWPORT_1280);
     const layout = planCampus(input);
     const size = measureCampus(input);
@@ -865,9 +887,9 @@ describe("planCampus", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout.cols, rows: layout.rows }).toEqual({
         cols: 65,
-        rows: 80,
+        rows: 89,
       });
-      expect(size).toEqual({ width: 2320, height: 1204 });
+      expect(size).toEqual({ width: 2464, height: 1276 });
     });
 
     it("pins the fit at both viewports", () => {
@@ -875,14 +897,14 @@ describe("planCampus", () => {
         VIEWPORT_1280.width / size.width,
         VIEWPORT_1280.height / size.height,
       );
-      expect(fit1280).toBeCloseTo(0.55, 2);
+      expect(fit1280).toBeCloseTo(0.52, 2);
       const input680 = inputFor("triage", 309, VIEWPORT_680);
       const size680 = measureCampus(input680);
       const fit680 = Math.min(
         VIEWPORT_680.width / size680.width,
         VIEWPORT_680.height / size680.height,
       );
-      expect(fit680).toBeCloseTo(0.29, 2);
+      expect(fit680).toBeCloseTo(0.28, 2);
     });
   });
 
@@ -1317,13 +1339,21 @@ describe("planCampus", () => {
   it("reads only the index's own references at lod 2, never layout.rooms or layout.props whole", () => {
     // D38 replaced the old one-room-per-lineage-root Campus with one room per
     // partition team, so `triage(1000, 1)` - the largest room count any view
-    // still has - plans 32 rooms (HQ + 30 team cabins + 1 bullpen) and 47
-    // props, not the review's "1,000 rooms and 1,011 props" against the old
-    // plan. Measured on this fixture.
+    // still has - plans 32 rooms (HQ + 30 team cabins + 1 bullpen), not the
+    // review's "1,000 rooms and 1,011 props" against the old plan. Measured on
+    // this fixture.
+    //
+    // 70 props where the civic quarter found 47, and the 23 decompose exactly:
+    // the courtyard's bench row is the WAITING ROOM here, so at 1,000 agents it
+    // holds `civicCapacityFor().chairs` = 16 sitting places where the park held
+    // 2, and `isoFixtureProps` stands one bench per fixture tile (+14); the sick
+    // bay lays `civicCapacityFor().beds` = 8 beds (+8); the records hut has its
+    // door (+1). The room count is untouched because a civic room is not a team's
+    // room - it lives on `floor.civic`, and `layout.rooms` never sees it.
     const input = inputFor("triage", 1000, VIEWPORT_1280);
     const layout = planCampus(input);
     expect(layout.rooms.length).toBe(32);
-    expect(layout.props.length).toBe(47);
+    expect(layout.props.length).toBe(70);
 
     const roomCounts = { reads: 0 };
     const propCounts = { reads: 0 };
@@ -1345,10 +1375,13 @@ describe("planCampus", () => {
       layout.rooms.filter((room) => isoRectsOverlap(room.bounds, window)),
     );
     expect(new Set(rooms)).toEqual(bruteRooms);
-    // Measured: 12 of the 32 rooms overlap this window. Asserting the count
-    // is smaller than the whole roster is what stops a lookup that just
-    // returns everything from passing this case by accident.
-    expect(rooms.length).toBe(12);
+    // Measured: 9 of the 32 rooms overlap this window - 12 before the
+    // courtyard's bench row became the waiting room and took sixteen tiles
+    // instead of two, which pushes three cabins out of a window anchored at the
+    // district's top-left corner. Asserting the count is smaller than the whole
+    // roster is what stops a lookup that just returns everything from passing
+    // this case by accident, and 9 of 32 says it just as well as 12 did.
+    expect(rooms.length).toBe(9);
     expect(rooms.length).toBeLessThan(layout.rooms.length);
 
     // `isoPropsIn` also drops every FIXTURE tile - a bench, a table, a
@@ -1369,12 +1402,20 @@ describe("planCampus", () => {
     for (const prop of props) {
       expect(propReachesWindow(window, prop)).toBe(true);
     }
-    // Measured: the courtyard's two trees and its reception desk - the only
-    // non-fixture props this district stands near the window's corner.
-    expect(props.length).toBe(3);
+    // NAMED rather than counted, because the count alone stopped saying which
+    // props these are the moment the civic quarter added some: the courtyard's
+    // two trees and its reception desk, plus the records hut's door, which the
+    // packer lays on the first shelf just past the cafe. The sick bay's beds are
+    // a band under every shelf, far below a window anchored at the corner.
+    expect(props.map((prop) => prop.sprite.name).sort()).toEqual([
+      "reception",
+      "records-door",
+      "tree",
+      "tree",
+    ]);
   });
 
-  it("gives both bench seats a sitting pose and leaves the bare lawn spots standing", () => {
+  it("gives every bench seat a sitting pose and leaves the bare lawn spots standing", () => {
     const epic = makeTestEpic("triage", 12, 1);
     const statusById = new Map<string, OfficeAgentStatus>();
     for (const agent of epic.agents) statusById.set(agent.id, "idle");
@@ -1383,16 +1424,18 @@ describe("planCampus", () => {
     const layout = scene.layout();
     if (layout === null) throw new Error("expected a layout after sync");
 
-    const { all, benchPair } = gardenSpotsOf(layout);
-    // Both halves of the bench are real anchors, each with its own sprite on
-    // it. Before the fix the second carried `null` to keep the art from being
-    // drawn twice, and the scene reads a null garden anchor as "no bench,
-    // therefore stand" - so the second arrival waited on its feet.
+    const { all, benchRow } = gardenSpotsOf(layout);
+    // EVERY seat on the row is a real anchor with its own sprite on it. Before
+    // the fix the second carried `null` to keep the art from being drawn twice,
+    // and the scene reads a null garden anchor as "no bench, therefore stand" -
+    // so the second arrival waited on its feet. The row is as long as the
+    // waiting room's chair count now, so this walks all of it rather than a pair.
+    expect(benchRow.length).toBeGreaterThan(2);
     const propAt = new Map(
       layout.props.map((prop) => [`${prop.tile.col},${prop.tile.row}`, prop]),
     );
     const problems: string[] = [];
-    for (const spot of benchPair) {
+    for (const spot of benchRow) {
       const tile = spot.actionTile;
       if (tile === null) {
         problems.push(
@@ -1407,7 +1450,7 @@ describe("planCampus", () => {
     // A bare stroll across the lawn still acts on nothing, which is the other
     // half of the garden's two outcomes.
     for (const spot of all) {
-      if (benchPair.includes(spot)) continue;
+      if (benchRow.includes(spot)) continue;
       if (spot.actionTile !== null) {
         problems.push(
           `stroll at ${spot.tile.col},${spot.tile.row} has an anchor`,
@@ -1416,7 +1459,73 @@ describe("planCampus", () => {
     }
     expect(problems).toEqual([]);
 
-    expect(someoneSitsAt(scene, layout, benchPair[1])).toBe(true);
+    expect(someoneSitsAt(scene, layout, benchRow[1])).toBe(true);
+  });
+
+  /**
+   * THE SHARED BENCH, and the one thing it must never do.
+   *
+   * A campus bench is two things at one tile: the seat the waiting room lends and
+   * the fixture a stroll sits on. `OfficeErrandSpot.seatId` names the seat on the
+   * spot so the errand pass can ask whether it is taken, and `spotSuitsAgent`
+   * drops a spot whose seat has somebody in it.
+   *
+   * Without that, both systems place somebody on the same tile: the waiter that
+   * the seat book believes it seated, and the stroller that walked over to sit
+   * down. So what this pins is the count of SITTERS on a bench tile at every
+   * tick, and sitters rather than characters because a bench's seat is open lawn -
+   * anybody crossing the courtyard stands on it in passing, which is a walker
+   * using a path and not two people in one seat. `sit` is what both the lounge
+   * claim and the garden errand draw, so it is the pose that catches the clash.
+   */
+  it("never sits a stroller on a bench a waiting agent holds", () => {
+    const epic = makeTestEpic("triage", 12, 1);
+    const layoutForSeats = planCampus(inputFor("triage", 12, VIEWPORT_1280));
+    const benches = [...layoutForSeats.seats.values()].filter(
+      (seat) => seat.kind === "lounge",
+    );
+    expect(benches.length).toBeGreaterThan(1);
+
+    // EVERY bench claimed, so any stroller the errand pass wants to seat has to
+    // be turned away from all of them rather than from all but the last.
+    const statusById = new Map<string, OfficeAgentStatus>();
+    for (const agent of epic.agents) statusById.set(agent.id, "idle");
+    for (const agent of epic.agents.slice(0, benches.length)) {
+      statusById.set(agent.id, "awaiting");
+    }
+    const scene = new OfficeScene(OFFICE_VIEWS.campus, null);
+    scene.sync(sceneInputFor(epic.agents, statusById));
+    const layout = scene.layout();
+    if (layout === null) throw new Error("expected a layout after sync");
+
+    const projector = ISO_PAINTER.projector(layout);
+    const footOf = (tile: OfficeTilePos): string => {
+      const point = projector.project(tile.col + 0.5, tile.row + 1);
+      return `${point.x - OFFICE_CHARACTER_WIDTH / 2},${point.y - OFFICE_CHARACTER_HEIGHT}`;
+    };
+    const benchFeet = new Set(benches.map((seat) => footOf(seat.chairTile)));
+    let sharedTile: string | null = null;
+    let everOccupied = false;
+    for (let step = 0; step < 600 && sharedTile === null; step += 1) {
+      scene.tick(100);
+      const perFoot = new Map<string, number>();
+      for (const entry of scene.frame(2, WHOLE_WORLD).world ?? []) {
+        const drawable = entry.drawable;
+        if (drawable.kind !== "sprite") continue;
+        if (drawable.sprite.name !== "character") continue;
+        if (drawable.sprite.pose !== "sit") continue;
+        const key = `${drawable.x},${drawable.y}`;
+        if (!benchFeet.has(key)) continue;
+        const seen = (perFoot.get(key) ?? 0) + 1;
+        perFoot.set(key, seen);
+        everOccupied = true;
+        if (seen > 1) sharedTile = key;
+      }
+    }
+    // Anti-vacuity: a run where nobody ever reached a bench would report no
+    // sharing for a reason that has nothing to do with the predicate.
+    expect(everOccupied).toBe(true);
+    expect(sharedTile).toBeNull();
   });
 
   it("draws exactly one clock per floor at lod 2, and none at lod 1", () => {
@@ -1577,14 +1686,33 @@ describe("planCampus", () => {
     // OBJECTS the index holds - per floor, because the claim is that the
     // districts the window is not in cost NOTHING, which no total can say.
     //
-    // Measured over the 1,024-tile window: 5,693 reads at one host and 6,221
+    // Measured over the 1,024-tile window: 7,191 reads at one host and 8,214
     // at fifty - and at fifty, two districts are read and the other
     // forty-eight exactly zero times. Evidence in a comment, not pins: the
-    // assertions below are the zero, a per-tile bound (8 a tile, which is
-    // CodeRabbit's own), and the ratio. An earlier form of this case took
-    // its window from bounds it had already wrapped, which is where the
-    // 5,695 / 6,223 in the review thread came from - two reads of the last
-    // floor, spent measuring rather than painting.
+    // assertions below are the zero, a per-tile bound (10 a tile), and the
+    // ratio. An earlier form of this case took its window from bounds it had
+    // already wrapped, which cost two reads of the last floor, spent
+    // measuring rather than painting - the same +2 any instrumentation of
+    // this case pays, so a figure two above these was measured that way.
+    //
+    // THE BOUND WAS 8 AND THE CIVIC QUARTER OUTGREW IT, so it is 10. What
+    // grew, at this case's twenty agents: the district went 22x22 -> 19x31,
+    // NARROWER and nine rows taller, because the sick bay's band lies under
+    // every packed shelf and the shelves re-pack around a wider courtyard;
+    // and the courtyard went 7 -> 9 columns, since its bench row IS the
+    // waiting room and the contract asks for four chairs at this size
+    // (`isoCourtyardCols`). Reads followed the tiles: 6,221 -> 8,214 at
+    // fifty, which is 6.08 -> 8.02 a tile. So 8 was headroom over 6.08 and
+    // is now under the measurement; 10 is headroom over 8.02. The bound is
+    // still the constancy claim and not a budget for the quarter - what it
+    // must keep out is a per-tile perimeter walk, which is hundreds a tile
+    // and not eight.
+    //
+    // An early break in `isoGroundAt` - stopping the floor scan at the first
+    // district whose bounds contain the tile - was tried here to win the
+    // growth back and MEASURED AS NOTHING: the index already hands it one or
+    // two candidates, so there is no scan left to cut short. Reverted, and
+    // recorded so it is not tried a third time.
 
     const layout1 = planCampus(manyRootsInput(20, undefined));
     const window1 = lastDistrictWindow(layout1);
@@ -1620,8 +1748,8 @@ describe("planCampus", () => {
     // asks each of them one question fewer does not move it.
     const touched = counts50.perFloor.filter((counts) => counts.reads > 0);
     expect(touched.length).toBeLessThanOrEqual(5);
-    expect(nearbyReads).toBeLessThan(1024 * 8);
-    expect(counts1.total.reads).toBeLessThan(1024 * 8);
+    expect(nearbyReads).toBeLessThan(1024 * 10);
+    expect(counts1.total.reads).toBeLessThan(1024 * 10);
     expect(counts50.total.reads / counts1.total.reads).toBeLessThan(2);
 
     // Without the index (the walk this replaced), the same 50-host window
@@ -1691,6 +1819,13 @@ describe("planCampus", () => {
     );
     for (const seat of layout.seats.values()) {
       if (seat.hitBox === null) throw new Error(`no hitBox on ${seat.seatId}`);
+      // DESKS, which is what this case is named for and what `campusSeatProps`
+      // draws. A bed and a bench are seats too and they carry a real box for the
+      // same reason - `isoCampusSeatBox` off their own tile, asserted above by
+      // the `null` check every seat goes through - but the painter has no civic
+      // branch yet, so measuring their painted union here would measure nothing
+      // and pass. That pin belongs with the branch that draws them.
+      if (seat.civicRoomId !== null) continue;
       const occupantId = occupantBySeatId.get(seat.seatId) ?? null;
       // Occupied, not sheeted, `openRequests: 3` - the union the ticket
       // measures the box against.
@@ -1905,5 +2040,80 @@ describe("planCampus", () => {
       expect(drawn).toHaveLength(1);
       expect(drawn[0].anchor).toEqual(anchor);
     }
+  });
+});
+
+/**
+ * THE WIDTH RULE, WITH ITS OWN WITNESSES.
+ *
+ * A civic plate is as wide as the room it names, and where it hangs decides
+ * which reading of that applies. The inset reading had a shipped witness until
+ * the sick bay's plate moved to its wall's corner to clear the district's host
+ * sign; nothing Campus plans is inset now, so the case plants one rather than
+ * letting the rule go untested. The numbers below are the ones the defect was
+ * measured at when the plate WAS inset: a 4-tile frontage plated with 5 at two
+ * beds, and a 16-tile frontage plated with 17 at eight.
+ */
+describe("campus civic plate width", () => {
+  function roomAt(args: {
+    readonly boundsCol: number;
+    readonly cols: number;
+    readonly signCol: number;
+  }): OfficeCivicRoom {
+    const { boundsCol, cols, signCol } = args;
+    return {
+      civicRoomId: "host/0/civic/infirmary",
+      kind: "infirmary",
+      bounds: { col: boundsCol, row: 20, cols, rows: 3 },
+      doorTile: { col: boundsCol, row: 21 },
+      signTile: { col: signCol, row: 20 },
+      name: "Sick bay",
+      seatIds: [],
+      floorIndex: 0,
+      hostId: null,
+      hostScope: "host",
+      kerbTile: null,
+    };
+  }
+
+  it("stops an inset plate at the room's right edge, not one tile past it", () => {
+    // The historical anchor: one column in, past the ward's wall. Sizing by the
+    // room gave 5 over a 4-tile frontage - the plate lettering onto the tile
+    // after the room - and this is the control that keeps that rule pinned now
+    // that no shipped room hangs a plate there.
+    const twoBeds = roomAt({ boundsCol: 1, cols: 5, signCol: 2 });
+    expect(civicPlateWidth(twoBeds)).toBe(4);
+    expect(twoBeds.signTile.col + civicPlateWidth(twoBeds)).toBe(
+      twoBeds.bounds.col + twoBeds.bounds.cols,
+    );
+
+    // The same at the other end of the contract's bed range: 17 over 16.
+    const eightBeds = roomAt({ boundsCol: 1, cols: 17, signCol: 2 });
+    expect(civicPlateWidth(eightBeds)).toBe(16);
+    expect(eightBeds.signTile.col + civicPlateWidth(eightBeds)).toBe(
+      eightBeds.bounds.col + eightBeds.bounds.cols,
+    );
+  });
+
+  it("gives a plate on the room's first column the whole frontage", () => {
+    // Where the two readings agree, which is why sizing by the room survived
+    // until an inset plate arrived - and where the sick bay's plate sits now.
+    const corner = roomAt({ boundsCol: 1, cols: 5, signCol: 1 });
+    expect(civicPlateWidth(corner)).toBe(5);
+  });
+
+  it("gives a plate anchored outside the room the room's own width", () => {
+    // The front desk at the district's gate: columns away from the counter it
+    // names, so the run from the anchor to the room is not a frontage. Both
+    // sides of the room are tested, because a plate to the RIGHT of its room
+    // would make the inside formula negative rather than merely too wide.
+    const fromTheLeft = roomAt({ boundsCol: 3, cols: 2, signCol: 0 });
+    expect(civicPlateWidth(fromTheLeft)).toBe(2);
+    const fromTheRight = roomAt({ boundsCol: 3, cols: 2, signCol: 9 });
+    expect(civicPlateWidth(fromTheRight)).toBe(2);
+    // The boundary itself is INSIDE: a plate on the room's last column spans
+    // exactly that one tile, and is not the outside case.
+    const lastColumn = roomAt({ boundsCol: 3, cols: 2, signCol: 4 });
+    expect(civicPlateWidth(lastColumn)).toBe(1);
   });
 });

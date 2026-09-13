@@ -12,7 +12,10 @@ import {
   OFFICE_CULL_MARGIN_PX,
   OfficeScene,
 } from "@/lib/comm-graph/office/office-scene";
-import { CIVIC_ROOMS_EXPECTED } from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
+import {
+  CIVIC_ROOMS_EXPECTED,
+  AMBULANCE_RIDER_SETS_THE_DWELL,
+} from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
 import {
   OfficeSeatBook,
   type OfficeSeatPreference,
@@ -7157,6 +7160,36 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // accounted for, which is what the bound below does.
     const riderBound = settledTick ?? kerbTick + 120;
     const minimumDwell = Math.max(40, Math.min(riderBound - kerbTick, 120));
+    if (!AMBULANCE_RIDER_SETS_THE_DWELL[viewId]) {
+      // THE OTHER REGIME, ASSERTED AND NOT SKIPPED. Campus's ward stands at the
+      // first content column with its kerb beside its own door, so the patient
+      // is in bed BEFORE the ambulance arrives and the four-second floor is what
+      // the vehicle waits out. Both halves are pinned: the premise, as an
+      // observation, so a Campus whose geometry changed and made the rider late
+      // reddens here and has to move in the table...
+      expect(settledTick).not.toBeNull();
+      if (settledTick === null) return;
+      // The rider asks for LESS THAN THE FLOOR, which is what makes the floor
+      // the governing bound. Here it is stronger than that - the patient is in
+      // bed twenty ticks before the ambulance arrives, so the difference is
+      // negative - but the claim is the one both fixtures share, because the
+      // sibling case's rider settles three ticks AFTER the kerb tick and is
+      // still under the floor.
+      expect(riderBound - kerbTick).toBeLessThan(40);
+      // ...and the floor EXACTLY as observed, not `>=`. A vehicle that waited
+      // longer than the floor in a view where nothing is keeping it would be a
+      // different behaviour wearing this one's numbers, and `>=` could not see
+      // it. 41 rather than 40 for the reason the guard below names: the phase
+      // changes at 40 and the vehicle is still drawn at the kerb for one tick.
+      expect(leftKerbTick - kerbTick).toBe(41);
+      return;
+    }
+    // THE RIDER IS LATE, which is what makes the bound below about the rider.
+    // Stated as an observation for the same reason the other regime states its
+    // premise: a view that stopped making its ambulance wait would otherwise
+    // satisfy every line here on the floor alone.
+    expect(settledTick).not.toBeNull();
+    if (settledTick !== null) expect(settledTick).toBeGreaterThan(kerbTick);
     // ABOVE THE OBSERVABLE FLOOR, not merely above the floor. A trip that
     // dropped its riders leaves on the four-second floor and is OBSERVED at
     // 41 - so a derived bound of 41 would admit exactly the implementation
@@ -7699,6 +7732,27 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // leaves at all.
     const riderDwell = settledTick - kerbTick;
     const minimumDwell = Math.max(40, Math.min(riderDwell, 120));
+    if (!AMBULANCE_RIDER_SETS_THE_DWELL[viewId]) {
+      // See the sibling case and `AMBULANCE_RIDER_SETS_THE_DWELL`: in Campus the bed is
+      // beside the gate, so the rider is settled almost as soon as the ambulance
+      // is - three ticks after it reaches the kerb, measured - and the four-second
+      // floor is what the vehicle waits out.
+      //
+      // THE PREMISE IS THAT THE RIDER FALLS UNDER THE FLOOR, not that it settles
+      // first. In the forty-agent fixture next door the rider is in bed twenty
+      // ticks BEFORE the vehicle arrives; here it is three ticks after. Either
+      // way the rider asks for less than the floor gives, which is the fact that
+      // makes the floor the governing bound - so that is what is asserted, and
+      // a Campus whose walk grew past four seconds reddens here and has to move
+      // in the table.
+      expect(riderDwell).toBeLessThan(40);
+      // The floor EXACTLY, not `>=`: a vehicle waiting longer than the floor
+      // where nothing is keeping it is a different behaviour wearing this one's
+      // numbers. 41 because the phase turns at 40 and the vehicle is drawn at
+      // the kerb for one tick more.
+      expect(leftKerbTick - kerbTick).toBe(41);
+      return;
+    }
     expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
     // THE CEILING, which the lower bound alone never checked: a vehicle that
     // waited thirty seconds satisfied "capped at twelve" perfectly well,

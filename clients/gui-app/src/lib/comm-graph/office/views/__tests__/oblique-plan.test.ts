@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentAppearance } from "@/lib/comm-graph/office/office-appearance";
+import { CIVIC_KINDS } from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
 import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
@@ -1743,12 +1744,6 @@ describe("plaza civic rooms", () => {
       parts.map((part) => part.name),
     ),
   );
-  const CIVIC_KINDS: ReadonlyArray<OfficeCivicKind> = [
-    "infirmary",
-    "waiting-room",
-    "help-desk",
-    "archive",
-  ];
 
   interface PlazaCase {
     readonly layout: OfficeLayout;

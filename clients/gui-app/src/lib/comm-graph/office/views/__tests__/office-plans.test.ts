@@ -315,14 +315,36 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
             layout.cols,
           );
         } else {
-          // A PLATE IS AS WIDE AS THE ROOM IT NAMES: from its own tile to the
-          // room's right edge. This is what decides how much of the reading
-          // survives - the resolver measures the room's word and its counter
-          // against the plate's own pixels - and `> 0` was the hole a ward
-          // spanning sixteen tiles and plated with two went through.
+          // A PLATE IS AS WIDE AS THE ROOM IT NAMES. This is what decides how
+          // much of the reading survives - the resolver measures the room's word
+          // and its counter against the plate's own pixels - and `> 0` was the
+          // hole a ward spanning sixteen tiles and plated with two went through.
+          //
+          // WHERE THE PLATE HANGS DECIDES WHICH READING APPLIES, and the two are
+          // not the same expression. Anchored INSIDE the room, the plate spans
+          // from its own tile to the room's right edge and may not letter past
+          // it. Anchored OUTSIDE - Campus hangs the front desk's plate at the
+          // district's gate, columns from the counter it names - it carries the
+          // room's own frontage at its anchor, because the run from the anchor to
+          // the room is not a frontage: for that plate it was five tiles of open
+          // courtyard. That case also has to be written out rather than folded
+          // into one formula, because a single `bounds.col + bounds.cols -
+          // tile.col` is what the plan itself would compute, and a pin that
+          // evaluates the implementation's own expression is not a pin.
+          const anchorInside =
+            plate.tile.col >= room.bounds.col &&
+            plate.tile.col < room.bounds.col + room.bounds.cols;
           expect(plate.widthTiles).toBe(
-            room.bounds.col + room.bounds.cols - plate.tile.col,
+            anchorInside
+              ? room.bounds.col + room.bounds.cols - plate.tile.col
+              : room.bounds.cols,
           );
+          if (anchorInside) {
+            // The inset plate's own defect, stated as the edge it may not cross.
+            expect(plate.tile.col + plate.widthTiles).toBe(
+              room.bounds.col + room.bounds.cols,
+            );
+          }
           expect(plate.widthTiles).toBeGreaterThan(0);
         }
       }
