@@ -291,6 +291,23 @@ function seatedHead(agentId: string): OfficePoint {
   };
 }
 
+/**
+ * The head of the first seat of a KIND, for an agent the civic layer has moved
+ * off its own desk. `firstFreeSeat` walks the layout's seats in id order and
+ * takes the first free one of the kind it wants, so on a single-storey Floor
+ * with one claimant that is this seat.
+ */
+function civicSeatHead(kind: OfficeSeatKind): OfficePoint {
+  const seat = [...AGENTS_LAYOUT.seats.values()].find(
+    (candidate) => candidate.kind === kind,
+  );
+  if (seat === undefined) throw new Error(`no ${kind} seat`);
+  return {
+    x: seat.chairTile.col * OFFICE_TILE + OFFICE_CHARACTER_WIDTH / 2,
+    y: seat.chairTile.row * OFFICE_TILE - 4,
+  };
+}
+
 function seatedRect(agentId: string): OfficeRect {
   const head = seatedHead(agentId);
   return {
@@ -904,7 +921,16 @@ describe("OfficeScene", () => {
     scene.tick(200);
 
     const frame = frameOf(scene);
-    expect(hasBubbleAt(frame, "bubble-awaiting", seatedHead("alpha"))).toBe(
+    // GEOMETRY, RE-MEASURED: this asserted the bubble at `seatedHead("alpha")`,
+    // alpha's own DESK. An `awaiting` agent wants a lounge chair and, under
+    // reduced motion, is put in one instantly - so the bubble it wears is at
+    // the chair now, not at the desk it left. The old reading was only right
+    // while instant seating forgot to move the character: the book,
+    // `whereabouts` and `locate` all said lounge while the actor, and so this
+    // bubble, stayed behind at the desk. Asserting the desk here would re-pin
+    // the defect. The case's own claim - that an awaiting floor is STILL - is
+    // the assertion below and is untouched.
+    expect(hasBubbleAt(frame, "bubble-awaiting", civicSeatHead("lounge"))).toBe(
       true,
     );
     // A request can sit open for hours; unlike the attention bubble, the
@@ -10701,6 +10727,37 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     }
   }
 
+  /** Ticks until `agentId` is settled in a bed, answering that bed's id. */
+  function tickUntilBedded(scene: OfficeScene, agentId: string): string | null {
+    for (let step = 0; step < 800; step += 1) {
+      scene.tick(100);
+      const book = bookOf(scene);
+      const arrived =
+        book.civicClaimOf(agentId) === "bed" &&
+        !frameOf(scene).awayAgentIds.has(agentId);
+      if (arrived) return book.effectiveSeat(agentId)?.seatId ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * Ticks until `agentId` is home AND `seatId` has left `occupancy()` - the
+   * reservation ending at `vacated`, which is the thing 2b is about. Ticking
+   * grants nobody a seat: the civic pass lives inside `sync`.
+   */
+  function tickUntilSeatReleased(
+    scene: OfficeScene,
+    agentId: string,
+    seatId: string,
+  ): boolean {
+    for (let step = 0; step < 800; step += 1) {
+      scene.tick(100);
+      const free = bookOf(scene).occupancy().get(seatId) === undefined;
+      if (free && !frameOf(scene).awayAgentIds.has(agentId)) return true;
+    }
+    return false;
+  }
+
   /**
    * DEFECT A. Towers packs a 15-agent one-team epic into a plaza storey plus
    * three occupied storeys - the root's HQ floor, a nine-desk room and a
@@ -10831,8 +10888,19 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
    * DEFECT B, consequence 1. A live (motion-enabled) Floor agent seated in a
    * bed goes `failure -> awaiting`: the bed answers a request for a lounge
    * chair unless `claim` checks `wants`.
+   *
+   * REVISED FOR 2b. The original fix let a kind-mismatched `claim` fall
+   * through and overwrite the stale claim, which freed the bed for a second
+   * crasher on the SAME sync - fine under instant seating, wrong with motion
+   * on, since the first agent's body was still lying in it. 2b's rule is ONE
+   * CLAIM PER AGENT: `claim` now refuses (`null`) on a kind mismatch rather
+   * than replacing, so the transitioning agent walks bed -> desk -> lounge
+   * over TWO syncs - the first ends the bed claim and starts the walk home,
+   * the second (once the agent is actually home and `vacated`) makes the
+   * lounge claim - and a filler plus a SECOND crasher pin that the bed stays
+   * RESERVED for that whole walk, not just occupied-looking.
    */
-  it("walks a bedded agent to the lounge, not back into its own bed, when failure becomes awaiting (Floor, defect B)", () => {
+  it("walks a bedded agent to the lounge, not back into its own bed, when failure becomes awaiting (Floor, defect B, 2b)", () => {
     const epic = makeTestEpic("one-team", 12, 9);
     const agents = epic.agents;
     const visibleAgentIds = new Set(agents.map((a) => a.id));
@@ -10846,32 +10914,77 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
       throw new Error(`expected a desk for ${agents[2].id}`);
     }
     const crasher = originalDesk.agentId;
+    const filler = agents[3].id;
+    const secondCrasher = agents[4].id;
+    if (filler === crasher || secondCrasher === crasher) {
+      throw new Error("fixture needs three distinct agents");
+    }
 
-    const failing = new Map(idle);
-    failing.set(crasher, "failure");
-    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
-
+    // FILLER TAKES ONE BED FIRST, and stays failing throughout: with two
+    // beds on this fixture, it is what makes crasher's bed the ONLY seat
+    // `secondCrasher` could possibly be offered below - the fixture the
+    // reservation actually needs to be tested against, rather than one where
+    // a second free bed would let a second claimant through for an
+    // unrelated reason.
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: new Map(idle).set(filler, "failure"),
+      }),
+    );
     // Not reduced motion, on purpose: settled-in-a-chair and never-left-the-
     // chair look identical under reduced motion, and this finding is about a
     // walk that never happens.
-    let bedSeatId: string | null = null;
-    for (let step = 0; step < 800 && bedSeatId === null; step += 1) {
-      scene.tick(100);
-      const book = bookOf(scene);
-      if (
-        book.civicClaimOf(crasher) === "bed" &&
-        !frameOf(scene).awayAgentIds.has(crasher)
-      ) {
-        bedSeatId = book.effectiveSeat(crasher)?.seatId ?? null;
-      }
-    }
+    const failingBoth = new Map(idle);
+    failingBoth.set(filler, "failure");
+    failingBoth.set(crasher, "failure");
+    scene.sync(
+      sceneInput({ agents, visibleAgentIds, statusById: failingBoth }),
+    );
+
+    const bedSeatId = tickUntilBedded(scene, crasher);
     if (bedSeatId === null) {
       throw new Error(`expected ${crasher} to settle into a bed`);
     }
 
-    const waiting = new Map(idle);
-    waiting.set(crasher, "awaiting");
-    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: waiting }));
+    // Both beds are now held (filler's and crasher's), so the transition
+    // below is the ONLY thing that can free one.
+    const transition = new Map(idle);
+    transition.set(filler, "failure");
+    transition.set(crasher, "awaiting");
+    // A SECOND crasher fails on this SAME sync, competing for a bed at the
+    // exact moment crasher's is only RELEASING, not free.
+    transition.set(secondCrasher, "failure");
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: transition }));
+
+    const justAfterTransition = bookOf(scene);
+    // 2b's whole point: `occupant()` is already `null` for a releasing claim
+    // - it always was, that is what let the old fixture see the bed as free
+    // the instant `endClaim` ran. `occupancy()` is the one that still lists
+    // it, because a claim only truly ends at `vacated`.
+    expect(justAfterTransition.occupant(bedSeatId)).toBeNull();
+    expect(justAfterTransition.occupancy().get(bedSeatId)).toBe(crasher);
+    // Refused, not handed a different bed and not handed this one: every
+    // seat is spoken for, crasher's own included.
+    expect(justAfterTransition.civicClaimOf(secondCrasher)).toBeNull();
+    // Refused too, for the reason DEFECT B's fix exists: the existing claim
+    // is a bed and the want is now a lounge chair.
+    expect(justAfterTransition.civicClaimOf(crasher)).toBeNull();
+
+    // Tick crasher all the way home. Ticking alone never grants anybody a
+    // seat - the civic pass lives inside `sync`, not `tick` - so
+    // `secondCrasher` stays unseated for however long this takes, no matter
+    // how many ticks pass without a sync.
+    expect(tickUntilSeatReleased(scene, crasher, bedSeatId)).toBe(true);
+    expect(bookOf(scene).civicClaimOf(secondCrasher)).toBeNull();
+
+    // Re-sync on the UNCHANGED statuses: this is the sync 2b moved the
+    // lounge claim to. `secondCrasher` keeps the place in `civicOrder` it
+    // was given on the transition sync above - it is not a fresh newcomer
+    // here, so its priority over anybody who started asking after it is
+    // exactly what it was before crasher ever started walking home.
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: transition }));
 
     let inLounge = false;
     for (let step = 0; step < 800 && !inLounge; step += 1) {
@@ -10880,8 +10993,7 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
         bookOf(scene).civicClaimOf(crasher) === "lounge" &&
         !frameOf(scene).awayAgentIds.has(crasher);
     }
-    // Pre-fix, `claim` hands the bed straight back and this never becomes
-    // true: the agent is settled, but still in the bed it started in.
+    // Pre-2b (and pre-defect-B's original fix), this never becomes true.
     expect(inLounge).toBe(true);
 
     const book = bookOf(scene);
@@ -10892,8 +11004,12 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     expect(layoutOf(scene).desks.get(crasher)?.seatId).toBe(
       originalDesk.seatId,
     );
-    // The bed itself is free: nobody's `occupant`, not even a releasing one.
-    expect(book.occupant(bedSeatId)).toBeNull();
+    // The bed is no longer crasher's in ANY sense - not `occupant`, not
+    // `occupancy()` - and it did not sit empty either: `secondCrasher`, who
+    // kept its queue place for exactly this, holds it now.
+    expect(book.occupant(bedSeatId)).toBe(secondCrasher);
+    expect(book.occupancy().get(bedSeatId)).toBe(secondCrasher);
+    expect(book.civicClaimOf(secondCrasher)).toBe("bed");
   });
 
   /**
@@ -10941,6 +11057,24 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     failing.set(sleeper, "failure");
     scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
 
+    // RESERVE -> CUBBY -> BED, in that order, and it takes two civic passes.
+    //
+    // One claim per agent: `claim` refuses a bed while the wake desk is still
+    // reserved, so the first pass only ENDS that claim and sends the agent
+    // home. The desk is not free until the walk finishes and `settleInChair`
+    // calls `vacated` - and the bed claim can only be made by a civic pass,
+    // which runs inside `sync`, never inside `tick`. So a sync has to arrive
+    // after the agent is home, exactly as one does in the live app.
+    let home = false;
+    for (let step = 0; step < 800 && !home; step += 1) {
+      scene.tick(100);
+      home = !frameOf(scene).awayAgentIds.has(sleeper);
+    }
+    if (!home) throw new Error(`expected ${sleeper} to walk home to its cubby`);
+    // Home, so the reserve is vacated and the ward is reachable now.
+    expect(bookOf(scene).occupant(wakeDeskSeatId)).toBeNull();
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: failing }));
+
     let bedded = false;
     for (let step = 0; step < 800 && !bedded; step += 1) {
       scene.tick(100);
@@ -10959,5 +11093,255 @@ describe("OfficeScene fixup 8d - the queue and the claim answer the right pool",
     // The cubby is still this agent's own seat - the wake claim came and
     // went, the assignment never moved.
     expect(book.assignedSeat(sleeper)?.seatId).toBe(cubby.seatId);
+  });
+});
+
+/**
+ * Fixup 8e - finding 3 (the instant-seating gate was too narrow) and finding
+ * 6 (an instant seat walk never moved the character's own tile).
+ *
+ * Standalone for the same reason 8d is: these build scenes directly off
+ * `OFFICE_VIEWS.floor`, with local helpers rather than `describe.each`'s.
+ *
+ * `awaiting`, never `failure`, for every transition below that runs at a
+ * historical cursor or during playback: `officeAgentStatuses` is a LIVE-ONLY
+ * reader for the activity tiers, the attention set and the failure set, so a
+ * historical cursor never produces `failure` in real usage - only the request
+ * prefix does, and that produces `awaiting`. A `failure` fixture here would
+ * exercise a status combination the real caller never builds.
+ */
+describe("OfficeScene fixup 8e - the instant-seating gate, and the tile it seats onto", () => {
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /** The sprite box a character standing on this tile would occupy, on Floor. */
+  function footRect(layout: OfficeLayout, tile: OfficeTilePos): OfficeRect {
+    const projector = OFFICE_VIEWS.floor.painter.projector(layout);
+    const foot = projector.project(tile.col + 0.5, tile.row + 1);
+    return {
+      x: foot.x - OFFICE_CHARACTER_WIDTH / 2,
+      y: foot.y - OFFICE_CHARACTER_HEIGHT,
+      width: OFFICE_CHARACTER_WIDTH,
+      height: OFFICE_CHARACTER_HEIGHT,
+    };
+  }
+
+  function floorFixture(): {
+    readonly agents: ReadonlyArray<OfficeAgentInput>;
+    readonly visibleAgentIds: ReadonlySet<string>;
+    readonly idle: Map<string, OfficeAgentStatus>;
+  } {
+    const epic = makeTestEpic("one-team", 12, 9);
+    const agents = epic.agents;
+    return {
+      agents,
+      visibleAgentIds: new Set(agents.map((a) => a.id)),
+      idle: new Map(agents.map((a) => [a.id, "idle" as const])),
+    };
+  }
+
+  /**
+   * CASE 1 - FINDING 3, the `startCivicWalk` leg. A PLAYING scene steps
+   * across an idle -> awaiting transition. `civicWantOf` reads `awaiting` as
+   * "wants a lounge chair" whether the cursor is live or historical, so this
+   * is the civic claim path (`updateCivicClaims` -> `startCivicWalk`), and
+   * `playing` is the leg of `motionSuppressed()` finding 3 added to it -
+   * pre-fix, `startCivicWalk` gated on `reducedMotion` alone, so a playing
+   * scene walked a real, multi-tick path here instead of seating at once.
+   *
+   * Checked on the SAME sync, with ZERO ticks: whatever is true right now is
+   * true because nothing moved, not because a fast walk finished. `seated`
+   * (read through `awayAgentIds`) is what a genuine walk starts by clearing,
+   * so it is the discriminator - not the exact painted rect, which is
+   * finding 6's question and the one CASE 4 below asks. A claim already
+   * reads "lounge" the instant it is granted whether or not the walk is
+   * instant, so it alone would not tell the two apart either.
+   */
+  it("seats an awaiting agent instantly during playback, not mid-walk (finding 3: playing)", () => {
+    const { agents, visibleAgentIds, idle } = floorFixture();
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({ agents, visibleAgentIds, statusById: idle, playing: true }),
+    );
+
+    const waiter = agents[2].id;
+    const waiting = new Map(idle);
+    waiting.set(waiter, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: waiting,
+        playing: true,
+      }),
+    );
+
+    // Pre-fix, `waiter` is mid-walk here (`seated: false`) for many ticks:
+    // `startCivicWalk` gated only on `reducedMotion`, which this sync never
+    // sets.
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(false);
+    expect(bookOf(scene).civicClaimOf(waiter)).toBe("lounge");
+  });
+
+  /**
+   * CASE 2 - FINDING 3, the `walkTo` leg via a BACKWARD SCRUB. Leaving live
+   * for history (`cursorMs` going from `null` to non-`null`) is itself a
+   * rewind (`cursorRewoundBy`), which re-derives every claim from scratch
+   * (`recomputeClaimsFromStatuses`) and rehomes whoever's seat changed
+   * (`rehomeCharacters` -> `returnToDesk` -> `walkTo`). `walkTo` is the
+   * function finding 3 named directly in its own gate - it read
+   * `this.reducedMotion` alone before the fix, so a scrub with motion NOT
+   * reduced started a real walk instead of a still photograph.
+   */
+  it("changes an awaiting claim instantly on a backward scrub, not mid-walk (finding 3: cursorMs)", () => {
+    const { agents, visibleAgentIds, idle } = floorFixture();
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: idle }));
+
+    const waiter = agents[2].id;
+    const waiting = new Map(idle);
+    waiting.set(waiter, "awaiting");
+    // `cursorMs` alone, no `reducedMotion` and no `playing`: this leg of
+    // `motionSuppressed()` is the one under test.
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: waiting,
+        cursorMs: 100,
+      }),
+    );
+
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(false);
+    expect(bookOf(scene).civicClaimOf(waiter)).toBe("lounge");
+  });
+
+  /**
+   * CASE 3 - FINDING 3, the `walkTo` leg via a FEED SETTLE. The
+   * provisional/settled idiom from "fixup 8c - the book settles with the
+   * plan": a provisional sync, then one with `feedSettled: true`, which is
+   * `settling` (`input.feedSettled && !this.feedSettled && !firstSync`) and
+   * goes through the same recompute-and-rehome path as case 2 above.
+   *
+   * `playing`, not `reducedMotion`, is what suppresses motion here - the
+   * feed can settle while a scrubbed playback is still running, and that
+   * combination is what this case stands for. Reusing `reducedMotion`
+   * instead would still pass pre-fix (it was always one of the OR's legs),
+   * so it would prove nothing about finding 3's addition of `playing`.
+   */
+  it("seats an awaiting agent instantly when the feed settles during playback, not mid-walk (finding 3: feed-settle + playing)", () => {
+    const { agents, visibleAgentIds, idle } = floorFixture();
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(sceneInput({ agents, visibleAgentIds, statusById: idle }));
+
+    const waiter = agents[2].id;
+    const settled = new Map(idle);
+    settled.set(waiter, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: settled,
+        feedSettled: true,
+        playing: true,
+      }),
+    );
+
+    expect(frameOf(scene).awayAgentIds.has(waiter)).toBe(false);
+    expect(bookOf(scene).civicClaimOf(waiter)).toBe("lounge");
+  });
+
+  /**
+   * CASE 4 - FINDING 6, directly, and the one the other three (and every
+   * civic case in "fixup 8d" above) miss: they all read the claim and the
+   * `seated`/`awayAgentIds` flags, which `settleInChair` sets correctly on
+   * its own. Finding 6 is that the character's PAINTED tile - `col`/`row`,
+   * which only `seatInstantlyAt` touches - was never one of those things.
+   * `characterRect` against the claimed seat's own `chairTile` is the one
+   * assertion that can see it; `seatedHead`, which reads the agent's DESK
+   * out of `AGENTS_LAYOUT`, is deliberately not what is asserted here - a
+   * civic occupant painted at its desk is exactly finding 6.
+   *
+   * Two sub-cases, as the brief asks: a reduced-motion FIRST live sync where
+   * the agent already wants a civic seat, and a live TRANSITION into one.
+   */
+  it("paints a civic occupant at its claimed seat, not its desk, the instant it is seated (finding 6)", () => {
+    // Sub-case A: reduced motion, FIRST sync, already `failure`.
+    {
+      const { agents, visibleAgentIds, idle } = floorFixture();
+      const crasher = agents[2].id;
+      const statuses = new Map(idle);
+      statuses.set(crasher, "failure");
+      const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+      scene.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds,
+          statusById: statuses,
+          reducedMotion: true,
+        }),
+      );
+
+      const layout = layoutOf(scene);
+      const bedSeat = bookOf(scene).effectiveSeat(crasher);
+      if (bedSeat === null || bedSeat.kind !== "bed") {
+        throw new Error(`expected ${crasher} to hold a bed on the first sync`);
+      }
+      const rect = characterRect(frameOf(scene), crasher);
+      expect(rect).toEqual(footRect(layout, bedSeat.chairTile));
+      const desk = layout.desks.get(crasher);
+      if (desk === undefined) throw new Error(`no desk for ${crasher}`);
+      // Pre-fix: `settleInChair` alone never moved `col`/`row`, so this was
+      // the actual painted rect - the desk, not the bed the claim and
+      // `whereabouts` both already named.
+      expect(rect).not.toEqual(footRect(layout, desk.chairTile));
+    }
+
+    // Sub-case B: reduced motion, a live idle -> awaiting TRANSITION.
+    {
+      const { agents, visibleAgentIds, idle } = floorFixture();
+      const waiter = agents[2].id;
+      const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+      scene.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds,
+          statusById: idle,
+          reducedMotion: true,
+        }),
+      );
+      const desk = layoutOf(scene).desks.get(waiter);
+      if (desk === undefined) throw new Error(`no desk for ${waiter}`);
+
+      const waiting = new Map(idle);
+      waiting.set(waiter, "awaiting");
+      scene.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds,
+          statusById: waiting,
+          reducedMotion: true,
+        }),
+      );
+
+      const loungeSeat = bookOf(scene).effectiveSeat(waiter);
+      if (loungeSeat === null || loungeSeat.kind !== "lounge") {
+        throw new Error(`expected ${waiter} to hold a lounge chair`);
+      }
+      const rect = characterRect(frameOf(scene), waiter);
+      expect(rect).toEqual(footRect(layoutOf(scene), loungeSeat.chairTile));
+      expect(rect).not.toEqual(footRect(layoutOf(scene), desk.chairTile));
+    }
   });
 });
