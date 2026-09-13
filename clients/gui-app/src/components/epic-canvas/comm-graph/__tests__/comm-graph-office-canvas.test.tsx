@@ -137,10 +137,28 @@ import {
   type OfficeRect,
   type OfficeSceneInput,
   type OfficeSeat,
+  type OfficeCivicTally,
   type OfficeSign,
+  type OfficeSpriteName,
   type OfficeTileRect,
 } from "@/lib/comm-graph/office/office-types";
-import { officePalette } from "@/lib/comm-graph/office/office-pixel-art";
+import {
+  officePalette,
+  officeSpriteColors,
+  officeSpriteMaps,
+  officeSpriteSize,
+  rasterizeSpriteMap,
+  type RasterizedSprite,
+} from "@/lib/comm-graph/office/office-pixel-art";
+import * as OfficePixelArt from "@/lib/comm-graph/office/office-pixel-art";
+import {
+  OFFICE_SIGN_FONT_PX,
+  OFFICE_SIGN_LETTER_SPACING_EM,
+  OFFICE_SIGN_MONOSPACE_STACK,
+  OFFICE_SIGN_PADDING_X,
+  OFFICE_SIREN_FRAME_MS,
+  officeSignsToDraw,
+} from "@/lib/comm-graph/office/office-signs";
 import type { CommGraphTileViewState } from "@/stores/epics/canvas/types";
 import type { TileFindAdapter } from "@/stores/tile-find";
 import type { CommGraphOfficeCanvasProps } from "@/components/epic-canvas/comm-graph/office/comm-graph-office-canvas";
@@ -149,7 +167,11 @@ import { OfficeStaticLayer } from "@/components/epic-canvas/comm-graph/office/of
 import { useThemeLibraryStore } from "@/stores/settings/theme-library-store";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import { isOfficeHotStatus } from "@/lib/comm-graph/office/office-status";
-import { OFFICE_LOD_CLOSEUP_ZOOM } from "@/lib/comm-graph/office/office-lod";
+import {
+  OFFICE_LOD_CLOSEUP_ZOOM,
+  OFFICE_LOD_OFFICE_ZOOM,
+  officeLodForZoom,
+} from "@/lib/comm-graph/office/office-lod";
 import { NAME_TAG_LINE_HEIGHT } from "@/components/epic-canvas/comm-graph/office/office-name-tags";
 
 const OFFICE_VIEW: CommGraphTileViewState = {
@@ -4668,5 +4690,550 @@ describe("CommGraphOfficeCanvas fixup 8 - the caught-up feed is not an input to 
     expect(
       screen.queryByTestId("comm-graph-office-catching-up-chip"),
     ).toBeNull();
+  });
+});
+
+/**
+ * THE WARD'S BEACON, as painted. K4's signs suite pins the FRAME NUMBER;
+ * K2's art pin pins the PIXEL MAPS; these cases are the seam that stops
+ * either side being re-authored without the other noticing. The Floor is
+ * the wrong witness: it has a road, so its ward carries no beacon at all.
+ */
+describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
+  let rafQueue: Array<{
+    readonly id: number;
+    readonly callback: FrameRequestCallback;
+  }> = [];
+  let nextRafId = 1;
+  let canceledRafIds = new Set<number>();
+  let calls: RecordedCall[] = [];
+  let restoreGetContext: (() => void) | null = null;
+  let frameClockMs = 0;
+
+  function flushRaf(times: number): void {
+    for (let step = 0; step < times; step += 1) {
+      frameClockMs += OFFICE_FRAME_INTERVAL_MS + 1;
+      const pending = rafQueue;
+      rafQueue = [];
+      act(() => {
+        for (const queued of pending) {
+          if (!canceledRafIds.has(queued.id)) queued.callback(frameClockMs);
+        }
+      });
+    }
+  }
+
+  beforeEach(() => {
+    activeObserverCallbacks = [];
+    vi.stubGlobal("IntersectionObserver", ControllableIntersectionObserver);
+    calls = [];
+    rafQueue = [];
+    canceledRafIds = new Set();
+    nextRafId = 1;
+    frameClockMs = 0;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      const id = nextRafId;
+      nextRafId += 1;
+      rafQueue.push({ id, callback: cb });
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      canceledRafIds.add(id);
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+      BOUNDING_RECT_STUB,
+    );
+    restoreGetContext = stubGetContext(() => createRecordingContext(calls));
+  });
+
+  afterEach(() => {
+    cleanup();
+    restoreGetContext?.();
+    restoreGetContext = null;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    useAppLocalNotificationsStore.setState({ byId: {} });
+  });
+
+  const MISSION_CONTROL = OFFICE_VIEWS["mission-control"];
+  /**
+   * Unattributed on purpose. Mission control's civic seats are authored with
+   * `hostId: null`, and `firstFreeSeat` will not hand a bed to a host-1
+   * agent - the Floor roster would occupy nothing here and the beacon would
+   * never leave frame 0.
+   */
+  const HALL_LEAD: CommGraphAgentNode = {
+    ...agent("hall-lead", "Hall lead"),
+    hostId: null,
+  };
+  const HALL_MEMBER: CommGraphAgentNode = {
+    ...agent("hall-member", "Hall member"),
+    hostId: null,
+    parentId: HALL_LEAD.id,
+  };
+  const ROSTER = [HALL_LEAD, HALL_MEMBER];
+  const ROSTER_IDS: ReadonlySet<string> = new Set(
+    ROSTER.map((person) => person.id),
+  );
+  const LAMP_SIZE = officeSpriteSize({ name: "siren-light" });
+  /**
+   * How many flushes cross one siren period. Each successful frame after
+   * the opening skip ticks `OFFICE_FRAME_INTERVAL_MS`; the +1 is that skip
+   * plus a frame of slack so we are not sitting on the 250 ms boundary.
+   */
+  const FLUSHES_PER_SIREN_PERIOD =
+    Math.ceil(OFFICE_SIREN_FRAME_MS / OFFICE_FRAME_INTERVAL_MS) + 1;
+
+  /**
+   * Measured: lowest differing lens pixel's bottom edge to the plate's
+   * top, in screen pixels, at both office zoom and close-up. The lamp and
+   * the plate are both screen-space, so this number does not move with
+   * zoom; a world-space lamp at 0.7 would sit under the fill and this
+   * would be <= 0.
+   */
+  const LENS_CLEARANCE_PX = 3;
+
+  interface PlateBox {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+  }
+
+  interface SirenBlit {
+    readonly name: "siren-light" | "siren-light-b";
+    readonly x: number;
+    readonly y: number;
+  }
+
+  function mapNamed(name: OfficeSpriteName): ReadonlyArray<string> {
+    const entry = officeSpriteMaps().find(
+      (candidate) => candidate.name === name,
+    );
+    if (entry === undefined) {
+      throw new Error(`no authored map for ${name}`);
+    }
+    return entry.map;
+  }
+
+  function pixelAt(
+    sprite: RasterizedSprite,
+    x: number,
+    y: number,
+  ): ReadonlyArray<number> {
+    const offset = (y * sprite.width + x) * 4;
+    return [
+      sprite.pixels[offset],
+      sprite.pixels[offset + 1],
+      sprite.pixels[offset + 2],
+      sprite.pixels[offset + 3],
+    ];
+  }
+
+  function rasterNamed(
+    name: "siren-light" | "siren-light-b",
+    theme: "light" | "dark",
+  ): RasterizedSprite {
+    return rasterizeSpriteMap(
+      mapNamed(name),
+      officeSpriteColors({ name }, theme),
+      false,
+    );
+  }
+
+  function plateFont(): string {
+    return `bold ${OFFICE_SIGN_FONT_PX}px ${OFFICE_SIGN_MONOSPACE_STACK}`;
+  }
+
+  function plateMeasure(text: string): number {
+    return (
+      modelledTextWidth(
+        text,
+        plateFont(),
+        `${OFFICE_SIGN_LETTER_SPACING_EM}em`,
+      ) +
+      OFFICE_SIGN_PADDING_X * 2
+    );
+  }
+
+  function missionControlLayout(): OfficeLayout {
+    const agents = ROSTER.map(officeAgentInput);
+    const statusById = new Map(
+      agents.map((person) => [person.id, "idle" as const]),
+    );
+    return MISSION_CONTROL.plan({
+      agents,
+      partition: partitionOfficePopulation({
+        agents,
+        statusById,
+        previous: null,
+      }),
+      occupancy: new Map(),
+      needsCapacity: [],
+      activityById: new Map(),
+      viewport: {
+        width: BOUNDING_RECT_STUB.width,
+        height: BOUNDING_RECT_STUB.height,
+      },
+      previous: null,
+    });
+  }
+
+  function resolveWardFrame(args: {
+    readonly layout: OfficeLayout;
+    readonly occupied: number;
+    readonly nowMs: number;
+    readonly reducedMotion: boolean;
+    readonly zoom: number;
+  }): 0 | 1 | null {
+    const ward = args.layout.floors[0]?.civic.find(
+      (room) => room.kind === "infirmary",
+    );
+    if (ward === undefined) {
+      throw new Error("expected Mission control to plan a medbay");
+    }
+    const occupiedByRoom: OfficeCivicTally["occupiedByRoom"] =
+      args.occupied === 0
+        ? new Map()
+        : new Map([[ward.civicRoomId, args.occupied]]);
+    const tally: OfficeCivicTally = {
+      occupiedByRoom,
+      archivedByHost: new Map(),
+    };
+    const drawn = officeSignsToDraw({
+      floors: args.layout.floors,
+      civicTally: tally,
+      clock: { nowMs: args.nowMs, reducedMotion: args.reducedMotion },
+      signs: args.layout.signs,
+      visibleAgentIds: ROSTER_IDS,
+      statusById: new Map(),
+      nameById: new Map(),
+      hostNameById: new Map(),
+      roleClaims: {},
+      zoom: args.zoom,
+      measure: plateMeasure,
+      projector: MISSION_CONTROL.painter.projector(args.layout),
+      lod: officeLodForZoom(args.zoom),
+    });
+    const beacon = drawn.find((entry) => entry.sirenFrame !== null);
+    return beacon === undefined ? null : beacon.sirenFrame;
+  }
+
+  function installReducedMotion(matches: boolean): {
+    readonly setMatches: (next: boolean) => void;
+  } {
+    let current = matches;
+    const listeners: Array<() => void> = [];
+    const media = {
+      get matches(): boolean {
+        return current;
+      },
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addEventListener: (_event: string, listener: () => void) => {
+        listeners.push(listener);
+      },
+      removeEventListener: (_event: string, listener: () => void) => {
+        const index = listeners.indexOf(listener);
+        if (index >= 0) listeners.splice(index, 1);
+      },
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    };
+    vi.stubGlobal("matchMedia", (query: string) => {
+      if (query.includes("prefers-reduced-motion")) return media;
+      return {
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      };
+    });
+    return {
+      setMatches: (next: boolean) => {
+        current = next;
+        act(() => {
+          for (const listener of listeners) listener();
+        });
+      },
+    };
+  }
+
+  function renderMissionControl(zoom: number): void {
+    render(
+      withQueryClient(
+        officeElementWithView(MISSION_CONTROL, ROSTER_IDS, ROSTER, {
+          view: { ...FIXED_CAMERA_VIEW, zoom },
+        }),
+      ),
+    );
+    setIntersecting(true);
+  }
+
+  function medbayPlate(recorded: ReadonlyArray<RecordedCall>): PlateBox {
+    const textIndex = recorded.findIndex(
+      (call) =>
+        call.method === "fillText" &&
+        typeof call.args[0] === "string" &&
+        call.args[0].startsWith("MEDBAY"),
+    );
+    if (textIndex < 0) {
+      throw new Error("expected a MEDBAY plate to be lettered");
+    }
+    for (let index = textIndex; index >= 0; index -= 1) {
+      const call = recorded[index];
+      if (call.method !== "roundRect" && call.method !== "rect") continue;
+      const left = call.args[0];
+      const top = call.args[1];
+      const width = call.args[2];
+      const height = call.args[3];
+      if (
+        typeof left !== "number" ||
+        typeof top !== "number" ||
+        typeof width !== "number" ||
+        typeof height !== "number"
+      ) {
+        throw new Error("expected a numeric plate box");
+      }
+      return { left, top, width, height };
+    }
+    throw new Error("expected a plate box behind the MEDBAY lettering");
+  }
+
+  function sirenNameOf(ref: unknown): "siren-light" | "siren-light-b" | null {
+    if (typeof ref !== "object" || ref === null) return null;
+    if (!("name" in ref)) return null;
+    const name = ref.name;
+    if (name === "siren-light" || name === "siren-light-b") return name;
+    return null;
+  }
+
+  function chromeSirenOn(
+    blits: ReadonlyArray<SirenBlit>,
+    plate: PlateBox,
+  ): SirenBlit {
+    const expectedX = plate.left + plate.width - LAMP_SIZE.width;
+    const above = blits.filter(
+      (blit) => blit.x === expectedX && blit.y + LAMP_SIZE.height <= plate.top,
+    );
+    if (above.length === 0) {
+      throw new Error(
+        `expected a chrome siren right-aligned above the plate at x=${expectedX}; saw ${JSON.stringify(blits)}`,
+      );
+    }
+    return above[above.length - 1];
+  }
+
+  /**
+   * TYPED FROM THE FUNCTION ITSELF, not a bare `MockInstance`: an untyped spy
+   * hands back `any` arguments, and reading `.x` off one is exactly the unsafe
+   * member access the lint stops. Spelling the signature here means the sprite
+   * name and the point come out of `mock.calls` already typed, so the guards
+   * below are narrowing a real union rather than apologising for an `any`.
+   */
+  function captureChromeSiren(
+    blitSpy: MockInstance<typeof OfficePixelArt.drawOfficeSprite>,
+  ): { plate: PlateBox; blit: SirenBlit } {
+    const plate = medbayPlate(calls);
+    const blits: SirenBlit[] = [];
+    for (const [, ref, at] of blitSpy.mock.calls) {
+      const name = sirenNameOf(ref);
+      if (name === null) continue;
+      blits.push({ name, x: at.x, y: at.y });
+    }
+    return { plate, blit: chromeSirenOn(blits, plate) };
+  }
+
+  /**
+   * A 1×1 pixel whose top-left is `(px, py)` is fully outside `box` when
+   * its closed-open square does not overlap the box at all. No slack: an
+   * antialiased fringe sitting on the edge is inside.
+   */
+  function pixelFullyOutside(px: number, py: number, box: PlateBox): boolean {
+    const right = box.left + box.width;
+    const bottom = box.top + box.height;
+    return (
+      px + 1 <= box.left || px >= right || py + 1 <= box.top || py >= bottom
+    );
+  }
+
+  function differingLensPixels(
+    theme: "light" | "dark",
+  ): ReadonlyArray<{ readonly x: number; readonly y: number }> {
+    const dark = rasterNamed("siren-light", theme);
+    const lit = rasterNamed("siren-light-b", theme);
+    const pixels: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < dark.height; y += 1) {
+      for (let x = 0; x < dark.width; x += 1) {
+        const a = pixelAt(dark, x, y);
+        const b = pixelAt(lit, x, y);
+        if (a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]) {
+          continue;
+        }
+        pixels.push({ x, y });
+      }
+    }
+    return pixels;
+  }
+
+  function lensClearancePx(
+    blit: SirenBlit,
+    plate: PlateBox,
+    lens: ReadonlyArray<{ readonly x: number; readonly y: number }>,
+  ): number {
+    const outside = lens.filter((pixel) =>
+      pixelFullyOutside(blit.x + pixel.x, blit.y + pixel.y, plate),
+    );
+    if (outside.length === 0) {
+      throw new Error("no differing lens pixel sits fully outside the plate");
+    }
+    let lowestBottom = -Infinity;
+    for (const pixel of outside) {
+      const bottom = blit.y + pixel.y + 1;
+      if (bottom > lowestBottom) lowestBottom = bottom;
+    }
+    return plate.top - lowestBottom;
+  }
+
+  function civicTaken(value: unknown): number {
+    if (typeof value !== "object" || value === null) return 0;
+    if (!("occupiedByRoom" in value)) return 0;
+    const rooms = value.occupiedByRoom;
+    if (!(rooms instanceof Map)) return 0;
+    let taken = 0;
+    for (const count of rooms.values()) {
+      if (typeof count === "number") taken += count;
+    }
+    return taken;
+  }
+
+  it("keeps the blinking lens outside the plate's opaque box at office zoom and close-up", () => {
+    // Premise: Mission control plans a roadless ward, so this sign is the
+    // one that carries a beacon. A Floor case cannot witness this.
+    const layout = missionControlLayout();
+    expect(layout.floors[0]?.road ?? null).toBeNull();
+    expect(
+      layout.floors[0]?.civic.some((room) => room.kind === "infirmary"),
+    ).toBe(true);
+
+    const lens = differingLensPixels("light");
+    expect(lens.length).toBeGreaterThan(0);
+
+    const clearances: number[] = [];
+    for (const zoom of [OFFICE_LOD_OFFICE_ZOOM, OFFICE_LOD_CLOSEUP_ZOOM]) {
+      const motion = installReducedMotion(true);
+      seedFailure(HALL_LEAD.id, HALL_LEAD.hostId);
+      const blitSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      const tally = vi.spyOn(OfficeScene.prototype, "civicTally");
+      renderMissionControl(zoom);
+      let taken = 0;
+      for (let step = 0; step < 40; step += 1) {
+        flushRaf(1);
+        for (const result of tally.mock.results) {
+          const n = civicTaken(result.value);
+          if (n > taken) taken = n;
+        }
+        if (taken > 0) break;
+      }
+      expect(taken).toBeGreaterThan(0);
+      motion.setMatches(false);
+      flushRaf(2);
+
+      calls.length = 0;
+      blitSpy.mockClear();
+      flushRaf(1);
+      const darkFrame = captureChromeSiren(blitSpy);
+
+      calls.length = 0;
+      blitSpy.mockClear();
+      flushRaf(FLUSHES_PER_SIREN_PERIOD);
+      const litFrame = captureChromeSiren(blitSpy);
+
+      expect(darkFrame.blit.name).not.toBe(litFrame.blit.name);
+
+      const darkClearance = lensClearancePx(
+        darkFrame.blit,
+        darkFrame.plate,
+        lens,
+      );
+      const litClearance = lensClearancePx(litFrame.blit, litFrame.plate, lens);
+      expect(darkClearance, `zoom ${zoom} dark`).toBe(LENS_CLEARANCE_PX);
+      expect(litClearance, `zoom ${zoom} lit`).toBe(LENS_CLEARANCE_PX);
+      clearances.push(darkClearance);
+
+      cleanup();
+      useAppLocalNotificationsStore.setState({ byId: {} });
+      blitSpy.mockRestore();
+    }
+    // Zoom-invariant: both the lamp and the box are screen-space, so the
+    // clearance at 0.7 and at 1.6 is the same number, not two nearby ones.
+    expect(clearances[0]).toBe(clearances[1]);
+  });
+
+  it("maps the resolver's frame number onto the lens pixels of Mission control's roadless ward", () => {
+    const layout = missionControlLayout();
+    expect(layout.floors[0]?.road ?? null).toBeNull();
+
+    const darkMap = mapNamed("siren-light").join("");
+    const litMap = mapNamed("siren-light-b").join("");
+    // K2's art pin, restated here so a swap of the maps cannot pass by
+    // also swapping the canvas's sprite table: frame 0 has no amber, frame
+    // 1 does.
+    expect(darkMap).not.toContain("y");
+    expect(darkMap).not.toContain("n");
+    expect(litMap).toContain("y");
+
+    for (const theme of ["light", "dark"] as const) {
+      resolvedThemeMock.current = theme;
+      const lens = differingLensPixels(theme);
+      expect(lens.length, theme).toBeGreaterThan(0);
+
+      const blitSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      renderMissionControl(OFFICE_LOD_OFFICE_ZOOM);
+      flushRaf(4);
+      const emptyResolved = resolveWardFrame({
+        layout,
+        occupied: 0,
+        nowMs: 0,
+        reducedMotion: false,
+        zoom: OFFICE_LOD_OFFICE_ZOOM,
+      });
+      expect(emptyResolved, `${theme} empty`).toBe(0);
+      const empty = captureChromeSiren(blitSpy);
+      expect(empty.blit.name, `${theme} empty sprite`).toBe("siren-light");
+      expect(mapNamed(empty.blit.name).join("")).not.toContain("y");
+
+      cleanup();
+      blitSpy.mockRestore();
+
+      const motion = installReducedMotion(true);
+      seedFailure(HALL_LEAD.id, HALL_LEAD.hostId);
+      const occupiedSpy = vi.spyOn(OfficePixelArt, "drawOfficeSprite");
+      renderMissionControl(OFFICE_LOD_OFFICE_ZOOM);
+      flushRaf(4);
+      const occupiedResolved = resolveWardFrame({
+        layout,
+        occupied: 1,
+        nowMs: 0,
+        reducedMotion: true,
+        zoom: OFFICE_LOD_OFFICE_ZOOM,
+      });
+      expect(occupiedResolved, `${theme} occupied`).toBe(1);
+      const occupied = captureChromeSiren(occupiedSpy);
+      expect(occupied.blit.name, `${theme} occupied sprite`).toBe(
+        "siren-light-b",
+      );
+      expect(mapNamed(occupied.blit.name).join("")).toContain("y");
+
+      cleanup();
+      occupiedSpy.mockRestore();
+      motion.setMatches(false);
+      useAppLocalNotificationsStore.setState({ byId: {} });
+    }
   });
 });
