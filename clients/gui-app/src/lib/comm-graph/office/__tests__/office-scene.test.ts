@@ -13439,7 +13439,29 @@ describe("OfficeScene finding 7b - a queue walk must vacate the civic seat", () 
 describe("towers: an archived agent leaves by its own building's records door", () => {
   const VIEW = OFFICE_VIEWS.towers;
 
-  it("walks to the plaza of its own host, not to the nearer one next door", () => {
+  /**
+   * One building's records door, and WHERE IN `floors` IT SITS.
+   *
+   * The floor index is the load-bearing field, not decoration. `departureDoorOf`
+   * finds a door by scanning `currentLayout.floors` in order and taking the
+   * first archive on a storey of the agent's own host; the host test is the only
+   * thing that stops it at the right one. So a case that means to pin the host
+   * test has to know which archive an UNFILTERED scan would have reached first.
+   */
+  interface ArchiveDoor {
+    readonly hostId: string | null;
+    readonly door: OfficeTilePos;
+    readonly floorIndex: number;
+  }
+
+  interface TwoHostTowers {
+    readonly layout: OfficeLayout;
+    readonly epic: OfficeTestEpic;
+    readonly statusById: Map<string, OfficeAgentStatus>;
+    readonly archives: ReadonlyArray<ArchiveDoor>;
+  }
+
+  function towersWithTwoHosts(): TwoHostTowers {
     const epic = makeTestEpic("two-hosts", 120, 11);
     const statusById = new Map(epic.statusById);
     const partition = partitionOfficePopulation({
@@ -13456,25 +13478,38 @@ describe("towers: an archived agent leaves by its own building's records door", 
       viewport: { width: 1040, height: 700 },
       previous: null,
     });
+    const archives: ArchiveDoor[] = [];
+    for (const [floorIndex, floor] of layout.floors.entries()) {
+      const door = floor.civic.find(
+        (room) => room.kind === "archive",
+      )?.doorTile;
+      if (door === undefined) continue;
+      archives.push({ hostId: floor.hostId, door, floorIndex });
+    }
+    return { layout, epic, statusById, archives };
+  }
 
-    const archives = layout.floors
-      .map((floor) => ({
-        hostId: floor.hostId,
-        door: floor.civic.find((room) => room.kind === "archive")?.doorTile,
-      }))
-      .filter(
-        (entry): entry is { hostId: string | null; door: OfficeTilePos } =>
-          entry.door !== undefined,
-      );
-    // One records door per building, and the buildings are different hosts.
-    expect(archives.length).toBe(2);
-    const mine = archives[0];
-    const theirs = archives[1];
-    expect(mine.hostId).not.toBe(theirs.hostId);
+  interface WalkOut {
+    readonly subjectId: string;
+    readonly walked: boolean;
+    readonly closestToMine: number;
+    readonly closestToTheirs: number;
+  }
 
-    // AN UPPER-STOREY AGENT, which is the whole case: a leaver on the plaza
-    // storey finds its archive without the building step and would pass on the
-    // old reading too.
+  /**
+   * Archive an UPPER-STOREY agent of `mine`'s host and watch where it goes.
+   *
+   * Upper storey on purpose: a leaver already on the plaza finds its archive on
+   * its own storey and never reaches the building step at all, so it cannot say
+   * anything about how that step chooses.
+   */
+  function walkOutOf(args: {
+    readonly towers: TwoHostTowers;
+    readonly mine: ArchiveDoor;
+    readonly theirs: ArchiveDoor;
+  }): WalkOut {
+    const { towers, mine, theirs } = args;
+    const { layout, epic, statusById } = towers;
     const plazaStoreys = new Set(
       layout.floors
         .map((floor, index) => ({ floor, index }))
@@ -13498,13 +13533,9 @@ describe("towers: an archived agent leaves by its own building's records door", 
     const visibleAgentIds = new Set(
       epic.agents.map((candidate) => candidate.id),
     );
-    const before = sceneInput({
-      agents,
-      visibleAgentIds,
-      statusById,
-      cursorMs: 100,
-    });
-    scene.sync(before);
+    scene.sync(
+      sceneInput({ agents, visibleAgentIds, statusById, cursorMs: 100 }),
+    );
     scene.sync(
       sceneInput({ agents, visibleAgentIds, statusById, cursorMs: 900 }),
     );
@@ -13542,12 +13573,74 @@ describe("towers: an archived agent leaves by its own building's records door", 
       );
       scene.tick(20);
     }
-    expect(walked).toBe(true);
+    return { subjectId: upstairs.id, walked, closestToMine, closestToTheirs };
+  }
+
+  /**
+   * THE FALLBACK WITNESS, AND ONLY THAT.
+   *
+   * It proves the building step happens at all: an upper storey has no archive,
+   * and the leaver still reaches one instead of walking to its own stairwell.
+   * It says NOTHING about the host test, and the distinction is not academic -
+   * this subject belongs to the host whose archive is FIRST in `floors`, so a
+   * scan with the host test deleted picks that same door and this case stays
+   * green. The isolation claim is the case below, which is built the other way
+   * round on purpose.
+   */
+  it("reaches a records door from a storey that has none", () => {
+    const towers = towersWithTwoHosts();
+    const { archives } = towers;
+    expect(archives.length).toBe(2);
+    const mine = archives[0];
+    const theirs = archives[1];
+    expect(mine.hostId).not.toBe(theirs.hostId);
+    // The precondition that makes this the FALLBACK case: the subject's own
+    // archive is the one an unfiltered scan would meet first anyway.
+    expect(mine.floorIndex).toBeLessThan(theirs.floorIndex);
+
+    const out = walkOutOf({ towers, mine, theirs });
+    expect(out.walked).toBe(true);
+    expect(out.closestToMine).toBeLessThan(OFFICE_TILE / 2);
+  });
+
+  /**
+   * THE HOST IS A WALL: the isolation claim, with a subject that can tell.
+   *
+   * The subject belongs to the host whose archive comes SECOND in `floors`, so
+   * the first archive the scan meets is a FOREIGN one. Delete the host test and
+   * the walk-out goes to that foreign door and this case reddens; keep it and
+   * the scan walks past the foreign archive to the subject's own. That ordering
+   * is the entire difference between this case and the one above, which is why
+   * both are here.
+   */
+  it("walks past a nearer foreign records door to its own building's", () => {
+    const towers = towersWithTwoHosts();
+    const { archives } = towers;
+    expect(archives.length).toBe(2);
+    // MINE IS THE LATER ONE. Asserted rather than assumed: if the plan ever
+    // reorders `floors` so that this host's archive comes first, this case
+    // silently becomes the fallback case again and stops discriminating.
+    const theirs = archives[0];
+    const mine = archives[1];
+    expect(mine.hostId).not.toBe(theirs.hostId);
+    expect(theirs.floorIndex).toBeLessThan(mine.floorIndex);
+
+    const out = walkOutOf({ towers, mine, theirs });
+    // IT WALKS AT ALL, and this is the assertion the mutant actually trips.
+    // Deleting the host test sends this subject to the foreign archive, which
+    // is in another building and has no route from its storey - so the scene
+    // never produces the walk and `walked` is false, measured. The two
+    // distances below are the claim from the other side, for a future where
+    // some route between buildings exists and the leaver takes the wrong one.
+    expect(
+      out.walked,
+      "the leaver never walked: it was sent to a door with no route",
+    ).toBe(true);
     // It reached ITS OWN building's records door...
-    expect(closestToMine).toBeLessThan(OFFICE_TILE / 2);
+    expect(out.closestToMine).toBeLessThan(OFFICE_TILE / 2);
     // ...and never went anywhere near the other building's, which is a walk it
     // has no route for: a whole tower away.
-    expect(closestToTheirs).toBeGreaterThan(OFFICE_TILE * 4);
+    expect(out.closestToTheirs).toBeGreaterThan(OFFICE_TILE * 4);
   });
 });
 
