@@ -31,7 +31,7 @@ export function emit(
   from: JoyrideProps,
 ): void {
   const stepIndex = from.stepIndex ?? 0;
-  const step = from.steps[stepIndex];
+  const step = from.steps.at(stepIndex);
   if (step === undefined) throw new Error("no step at index");
   const data: EventData = {
     type: overrides.type,
@@ -131,7 +131,10 @@ export async function mutate(change: () => void): Promise<void> {
 }
 
 export function next(): void {
-  emit({ type: "step:after", action: "next", origin: "button_primary" }, currentProps());
+  emit(
+    { type: "step:after", action: "next", origin: "button_primary" },
+    currentProps(),
+  );
 }
 
 export function present(): void {
@@ -147,7 +150,7 @@ export function sized(element: HTMLElement): HTMLElement {
 
 export interface Surface {
   readonly root: HTMLElement;
-  readonly anchors: Readonly<Record<string, HTMLElement>>;
+  readonly anchors: Readonly<Partial<Record<string, HTMLElement>>>;
   readonly remove: () => void;
 }
 
@@ -162,7 +165,7 @@ export function mountDraftSurface(
   const root = sized(document.createElement("div"));
   root.setAttribute("data-testid", "landing-draft-surface");
   surface.append(root);
-  const made: Record<string, HTMLElement> = {};
+  const made: Partial<Record<string, HTMLElement>> = {};
   for (const anchor of anchors) {
     const node = sized(document.createElement("button"));
     node.setAttribute("data-tour", anchor);
@@ -228,4 +231,3 @@ export function focusEpicTab(tabId: string, epicId: string): void {
     stripOrder: [ref],
   });
 }
-

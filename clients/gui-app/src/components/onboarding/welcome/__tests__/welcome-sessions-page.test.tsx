@@ -173,9 +173,12 @@ interface PageHandle extends PageCallbacks {
   readonly rerender: () => void;
 }
 
-function renderPage(
-  enabledProviderIds: ReadonlyArray<ProviderId> = ["claude-code", "codex"],
-): PageHandle {
+const DEFAULT_ENABLED_PROVIDERS: ReadonlyArray<ProviderId> = [
+  "claude-code",
+  "codex",
+];
+
+function renderPage(enabledProviderIds: ReadonlyArray<ProviderId>): PageHandle {
   const callbacks: PageCallbacks = {
     onImportStarted: vi.fn(),
     onSkipImport: vi.fn(),
@@ -341,14 +344,14 @@ afterEach(() => {
 
 describe("<WelcomeSessionsPage />", () => {
   it("consumes the session-import announcement on mount", () => {
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     expect(
       useFeatureAnnouncementsStore.getState().consumed["session-import"],
     ).toBeTypeOf("number");
   });
 
   it("shows the spinner with Import disabled while scanning, then the count once complete", () => {
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     expect(screen.getByTestId("welcome-sessions-scan-spinner")).not.toBeNull();
     expect(importButton().hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Skip import" })).not.toBeNull();
@@ -364,7 +367,7 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("toggles at provider, folder and row level without crossing providers", () => {
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
 
     // Provider header: all Claude rows off, Codex untouched.
@@ -399,7 +402,7 @@ describe("<WelcomeSessionsPage />", () => {
       "session-import-row",
     );
     expect(rows).toHaveLength(2);
-    const firstRow = rows[0];
+    const firstRow = rows.at(0);
     if (firstRow === undefined) throw new Error("no first row");
     fireEvent.click(firstRow);
     expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe(
@@ -429,7 +432,7 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("shows a failed provider's banner in its section while the others stay importable", () => {
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     act(() => {
       callbacks().onStarted(["claude", "codex"]);
       callbacks().onGroup(
@@ -455,18 +458,20 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("starts the run on the stream binding with the welcome-modal surface and reports", () => {
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     fireEvent.click(sectionCheckbox("claude"));
     fireEvent.click(importButton());
 
     expect(startSessionImportRunMock).toHaveBeenCalledTimes(1);
-    const [request, target] = startSessionImportRunMock.mock.calls[0] ?? [];
-    expect(request?.selections).toEqual([
+    const firstCall = startSessionImportRunMock.mock.calls.at(0);
+    if (firstCall === undefined) throw new Error("no import run started");
+    const [request, target] = firstCall;
+    expect(request.selections).toEqual([
       { harness: "codex", nativeSessionId: "x1" },
       { harness: "codex", nativeSessionId: "x2" },
     ]);
-    expect(request?.titles.get("codex:x1")).toBe("Codex one");
+    expect(request.titles.get("codex:x1")).toBe("Codex one");
     expect(target?.hostId).toBe("host-1");
     expect(analyticsTrack.mock.calls).toEqual([
       [
@@ -483,7 +488,7 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("reports Skip import without starting anything", () => {
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     fireEvent.click(screen.getByRole("button", { name: "Skip import" }));
     expect(page.onSkipImport).toHaveBeenCalledTimes(1);
@@ -497,7 +502,7 @@ describe("<WelcomeSessionsPage />", () => {
       total: 3,
     };
     statusQuery.data = { active, lastCompleted: null };
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
 
     expect(attachSessionImportRunMock).toHaveBeenCalledTimes(1);
@@ -514,7 +519,7 @@ describe("<WelcomeSessionsPage />", () => {
 
   it("says the host cannot import when the scan method is unsupported", () => {
     stream.support = "unsupported";
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     expect(scanClient.callbacks).toBeNull();
     expect(screen.getByTestId("welcome-sessions-unsupported").textContent).toBe(
       "This machine can't import sessions.",
@@ -524,7 +529,7 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("keeps a failed provider's retained rows on screen and untickable after a reconnect", () => {
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     expect(importButton().textContent).toBe("Import 4 tasks");
 
@@ -572,7 +577,7 @@ describe("<WelcomeSessionsPage />", () => {
     statusQuery.isSuccess = false;
     statusQuery.isPending = true;
     statusQuery.isFetching = true;
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     // The spinner glyph is aria-hidden; the label the button is named by
     // does not change under it.
@@ -587,7 +592,7 @@ describe("<WelcomeSessionsPage />", () => {
     statusQuery.data = undefined;
     statusQuery.isSuccess = false;
     statusQuery.isError = true;
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     expect(screen.getByRole("alert").textContent).toContain(
       "Traycer could not check whether an import is already running.",
@@ -602,7 +607,7 @@ describe("<WelcomeSessionsPage />", () => {
 
   it("probes the host past a finished local run, but not past one in flight", () => {
     seedLocalRun("complete");
-    const page = renderPage();
+    const page = renderPage(DEFAULT_ENABLED_PROVIDERS);
     playSharedFolders();
     expect(statusQuery.enabled).toBe(true);
     expect(screen.queryByTestId("welcome-sessions-already-running")).toBeNull();
@@ -619,7 +624,7 @@ describe("<WelcomeSessionsPage />", () => {
   });
 
   it("keeps what landed and allows Import when the scan stream fails", () => {
-    renderPage();
+    renderPage(DEFAULT_ENABLED_PROVIDERS);
     act(() => {
       callbacks().onStarted(["claude", "codex"]);
       callbacks().onGroup(

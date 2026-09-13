@@ -183,10 +183,16 @@ class WelcomeRosterFreshnessTracker {
   }
 }
 
-/** `["host", hostId, "providers.list", …]` → hostId; anything else → null. */
-function rosterHostOf(queryKey: QueryKey): string | null {
-  if (queryKey[0] !== "host" || queryKey[2] !== "providers.list") return null;
-  const hostId = queryKey[1];
+/**
+ * `["host", hostId, "providers.list", …]` → hostId; anything else → null.
+ * Takes `unknown`: the cache event's query is untyped, and a key is only a
+ * key once it has been looked at.
+ */
+function rosterHostOf(queryKey: unknown): string | null {
+  if (!Array.isArray(queryKey)) return null;
+  const key: ReadonlyArray<unknown> = queryKey;
+  if (key[0] !== "host" || key[2] !== "providers.list") return null;
+  const hostId = key[1];
   return typeof hostId === "string" ? hostId : null;
 }
 

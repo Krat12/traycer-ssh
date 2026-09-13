@@ -448,9 +448,7 @@ describe("GeneralSettingsPanel", () => {
     ).toBeNull();
     expect(screen.queryByText("Product tour")).toBeNull();
     expect(screen.queryByTestId("settings-replay-onboarding")).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Replay tour" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Replay tour" })).toBeNull();
   });
 
   // The Danger Zone used to mix three scopes in one red box: one machine's

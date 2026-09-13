@@ -37,7 +37,10 @@ import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
 import { useSessionImportCheckStatus } from "@/hooks/session-import/use-session-import-check-status-query";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
-import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
+import {
+  useStreamRuntimeBinding,
+  type StreamRuntimeBinding,
+} from "@/lib/host/stream-runtime-context";
 import { cn } from "@/lib/utils";
 import { useSessionImportRun } from "@/stores/session-import/session-import-run-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
@@ -88,31 +91,8 @@ export function WelcomeSessionsPage(props: {
   // stream binding names transport and machine together, the same binding
   // the scan is reading (`session-import-wizard.tsx` does the same).
   const streamBinding = useStreamRuntimeBinding();
-  const hostId = streamBinding?.hostId ?? null;
-  const runStatus = useSessionImportRun(hostId).status;
-  // "In flight", not "idle": a FINISHED run the store still summarises (the
-  // modal re-shown from Settings after an earlier import) must not hold the
-  // status probe closed, or Import could never enable again. The wizard
-  // retires such a run on mount instead; this page has no summary to make
-  // way for, so it leaves the store alone and asks the host.
-  const runInFlight = runStatus === "starting" || runStatus === "running";
-  const statusQuery = useSessionImportCheckStatus(streamBinding, !runInFlight);
-  const activeRun = statusQuery.isSuccess ? statusQuery.data.active : null;
-  const canSubmit = sessionImportHostIsIdle(statusQuery);
-  const checkingStatus = !statusQuery.isError && !canSubmit;
-  // A run found on the host is watched, never re-submitted: attaching gives
-  // the progress toast something to show once the modal finishes.
-  useEffect(() => {
-    if (runInFlight || !statusQuery.isSuccess || statusQuery.isFetching) return;
-    if (activeRun !== null) attachSessionImportRun(streamBinding, activeRun);
-  }, [
-    activeRun,
-    runInFlight,
-    statusQuery.isFetching,
-    statusQuery.isSuccess,
-    streamBinding,
-  ]);
-  const alreadyRunning = runInFlight || activeRun !== null;
+  const { alreadyRunning, canSubmit, checkingStatus, statusQuery } =
+    useHostImportRun(streamBinding);
 
   const { state, dispatch } = welcomeScan.scan;
   const view = useMemo(() => buildWelcomeSessionsView(state), [state]);
@@ -602,4 +582,53 @@ function providerList(welcomeScan: WelcomeScan): string {
   if (names.length === 1) return last;
   if (names.length === 2) return `${names[0]} or ${last}`;
   return `${names.slice(0, -1).join(", ")}, or ${last}`;
+}
+
+interface HostImportRun {
+  /** A run is in flight here, or the host reports one: watch, never resubmit. */
+  readonly alreadyRunning: boolean;
+  readonly canSubmit: boolean;
+  readonly checkingStatus: boolean;
+  /** The host probe itself, for the page's "could not check" retry row. */
+  readonly statusQuery: UseQueryResult<
+    SessionImportStatusResponse,
+    HostRpcError
+  >;
+}
+
+/**
+ * Whether an import can be started on the page's host right now. "In
+ * flight", not "idle": a FINISHED run the store still summarises (the modal
+ * re-shown from Settings after an earlier import) must not hold the status
+ * probe closed, or Import could never enable again. The wizard retires such
+ * a run on mount instead; this page has no summary to make way for, so it
+ * leaves the store alone and asks the host. A run found on the host is
+ * watched, never re-submitted: attaching gives the progress toast something
+ * to show once the modal finishes.
+ */
+function useHostImportRun(
+  streamBinding: StreamRuntimeBinding | null,
+): HostImportRun {
+  const hostId = streamBinding?.hostId ?? null;
+  const runStatus = useSessionImportRun(hostId).status;
+  const runInFlight = runStatus === "starting" || runStatus === "running";
+  const statusQuery = useSessionImportCheckStatus(streamBinding, !runInFlight);
+  const activeRun = statusQuery.isSuccess ? statusQuery.data.active : null;
+  const canSubmit = sessionImportHostIsIdle(statusQuery);
+  useEffect(() => {
+    if (runInFlight || !statusQuery.isSuccess || statusQuery.isFetching) return;
+    if (activeRun !== null) attachSessionImportRun(streamBinding, activeRun);
+  }, [
+    activeRun,
+    runInFlight,
+    statusQuery.isFetching,
+    statusQuery.isSuccess,
+    streamBinding,
+  ]);
+  return {
+    alreadyRunning: runInFlight || activeRun !== null,
+    canSubmit,
+    checkingStatus: !statusQuery.isError && !canSubmit,
+    statusQuery,
+  };
 }

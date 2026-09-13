@@ -33,9 +33,9 @@ describe("landing receipts store", () => {
     const before = useLandingReceiptsStore.getState().byAttemptId;
     store.emit({ ...receipt("a"), epicId: "epic-other" }, generation);
     expect(useLandingReceiptsStore.getState().byAttemptId).toBe(before);
-    expect(selectLandingReceipt(useLandingReceiptsStore.getState(), "a")).toEqual(
-      receipt("a"),
-    );
+    expect(
+      selectLandingReceipt(useLandingReceiptsStore.getState(), "a"),
+    ).toEqual(receipt("a"));
   });
 
   it("consume hands the receipt out exactly once and drops its dispatch", () => {

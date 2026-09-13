@@ -1098,12 +1098,12 @@ means the drain UI renders NOTHING - never a zero, which would offer to end
     stays open.
   - **Guided tours**: five `LessonCard`s (`panels/onboarding/lesson-card.tsx`
     - a `SettingsRow` inside an anchored container, so a card with a demo
-    beneath it is one search target), one per `TourId`, each showing the
-    tour's status beside its title and a Start / Replay / Restart button
-    that calls `replayTour(tourId)` - a `single`-scope chain that ends after
-    that one tour.
+      beneath it is one search target), one per `TourId`, each showing the
+      tour's status beside its title and a Start / Replay / Restart button
+      that calls `replayTour(tourId)` - a `single`-scope chain that ends after
+      that one tour.
   - **More to explore**: the two salvaged demos (`Split screen`, `Task tabs
-    & navigation`), which expand `panels/onboarding/lesson-diorama.tsx`
+& navigation`), which expand `panels/onboarding/lesson-diorama.tsx`
     inline - at most one open at a time, so at most one demo's timers run,
     with `aria-expanded` / `aria-controls` on the toggle; **Agent selection
     guide**, whose action is `navigateToSettingsSection("agents")` (the

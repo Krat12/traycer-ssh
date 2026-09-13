@@ -73,9 +73,7 @@ describe("Layout section placement and digit reassignment", () => {
   it("pushes usage past the single-digit limit", () => {
     setMobileApp(false);
     const sections = visibleSettingsSections();
-    const usageIndex = sections.findIndex(
-      (section) => section.id === "usage",
-    );
+    const usageIndex = sections.findIndex((section) => section.id === "usage");
     // Usage now sits exactly at the limit - one slot later than it used to, so
     // it has no leader digit at all rather than an untypable double digit.
     expect(usageIndex).toBe(SINGLE_DIGIT_LEADER_INDEX_LIMIT);

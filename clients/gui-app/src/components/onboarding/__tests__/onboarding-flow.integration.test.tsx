@@ -1,7 +1,21 @@
 import { useEffect, type ReactNode } from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type { Props as JoyrideProps } from "react-joyride";
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host";
 import { ONBOARDING_COMPLETION_TOAST_ID } from "@/components/onboarding/tour/onboarding-completion-toast";
 import { resetActivationForTests } from "@/components/onboarding/tour/tour-activation";
@@ -48,15 +62,15 @@ const seam = vi.hoisted(() => ({
   activateTabIntent: vi.fn(),
   navigate: vi.fn(),
   openLink: vi.fn(),
-  toast: vi.fn(),
+  toast:
+    vi.fn<(element: ReactNode, options: { readonly id: string }) => void>(),
   toastDismiss: vi.fn(),
 }));
 
 vi.mock("react-joyride", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-joyride")>();
-  const harness = await import(
-    "@/components/onboarding/tour/__tests__/joyride-test-harness"
-  );
+  const harness =
+    await import("@/components/onboarding/tour/__tests__/joyride-test-harness");
   function FakeJoyride(props: JoyrideProps): null {
     harness.joyride.props = props;
     useEffect(() => {
@@ -96,7 +110,8 @@ vi.mock("sonner", () => ({
 vi.mock("@/components/onboarding/welcome/welcome-modal", async () => {
   const react = await import("react");
   const dialog = await import("@/components/ui/dialog");
-  const presence = await import("@/stores/onboarding/onboarding-presence-store");
+  const presence =
+    await import("@/stores/onboarding/onboarding-presence-store");
   const flowStore = await import("@/stores/onboarding/onboarding-flow-store");
   function WelcomeModal(props: { readonly onPaused: () => void }) {
     const setModalOpen = presence.useOnboardingPresenceStore(
@@ -121,13 +136,18 @@ vi.mock("@/components/onboarding/welcome/welcome-modal", async () => {
           props.onPaused();
         }}
       >
-        <dialog.DialogContent data-testid="welcome-modal" showCloseButton={false}>
+        <dialog.DialogContent
+          data-testid="welcome-modal"
+          showCloseButton={false}
+        >
           <dialog.DialogTitle>Welcome</dialog.DialogTitle>
           <dialog.DialogDescription>stand-in</dialog.DialogDescription>
           <button
             type="button"
             onClick={() => {
-              flowStore.useOnboardingFlowStore.getState().finishModal("no-sessions");
+              flowStore.useOnboardingFlowStore
+                .getState()
+                .finishModal("no-sessions");
             }}
           >
             Continue
@@ -472,7 +492,9 @@ describe("entry navigation", () => {
       { kind: "new-draft", settings: null },
       undefined,
     );
-    expect(useLandingReceiptsStore.getState().dispatchedByAttemptId).toEqual({});
+    expect(useLandingReceiptsStore.getState().dispatchedByAttemptId).toEqual(
+      {},
+    );
   });
 
   it("the panels lesson waits for its surface rather than navigating", () => {
@@ -491,7 +513,9 @@ function completeChainViaFinishFrom(_events: typeof fireEvent): void {
   keep(mountEpicSurface(EPIC_TAB_ID, false));
   const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
   useEpicCanvasStore.setState({
-    tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+    tabsById: {
+      [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" },
+    },
     openTabOrder: [EPIC_TAB_ID],
     activeTabId: EPIC_TAB_ID,
     mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
@@ -514,7 +538,9 @@ describe("completion toast", () => {
     keep(mountEpicSurface(EPIC_TAB_ID, false));
     const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
     useEpicCanvasStore.setState({
-      tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+      tabsById: {
+        [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" },
+      },
       openTabOrder: [EPIC_TAB_ID],
       activeTabId: EPIC_TAB_ID,
       mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
@@ -598,7 +624,9 @@ describe("completion toast", () => {
     keep(mountEpicSurface(EPIC_TAB_ID, false));
     const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
     useEpicCanvasStore.setState({
-      tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+      tabsById: {
+        [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" },
+      },
       openTabOrder: [EPIC_TAB_ID],
       activeTabId: EPIC_TAB_ID,
       mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
@@ -637,7 +665,9 @@ describe("completion toast", () => {
     fireEvent.click(star);
     expect(seam.openLink).toHaveBeenCalledTimes(1);
     expect(seam.openLink).toHaveBeenCalledWith(TRAYCER_GITHUB_URL, "app", null);
-    expect(seam.toastDismiss).toHaveBeenCalledWith(ONBOARDING_COMPLETION_TOAST_ID);
+    expect(seam.toastDismiss).toHaveBeenCalledWith(
+      ONBOARDING_COMPLETION_TOAST_ID,
+    );
     expect(body).toBeTruthy();
     cleanup();
 
@@ -648,7 +678,9 @@ describe("completion toast", () => {
       section: "onboarding",
       resetToGeneral: false,
     });
-    expect(seam.toastDismiss).toHaveBeenCalledWith(ONBOARDING_COMPLETION_TOAST_ID);
+    expect(seam.toastDismiss).toHaveBeenCalledWith(
+      ONBOARDING_COMPLETION_TOAST_ID,
+    );
   });
 
   it("Learn more is retained (disabled, not dismissed) when the Settings bridge vanished before the click", () => {

@@ -180,9 +180,9 @@ describe("<OnboardingSettingsPanel />", () => {
 
       renderPanel();
 
-      expect(
-        screen.getByTestId("onboarding-legacy-note").textContent,
-      ).toBe(LEGACY_COMPLETED_NOTE);
+      expect(screen.getByTestId("onboarding-legacy-note").textContent).toBe(
+        LEGACY_COMPLETED_NOTE,
+      );
       expect(screen.getByText("0 of 5 tours completed")).toBeTruthy();
       const progressGroup = screen.getByTestId("onboarding-progress");
       expect(progressGroup.textContent).toContain("Welcome · Done");
@@ -435,9 +435,7 @@ describe("<OnboardingSettingsPanel />", () => {
           "onboarding-demo-split-screen",
         );
         expect(
-          screen.getByTestId("lesson-diorama-frame").getAttribute(
-            "data-scene",
-          ),
+          screen.getByTestId("lesson-diorama-frame").getAttribute("data-scene"),
         ).toBe("split-screen");
         expect(screen.getByTestId("lesson-diorama-caption")).toBeTruthy();
         expect(trackMock).toHaveBeenCalledTimes(1);
@@ -454,9 +452,7 @@ describe("<OnboardingSettingsPanel />", () => {
         fireEvent.click(taskTabsToggle);
 
         expect(
-          screen.getByTestId("lesson-diorama-frame").getAttribute(
-            "data-scene",
-          ),
+          screen.getByTestId("lesson-diorama-frame").getAttribute("data-scene"),
         ).toBe("task-tabs");
         expect(splitToggle.textContent).toBe("Watch demo");
         expect(splitToggle.getAttribute("aria-expanded")).toBe("false");

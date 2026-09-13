@@ -58,7 +58,8 @@ describe("visibleSettingsSections", () => {
     setMobileApp(true);
     const ids = visibleSettingsSections().map((section) => section.id);
     const expected = SETTINGS_SECTIONS.map((section) => section.id).filter(
-      (id) => id !== "keybindings" && id !== "link-phone" && id !== "onboarding",
+      (id) =>
+        id !== "keybindings" && id !== "link-phone" && id !== "onboarding",
     );
     expect(ids).toEqual(expected);
   });

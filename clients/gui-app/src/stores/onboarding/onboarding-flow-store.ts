@@ -675,7 +675,9 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
           update((data) => ({ ...data, modal: "pending", modalPage: 1 })),
         acknowledgeCompletion: () =>
           update((data) =>
-            data.completionPending ? { ...data, completionPending: false } : data,
+            data.completionPending
+              ? { ...data, completionPending: false }
+              : data,
           ),
       };
     },

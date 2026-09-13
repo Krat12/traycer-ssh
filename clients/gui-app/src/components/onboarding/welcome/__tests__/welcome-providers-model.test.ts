@@ -23,6 +23,34 @@ const UNKNOWN_AUTH: ProviderAuth = {
   detail: null,
 };
 
+function candidatesFor(
+  installed: boolean | "pending",
+): ProviderCliState["candidates"] {
+  if (installed === "pending") {
+    return [
+      {
+        kind: "path",
+        path: "/usr/bin/x",
+        available: false,
+        version: null,
+        versionPending: true,
+      },
+    ];
+  }
+  if (installed) {
+    return [
+      {
+        kind: "path",
+        path: "/usr/bin/x",
+        available: true,
+        version: "1.0.0",
+        versionPending: false,
+      },
+    ];
+  }
+  return [];
+}
+
 function providerState(input: {
   readonly providerId: ProviderId;
   readonly enabled: boolean;
@@ -36,28 +64,7 @@ function providerState(input: {
     enabled: input.enabled,
     disabledBy: null,
     selected: { kind: "bundled" },
-    candidates:
-      input.installed === "pending"
-        ? [
-            {
-              kind: "path",
-              path: "/usr/bin/x",
-              available: false,
-              version: null,
-              versionPending: true,
-            },
-          ]
-        : input.installed
-          ? [
-              {
-                kind: "path",
-                path: "/usr/bin/x",
-                available: true,
-                version: "1.0.0",
-                versionPending: false,
-              },
-            ]
-          : [],
+    candidates: candidatesFor(input.installed),
     auth: input.auth,
     authPending: input.authPending,
     checkedAt: null,
@@ -112,7 +119,7 @@ function detected(
 }
 
 function only(tiles: ReadonlyArray<WelcomeTileModel>): WelcomeTileModel {
-  const tile = tiles[0];
+  const tile = tiles.at(0);
   if (tile === undefined || tiles.length !== 1) {
     throw new Error(`expected exactly one tile, got ${tiles.length}`);
   }

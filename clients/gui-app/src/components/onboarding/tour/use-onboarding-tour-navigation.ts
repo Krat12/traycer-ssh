@@ -5,7 +5,10 @@ import {
   subscribeActivation,
 } from "@/components/onboarding/tour/tour-activation";
 import { activateTabIntent } from "@/lib/tab-navigation";
-import { draftTabIntent, newDraftTabIntent } from "@/lib/tab-navigation/intents";
+import {
+  draftTabIntent,
+  newDraftTabIntent,
+} from "@/lib/tab-navigation/intents";
 import {
   isOpenLandingDraft,
   useLandingDraftStore,
@@ -51,7 +54,9 @@ export function resetTourNavigationForTests(): void {
 
 export function useOnboardingTourNavigation(): void {
   const navigate = useNavigate();
-  const chainActive = useOnboardingFlowStore((state) => state.chain === "active");
+  const chainActive = useOnboardingFlowStore(
+    (state) => state.chain === "active",
+  );
   const activeTourId = useOnboardingFlowStore((state) => state.activeTourId);
   // One navigation per ACTIVATION (`tour-activation.ts`): a chain start, a
   // launch resume or a replay - a same-tour replay while active included.
@@ -74,7 +79,11 @@ export function useOnboardingTourNavigation(): void {
       drafts.some((draft) => draft.id === id && isOpenLandingDraft(draft));
     const savedDraftId = flow.context?.draftId ?? null;
     // Already on a live draft: reuse it, whatever the checkpoint saved.
-    if (focused !== null && focused.kind === "draft" && isOpenDraft(focused.id)) {
+    if (
+      focused !== null &&
+      focused.kind === "draft" &&
+      isOpenDraft(focused.id)
+    ) {
       if (savedDraftId !== focused.id) flow.setContext({ draftId: focused.id });
       return;
     }

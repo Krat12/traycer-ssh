@@ -27,9 +27,9 @@ describe("onboarding-tour-catalog", () => {
   });
 
   it("every BRANCH_TOUR_ORDER[branch] ends with task-panels, and contains only known ids with no duplicates", () => {
-    const branches = Object.keys(BRANCH_TOUR_ORDER) as ReadonlyArray<
-      OnboardingBranch
-    >;
+    const branches = Object.keys(
+      BRANCH_TOUR_ORDER,
+    ) as ReadonlyArray<OnboardingBranch>;
     for (const branch of branches) {
       const order = BRANCH_TOUR_ORDER[branch];
       expect(order.at(-1)).toBe("task-panels");

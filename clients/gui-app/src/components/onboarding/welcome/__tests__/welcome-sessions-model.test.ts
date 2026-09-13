@@ -192,7 +192,7 @@ describe("buildWelcomeSessionsView", () => {
       "claude:a3",
       "claude:g1",
     ]);
-    const folderB = claude.groups[1];
+    const folderB = claude.groups.at(1);
     if (folderB === undefined) throw new Error("no folder b");
     expect(groupImportableKeys(folderB)).toEqual([]);
     expect(folderB.rows[0]?.unavailableLabel).toBe("Unreadable");

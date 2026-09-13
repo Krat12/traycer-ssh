@@ -96,7 +96,9 @@ export function disablingLastEnabledFor(
 }
 
 export type WelcomeTileInstall =
-  WelcomeInstallState | "builtIn" | "unavailable";
+  | WelcomeInstallState
+  | "builtIn"
+  | "unavailable";
 
 export interface WelcomeTileModel {
   readonly providerId: ProviderId;

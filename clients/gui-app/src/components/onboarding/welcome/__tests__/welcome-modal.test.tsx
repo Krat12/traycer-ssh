@@ -161,7 +161,8 @@ vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
 async function answerFetch(
   ordinal: number,
   outcome:
-    { readonly providers: ProviderCliState[] } | { readonly error: string },
+    | { readonly providers: ProviderCliState[] }
+    | { readonly error: string },
 ): Promise<void> {
   await waitFor(() => {
     expect(providersFixture.fetches).toBeGreaterThanOrEqual(ordinal);
@@ -232,13 +233,16 @@ vi.mock(
   }),
 );
 
-const analyticsTrack = vi.hoisted(() => vi.fn());
+const analyticsTrack = vi.hoisted(() =>
+  vi.fn<(event: string, properties: unknown) => void>(),
+);
 
 // The unified host also mounts the spotlight tour behind the (defaulted-to-
 // ready) host gate; these suites are about the modal, so the tour's router
 // dependency is stubbed and nothing else of it is exercised here.
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  const actual =
+    await importOriginal<typeof import("@tanstack/react-router")>();
   return { ...actual, useNavigate: () => () => undefined };
 });
 

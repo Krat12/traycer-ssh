@@ -95,18 +95,18 @@ describe("LessonDiorama", () => {
       expect(activeTabText()).toBe(TASKS[0]);
       expect(within(sidebar).getByText(TASK_SCENES[0].chat)).toBeTruthy();
       expect(within(sidebar).getByText(TASK_SCENES[0].spec)).toBeTruthy();
-      expect(
-        screen.getByTestId("lesson-diorama-chat-sample").textContent,
-      ).toBe("Continue team usage limits");
+      expect(screen.getByTestId("lesson-diorama-chat-sample").textContent).toBe(
+        "Continue team usage limits",
+      );
 
       advance(TASK_TAB_CYCLE_MS);
       expect(activeTabText()).toBe(TASKS[1]);
       expect(within(sidebar).getByText(TASK_SCENES[1].chat)).toBeTruthy();
       expect(within(sidebar).getByText(TASK_SCENES[1].spec)).toBeTruthy();
       expect(within(sidebar).queryByText(TASK_SCENES[0].chat)).toBeNull();
-      expect(
-        screen.getByTestId("lesson-diorama-chat-sample").textContent,
-      ).toBe("Continue billing service");
+      expect(screen.getByTestId("lesson-diorama-chat-sample").textContent).toBe(
+        "Continue billing service",
+      );
 
       advance(TASK_TAB_CYCLE_MS);
       expect(activeTabText()).toBe(TASKS[2]);
@@ -232,7 +232,9 @@ describe("LessonDiorama", () => {
       const frame = screen.getByTestId("lesson-diorama-frame");
       expect(frame.getAttribute("data-phase")).toBe("drag-1");
       expect(
-        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+        screen
+          .getByTestId("lesson-diorama-drag-pill")
+          .hasAttribute("data-paused"),
       ).toBe(false);
 
       fireEvent.click(screen.getByRole("button", { name: "Pause demo" }));
@@ -242,16 +244,22 @@ describe("LessonDiorama", () => {
       advance(10000);
       expect(frame.getAttribute("data-phase")).toBe("drag-1");
       expect(
-        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+        screen
+          .getByTestId("lesson-diorama-drag-pill")
+          .hasAttribute("data-paused"),
       ).toBe(true);
       expect(
-        screen.getByTestId("lesson-diorama-drop-zone").hasAttribute("data-paused"),
+        screen
+          .getByTestId("lesson-diorama-drop-zone")
+          .hasAttribute("data-paused"),
       ).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
 
       fireEvent.click(screen.getByRole("button", { name: "Play demo" }));
       expect(
-        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+        screen
+          .getByTestId("lesson-diorama-drag-pill")
+          .hasAttribute("data-paused"),
       ).toBe(false);
       // The beat restarts with the phase's full duration, not the remainder.
       advance(NAVIGATION_PHASE_MS["drag-1"] - 1);

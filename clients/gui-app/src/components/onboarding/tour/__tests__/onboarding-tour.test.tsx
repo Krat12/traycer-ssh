@@ -1,4 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingTour } from "@/components/onboarding/tour/onboarding-tour";
 import { resetTourDismissalForTests } from "@/components/onboarding/tour/use-onboarding-tour-controller";
@@ -103,7 +110,7 @@ async function startAndPresent(): Promise<HTMLElement> {
     flow().finishModal("no-sessions");
     flow().setContext({ draftId: DRAFT_ID });
   });
-  return await screen.findByTestId("onboarding-tour-card");
+  return screen.findByTestId("onboarding-tour-card");
 }
 
 describe("<OnboardingTour /> with the real react-joyride", () => {
@@ -111,22 +118,29 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     const card = await startAndPresent();
     expect(card.getAttribute("role")).toBe("dialog");
     expect(card.getAttribute("aria-modal")).toBe("false");
-    expect(document.getElementById(card.getAttribute("aria-labelledby") ?? "")?.textContent).toBe(
-      "Add a workspace folder",
-    );
-    expect(document.getElementById(card.getAttribute("aria-describedby") ?? "")).not.toBeNull();
+    expect(
+      document.getElementById(card.getAttribute("aria-labelledby") ?? "")
+        ?.textContent,
+    ).toBe("Add a workspace folder");
+    expect(
+      document.getElementById(card.getAttribute("aria-describedby") ?? ""),
+    ).not.toBeNull();
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     expect(screen.getByRole("button", { name: "Next" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Skip" })).not.toBeNull();
     expect(screen.getByRole("button", { name: "Pause tour" })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe("1 of 4");
+    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe(
+      "1 of 4",
+    );
     expect(document.getElementById("react-joyride-portal")).not.toBeNull();
     expect(document.querySelector('[data-testid="overlay"]')).not.toBeNull();
     // No focus trap and no autofocus: presenting leaves focus where it was.
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(card.contains(document.activeElement)).toBe(false);
-    expect(screen.getByTestId("onboarding-tour-live").textContent).toContain("Step 1 of 4");
+    expect(screen.getByTestId("onboarding-tour-live").textContent).toContain(
+      "Step 1 of 4",
+    );
   });
 
   it("Next advances the flow through the adapter (keyboard Next focuses the next card); Skip ends it; Esc pauses it", async () => {
@@ -144,7 +158,9 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(nextCard);
     });
-    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe("2 of 4");
+    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe(
+      "2 of 4",
+    );
     expect(flow().chain).toBe("active");
 
     act(() => {
@@ -153,7 +169,9 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     });
     const replayed = await screen.findByTestId("onboarding-tour-card");
     expect(replayed.getAttribute("data-tour-step")).toBe("add-folder");
-    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe("1 of 1");
+    expect(screen.getByTestId("onboarding-tour-step-count").textContent).toBe(
+      "1 of 1",
+    );
     expect(screen.getByRole("button", { name: "Finish" })).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     await waitFor(() => {
@@ -178,8 +196,12 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
   it("under reduced motion the floater and overlay carry no transition and scrolling is instant", async () => {
     reducedMotion.value = true;
     await startAndPresent();
-    const floater = document.querySelector<HTMLElement>(".react-joyride__floater");
-    const overlay = document.querySelector<HTMLElement>(".react-joyride__overlay");
+    const floater = document.querySelector<HTMLElement>(
+      ".react-joyride__floater",
+    );
+    const overlay = document.querySelector<HTMLElement>(
+      ".react-joyride__overlay",
+    );
     expect(floater?.style.transition).toBe("none");
     expect(overlay?.style.transition).toBe("none");
   });

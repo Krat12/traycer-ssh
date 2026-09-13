@@ -159,7 +159,6 @@ function SpikeTourTooltip(props: TooltipRenderProps): React.ReactElement {
           variant="ghost"
           size="icon-xs"
           aria-label="Pause tour"
-          title="Pause tour"
           data-action="close"
           onClick={closeProps.onClick}
         >
@@ -284,61 +283,58 @@ export function JoyrideSpike(): React.ReactElement {
     presentedModalCount === 0 &&
     modalsClear;
 
-  const onEvent = useCallback(
-    (data: EventData) => {
-      setEvents((previous) => [
-        ...previous,
-        {
-          type: data.type,
-          action: data.action,
-          index: data.index,
-          status: data.status,
-          lifecycle: data.lifecycle,
-          origin: data.origin,
-          controlled: data.controlled,
-          stepId: data.step.id ?? null,
-          scrollDuration: scrollDurationOf(data),
-          at: Math.round(performance.now()),
-        },
-      ]);
+  const onEvent = useCallback((data: EventData) => {
+    setEvents((previous) => [
+      ...previous,
+      {
+        type: data.type,
+        action: data.action,
+        index: data.index,
+        status: data.status,
+        lifecycle: data.lifecycle,
+        origin: data.origin,
+        controlled: data.controlled,
+        stepId: data.step.id ?? null,
+        scrollDuration: scrollDurationOf(data),
+        at: Math.round(performance.now()),
+      },
+    ]);
 
-      if (data.type === EVENTS.TARGET_NOT_FOUND) {
-        setTargetNotFoundCount((count) => count + 1);
-        return;
-      }
-      // SPIKE FINDING: Skip emits NO `step:after` (upstream only fires it
-      // while running/paused, and skip sets status "skipped" in the same
-      // update). The end of a skipped tour is `tour:end` with
-      // `status: "skipped"`.
-      if (data.type === EVENTS.TOUR_END && data.status === "skipped") {
-        setTourStatus("skipped");
-        return;
-      }
-      if (data.type !== EVENTS.STEP_AFTER) return;
-      // Guarded adapter, the shape the plan commits to: only a NEXT from the
-      // step we believe is current may advance; CLOSE pauses; SKIP ends.
-      //
-      // SPIKE FINDING: `run` going false (a modal suspension) calls
-      // `controls.stop()`, and upstream then emits `step:after` carrying the
-      // LAST tracked action - which is still `next` from the previous Next
-      // click - with `status: "paused"`. Without the status check below that
-      // stale event advanced the tour a step during the first driver run.
-      if (data.status !== "running") return;
-      if (data.action === ACTIONS.NEXT) {
-        setStepIndex((current) => {
-          if (data.index !== current) return current;
-          if (current + 1 >= SPIKE_STEPS.length) {
-            setTourStatus("finished");
-            return current;
-          }
-          return current + 1;
-        });
-      } else if (data.action === ACTIONS.CLOSE) {
-        setTourStatus("paused");
-      }
-    },
-    [],
-  );
+    if (data.type === EVENTS.TARGET_NOT_FOUND) {
+      setTargetNotFoundCount((count) => count + 1);
+      return;
+    }
+    // SPIKE FINDING: Skip emits NO `step:after` (upstream only fires it
+    // while running/paused, and skip sets status "skipped" in the same
+    // update). The end of a skipped tour is `tour:end` with
+    // `status: "skipped"`.
+    if (data.type === EVENTS.TOUR_END && data.status === "skipped") {
+      setTourStatus("skipped");
+      return;
+    }
+    if (data.type !== EVENTS.STEP_AFTER) return;
+    // Guarded adapter, the shape the plan commits to: only a NEXT from the
+    // step we believe is current may advance; CLOSE pauses; SKIP ends.
+    //
+    // SPIKE FINDING: `run` going false (a modal suspension) calls
+    // `controls.stop()`, and upstream then emits `step:after` carrying the
+    // LAST tracked action - which is still `next` from the previous Next
+    // click - with `status: "paused"`. Without the status check below that
+    // stale event advanced the tour a step during the first driver run.
+    if (data.status !== "running") return;
+    if (data.action === ACTIONS.NEXT) {
+      setStepIndex((current) => {
+        if (data.index !== current) return current;
+        if (current + 1 >= SPIKE_STEPS.length) {
+          setTourStatus("finished");
+          return current;
+        }
+        return current + 1;
+      });
+    } else if (data.action === ACTIONS.CLOSE) {
+      setTourStatus("paused");
+    }
+  }, []);
 
   const showToast = useCallback(() => {
     toast(
@@ -487,7 +483,11 @@ export function JoyrideSpike(): React.ReactElement {
       </header>
       <div className="flex flex-1">
         {/* Hidden retained duplicate, like a background tab's surface. */}
-        <div data-spike-surface="hidden" data-visible="false" className="hidden">
+        <div
+          data-spike-surface="hidden"
+          data-visible="false"
+          className="hidden"
+        >
           <div data-spike="column" className="w-64">
             hidden duplicate column
           </div>

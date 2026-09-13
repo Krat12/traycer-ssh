@@ -1,5 +1,11 @@
 import { StrictMode, useState } from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient } from "@tanstack/react-query";
 import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
@@ -219,8 +225,12 @@ describe("presentedModalCount", () => {
     expect(document.querySelector('[data-slot="drawer-content"]')).toBeNull();
     expect(count()).toBe(0);
     view.rerender(<Wrapped concealed={false} />);
-    expect(document.querySelector('[data-slot="sheet-content"]')).not.toBeNull();
-    expect(document.querySelector('[data-slot="drawer-content"]')).not.toBeNull();
+    expect(
+      document.querySelector('[data-slot="sheet-content"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-slot="drawer-content"]'),
+    ).not.toBeNull();
     expect(count()).toBe(2);
     view.rerender(<Wrapped concealed />);
     expect(count()).toBe(0);

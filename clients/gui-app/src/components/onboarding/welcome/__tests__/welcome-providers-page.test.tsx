@@ -312,7 +312,8 @@ function rerenderPage(): void {
 async function answerFetch(
   ordinal: number,
   outcome:
-    { readonly providers: ProviderCliState[] } | { readonly error: string },
+    | { readonly providers: ProviderCliState[] }
+    | { readonly error: string },
 ): Promise<void> {
   await waitFor(() => {
     expect(fixtures.fetches).toBeGreaterThanOrEqual(ordinal);

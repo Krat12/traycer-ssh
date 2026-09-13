@@ -74,18 +74,23 @@ export function OnboardingTourTooltip(
           size="icon-xs"
           className="-mt-1 -mr-1 shrink-0"
           aria-label="Pause tour"
-          title="Pause tour"
           data-action="close"
           onClick={closeProps.onClick}
         >
           <XIcon />
         </Button>
       </div>
-      <p id={TOUR_TOOLTIP_BODY_ID} className="mt-1 text-ui-sm text-muted-foreground">
+      <p
+        id={TOUR_TOOLTIP_BODY_ID}
+        className="mt-1 text-ui-sm text-muted-foreground"
+      >
         {step.content}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-ui-xs text-muted-foreground" data-testid="onboarding-tour-step-count">
+        <span
+          className="text-ui-xs text-muted-foreground"
+          data-testid="onboarding-tour-step-count"
+        >
           {index + 1} of {size}
         </span>
         <span className="ml-auto inline-flex items-center gap-1 text-ui-xs text-muted-foreground">

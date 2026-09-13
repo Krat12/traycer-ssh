@@ -24,7 +24,6 @@ import {
   buildTourSteps,
   TOUR_LESSONS,
   tourLessonTitle,
-  type StepPresentation,
 } from "@/components/onboarding/tour/tour-steps";
 import {
   getActivationToken,
@@ -39,6 +38,8 @@ import {
   resolveHistoryRow,
   resolvePanelTarget,
   type TargetResolution,
+  type TargetSnapshot,
+  type TargetTracker,
   type TourSurfaceScope,
 } from "@/components/onboarding/tour/tour-targets";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -58,7 +59,6 @@ import {
 } from "@/stores/onboarding/onboarding-tour-catalog";
 import {
   useLandingReceiptsStore,
-  type LandingAttemptDispatch,
   type LandingReceipt,
 } from "@/stores/onboarding/landing-receipts-store";
 import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
@@ -66,7 +66,6 @@ import {
   sessionImportRunFor,
   useSessionImportRunStore,
 } from "@/stores/session-import/session-import-run-store";
-import { useSettingsStore } from "@/stores/settings/settings-store";
 import { tabRefKey } from "@/stores/tabs/layout";
 import { selectHostFocusedRef } from "@/stores/tabs/selectors";
 import { useTabsStore } from "@/stores/tabs/store";
@@ -216,7 +215,11 @@ export function resetTourDismissalForTests(): void {
   dismissedThisLaunch = false;
 }
 
-function trackStep(tour: TourId, step: string, action: "next" | "auto" | "skip" | "pause"): void {
+function trackStep(
+  tour: TourId,
+  step: string,
+  action: "next" | "auto" | "skip" | "pause",
+): void {
   Analytics.getInstance().track(AnalyticsEvent.OnboardingTourStep, {
     tour,
     step,
@@ -242,7 +245,11 @@ function refKey(ref: TabRef | null): string | null {
 /** The epic header tab for a focused epic ref, for its epic id and host. */
 function epicTabFor(
   ref: TabRef,
-): { readonly epicId: string; readonly tabId: string; readonly hostId: string | null } | null {
+): {
+  readonly epicId: string;
+  readonly tabId: string;
+  readonly hostId: string | null;
+} | null {
   if (ref.kind !== "epic") return null;
   const tab = getHeaderTabs().find(
     (candidate) => candidate.kind === "epic" && candidate.id === ref.id,
@@ -253,8 +260,9 @@ function epicTabFor(
 
 function epicSurfaceMounted(tabId: string): boolean {
   return (
-    document.querySelector(`[data-epic-surface="${cssAttributeValue(tabId)}"]`) !==
-    null
+    document.querySelector(
+      `[data-epic-surface="${cssAttributeValue(tabId)}"]`,
+    ) !== null
   );
 }
 
@@ -269,62 +277,59 @@ function receiptMatchesContext(
   );
 }
 
-export function useOnboardingTourController(): OnboardingTourController {
-  const flow = useOnboardingFlowStore(
+interface FlowSlice {
+  readonly chain: ChainStatus;
+  readonly chainScope: "branch" | "single";
+  readonly branch: OnboardingBranch | null;
+  readonly activeTourId: TourId | null;
+  readonly stepId: string | null;
+  readonly context: OnboardingContext | null;
+}
+
+interface LessonContext {
+  readonly draftId: string | null;
+  readonly tabId: string | null;
+  readonly hostId: string | null;
+  readonly attemptId: string | null;
+}
+
+function useFlowSlice(): FlowSlice {
+  return useOnboardingFlowStore(
     useShallow((state) => ({
       chain: state.chain,
       chainScope: state.chainScope,
       branch: state.branch,
       activeTourId: state.activeTourId,
-      stepId:
-        state.activeTourId === null
-          ? null
-          : (selectActiveStep(state)?.stepId ?? null),
+      stepId: selectActiveStep(state)?.stepId ?? null,
       context: state.context,
     })),
   );
-  const context = flow.context;
-  const draftId = context?.draftId ?? null;
-  const tabId = context?.tabId ?? null;
-  const hostId = context?.hostId ?? null;
-  const attemptId = context?.attemptId ?? null;
-  const chainActive = flow.chain === "active";
-  const activeTourId = flow.activeTourId;
-  const stepId = flow.stepId;
-  const active = useMemo<ActiveStep | null>(
-    () =>
-      activeTourId === null || stepId === null
-        ? null
-        : { tourId: activeTourId, stepId },
-    [activeTourId, stepId],
-  );
+}
 
-  const reducedMotion = useReducedMotion() === true;
-
-  // ── Suspension gate (F2) ────────────────────────────────────────────────
+/** "A counted modal or the picker owns the screen", settled one task later. */
+function useSuspension(): SuspensionState {
   const [gate] = useState(createSuspensionGate);
-  const suspension = useSyncExternalStore(
+  useEffect(() => gate.start(), [gate]);
+  return useSyncExternalStore(
     gate.subscribe,
     gate.getSnapshot,
     gate.getSnapshot,
   );
-  useEffect(() => gate.start(), [gate]);
-  const modalSuspended = suspension === "suspended";
-  const run = chainActive && active !== null && suspension === "settled";
+}
 
-  // ── Activation token ────────────────────────────────────────────────────
-  // See `tour-activation.ts`: moves synchronously with a chain start / pause
-  // / end / replay or an identity change, and drops pending receipts.
+/** See `tour-activation.ts`. */
+function useActivationToken(): number {
   useEffect(() => {
     startActivationWatch();
   }, []);
-  const activation = useSyncExternalStore(
+  return useSyncExternalStore(
     subscribeActivation,
     getActivationToken,
     getActivationToken,
   );
+}
 
-  // ── Presence ────────────────────────────────────────────────────────────
+function useTourPresence(chainActive: boolean): void {
   const setTourBusy = useOnboardingPresenceStore((state) => state.setTourBusy);
   useEffect(() => {
     setTourBusy(chainActive);
@@ -332,10 +337,17 @@ export function useOnboardingTourController(): OnboardingTourController {
       setTourBusy(false);
     };
   }, [chainActive, setTourBusy]);
+}
 
-  // ── Context capture: which draft / epic the lessons are about ───────────
+/** Which draft / epic the lessons are about, captured from the focused ref. */
+function useContextCapture(
+  chainActive: boolean,
+  activeTourId: TourId | null,
+  lesson: LessonContext,
+): void {
   const focusedRef = useTabsStore(useShallow(selectHostFocusedRef));
   const setContext = useOnboardingFlowStore((state) => state.setContext);
+  const { draftId, tabId } = lesson;
   useEffect(() => {
     if (!chainActive || activeTourId === null || focusedRef === null) return;
     if (LANDING_TOURS.includes(activeTourId)) {
@@ -349,8 +361,20 @@ export function useOnboardingTourController(): OnboardingTourController {
       if (tab !== null) setContext(tab);
     }
   }, [chainActive, activeTourId, draftId, tabId, focusedRef, setContext]);
+}
 
-  // ── Lesson inputs (real stores) ─────────────────────────────────────────
+interface LessonInputs {
+  readonly folders: ReadonlyArray<string> | null;
+  readonly composerMode: "chat" | "terminal" | null;
+  readonly receipt: LandingReceipt | undefined;
+  readonly dispatchSequence: number;
+  readonly pendingAttempt: boolean;
+  readonly historyEpicIds: ReadonlyArray<string>;
+}
+
+/** The real store facts the lesson predicates read. */
+function useLessonInputs(lesson: LessonContext): LessonInputs {
+  const { draftId, hostId, attemptId } = lesson;
   const draft = useLandingDraftStore(
     useShallow((state) =>
       draftId === null
@@ -364,17 +388,15 @@ export function useOnboardingTourController(): OnboardingTourController {
       ? selectWorkspaceFoldersBucket(state, hostId).folders
       : null,
   );
-  const folders = draftFolders ?? bucketFolders ?? null;
-  const settingsComposerMode = useSettingsStore((state) => state.composerMode);
-  const composerMode = draft === null ? null : (draft.composerMode ?? settingsComposerMode);
+  const composerMode = draft === null ? null : draft.composerMode;
   const receipt = useLandingReceiptsStore((state) =>
     attemptId === null ? undefined : state.byAttemptId[attemptId],
   );
   const dispatchSequence = useLandingReceiptsStore(
     (state) => state.dispatchSequence,
   );
-  const pendingAttempt = useLandingReceiptsStore((state) =>
-    attemptId !== null && attemptId in state.dispatchedByAttemptId,
+  const pendingAttempt = useLandingReceiptsStore(
+    (state) => attemptId !== null && attemptId in state.dispatchedByAttemptId,
   );
   const importedEpicIds = useSessionImportRunStore(
     useShallow((state) => {
@@ -393,61 +415,78 @@ export function useOnboardingTourController(): OnboardingTourController {
     () => [...importedEpicIds, ...unseenEpicIds],
     [importedEpicIds, unseenEpicIds],
   );
+  return {
+    folders: draftFolders ?? bucketFolders,
+    composerMode,
+    receipt,
+    dispatchSequence,
+    pendingAttempt,
+    historyEpicIds,
+  };
+}
 
-  // ── Target resolution + presentation epoch ──────────────────────────────
+function resolveLessonTarget(
+  tourId: TourId,
+  lesson: LessonContext,
+  historyEpicIds: ReadonlyArray<string>,
+): TargetResolution {
+  const none: TargetResolution = { node: null, scrollNode: null };
+  if (tourId === "task-panels") {
+    if (lesson.tabId === null) return none;
+    return {
+      node: resolvePanelTarget({ kind: "epic", tabId: lesson.tabId }),
+      scrollNode: null,
+    };
+  }
+  if (lesson.draftId === null) return none;
+  const scope: TourSurfaceScope = { kind: "draft", draftId: lesson.draftId };
+  if (tourId === "submit-prompt") {
+    // While the composer is in terminal mode Send is not rendered; the mode
+    // switch is the alternate presentation target of the same step.
+    return {
+      node:
+        resolveAnchor(scope, "landing-send") ??
+        resolveAnchor(scope, "landing-terminal-switch"),
+      scrollNode: null,
+    };
+  }
+  if (tourId === "history") {
+    // Unresolved until the first imported/unseen row is mounted (decision
+    // 19): unrelated rows already in the list are not the lesson's, and
+    // without a row the timeout fallback must run.
+    const row = resolveHistoryRow(scope, historyEpicIds);
+    if (row === null) return none;
+    return { node: resolveAnchor(scope, "landing-history"), scrollNode: row };
+  }
+  return {
+    node: resolveAnchor(scope, TOUR_LESSONS[tourId].anchor),
+    scrollNode: null,
+  };
+}
+
+interface TargetTracking {
+  readonly tracker: TargetTracker;
+  readonly target: TargetSnapshot;
+  readonly lessonKey: string | null;
+}
+
+/**
+ * One tracked lesson at a time, keyed by lesson + context so a new lesson
+ * (or a new draft/tab for it) starts fresh under a new renderer epoch.
+ */
+function useTargetTracking(
+  active: ActiveStep | null,
+  chainActive: boolean,
+  lesson: LessonContext,
+  historyEpicIds: ReadonlyArray<string>,
+): TargetTracking {
   const [tracker] = useState(createTargetTracker);
   const target = useSyncExternalStore(
     tracker.subscribe,
     tracker.getSnapshot,
     tracker.getSnapshot,
   );
-  const [announcement, setAnnouncement] = useState<string | null>(null);
-  const historyEpicIdsRef = useRef(historyEpicIds);
-  useEffect(() => {
-    historyEpicIdsRef.current = historyEpicIds;
-  }, [historyEpicIds]);
-
-  const resolveTarget = useCallback(
-    (tourId: TourId): TargetResolution => {
-      if (tourId === "task-panels") {
-        const scope: TourSurfaceScope | null =
-          tabId === null ? null : { kind: "epic", tabId };
-        return {
-          node: scope === null ? null : resolvePanelTarget(scope),
-          scrollNode: null,
-        };
-      }
-      const scope: TourSurfaceScope | null =
-        draftId === null ? null : { kind: "draft", draftId };
-      if (scope === null) return { node: null, scrollNode: null };
-      if (tourId === "submit-prompt") {
-        // While the composer is in terminal mode Send is not rendered; the
-        // mode switch is the alternate presentation target of the same step.
-        return {
-          node:
-            resolveAnchor(scope, "landing-send") ??
-            resolveAnchor(scope, "landing-terminal-switch"),
-          scrollNode: null,
-        };
-      }
-      if (tourId === "history") {
-        // Unresolved until the first imported/unseen row is mounted
-        // (decision 19): unrelated rows already in the list are not the
-        // lesson's, and without a row the timeout fallback must run.
-        const row = resolveHistoryRow(scope, historyEpicIdsRef.current);
-        if (row === null) return { node: null, scrollNode: null };
-        return { node: resolveAnchor(scope, "landing-history"), scrollNode: row };
-      }
-      return {
-        node: resolveAnchor(scope, TOUR_LESSONS[tourId].anchor),
-        scrollNode: null,
-      };
-    },
-    [draftId, tabId],
-  );
-
-  // One tracked lesson at a time, keyed by lesson + context so a new lesson
-  // (or a new draft/tab for it) starts fresh under a new renderer epoch.
+  const { draftId, tabId } = lesson;
   const lessonKey =
     chainActive && active !== null
       ? `${active.tourId}|${active.stepId}|${draftId ?? ""}|${tabId ?? ""}`
@@ -458,40 +497,39 @@ export function useOnboardingTourController(): OnboardingTourController {
       return undefined;
     }
     const tourId = active.tourId;
-    return tracker.track(lessonKey, () => resolveTarget(tourId));
+    return tracker.track(lessonKey, () =>
+      resolveLessonTarget(tourId, lesson, historyEpicIds),
+    );
     // `historyEpicIds` re-resolves the history row when imports land.
-  }, [lessonKey, active, resolveTarget, tracker, historyEpicIds]);
+  }, [lessonKey, active, lesson, tracker, historyEpicIds]);
+  return { tracker, target, lessonKey };
+}
 
-  // ── Joyride props ───────────────────────────────────────────────────────
-  const order = useMemo(
-    () => chainOrder(flow.chainScope, flow.branch, activeTourId),
-    [flow.chainScope, flow.branch, activeTourId],
-  );
-  const stepIndex = Math.max(
-    0,
-    activeTourId === null ? 0 : order.indexOf(activeTourId),
-  );
-  const epoch = target.epoch;
-  const steps = useMemo<Step[]>(() => {
-    if (activeTourId === null) return [];
-    // A snapshot resolved for a previous lesson/context never anchors this
-    // one: until the tracker has re-resolved, the step resolves to nothing
-    // (Joyride waits) rather than to the previous lesson's node.
-    const fresh = target.key === lessonKey;
-    const node = fresh ? target.node : null;
-    const scrollNode = fresh ? target.scrollNode : null;
-    const stepPresentation: StepPresentation =
-      fresh && target.unanchored
-        ? { kind: "unanchored" }
-        : {
-            kind: "anchored",
-            target: () => node,
-            scrollTarget: scrollNode === null ? null : () => scrollNode,
-          };
-    return buildTourSteps(order, activeTourId, stepPresentation);
-  }, [order, activeTourId, target, lessonKey]);
+function buildSteps(
+  order: ReadonlyArray<TourId>,
+  activeTourId: TourId | null,
+  target: TargetSnapshot,
+  lessonKey: string | null,
+): Step[] {
+  if (activeTourId === null) return [];
+  // A snapshot resolved for a previous lesson/context never anchors this
+  // one: until the tracker has re-resolved, the step resolves to nothing
+  // (Joyride waits) rather than to the previous lesson's node.
+  const fresh = target.key === lessonKey;
+  if (fresh && target.unanchored) {
+    return buildTourSteps(order, activeTourId, { kind: "unanchored" });
+  }
+  const node = fresh ? target.node : null;
+  const scrollNode = fresh ? target.scrollNode : null;
+  return buildTourSteps(order, activeTourId, {
+    kind: "anchored",
+    target: () => node,
+    scrollTarget: scrollNode === null ? null : () => scrollNode,
+  });
+}
 
-  // ── Focus origin, restored on pause / end only ──────────────────────────
+/** Focus origin, restored on pause / end only; chain-end analytics. */
+function useFocusOriginAndChainEnd(run: boolean, flow: FlowSlice): void {
   const originRef = useRef<HTMLElement | null>(null);
   const previousRun = useRef(false);
   useEffect(() => {
@@ -506,17 +544,16 @@ export function useOnboardingTourController(): OnboardingTourController {
     previousRun.current = run;
   }, [run]);
   const previousChain = useRef<ChainStatus>(flow.chain);
+  const { chain, branch } = flow;
   useEffect(() => {
     const before = previousChain.current;
-    previousChain.current = flow.chain;
-    if (before !== "active" || flow.chain === "active") return;
-    if (flow.chain === "completed" || flow.chain === "skipped") {
-      if (flow.branch !== null) {
-        Analytics.getInstance().track(AnalyticsEvent.OnboardingChainEnded, {
-          reason: flow.chain,
-          branch: flow.branch,
-        });
-      }
+    previousChain.current = chain;
+    if (before !== "active" || chain === "active") return;
+    if ((chain === "completed" || chain === "skipped") && branch !== null) {
+      Analytics.getInstance().track(AnalyticsEvent.OnboardingChainEnded, {
+        reason: chain,
+        branch,
+      });
     }
     const origin = originRef.current;
     originRef.current = null;
@@ -526,165 +563,236 @@ export function useOnboardingTourController(): OnboardingTourController {
         origin.focus({ preventScroll: true });
       }
     });
-  }, [flow.chain, flow.branch]);
+  }, [chain, branch]);
+}
 
-  // ── Event adapter (guarded) ─────────────────────────────────────────────
-  const guardedAdvance = useCallback(
-    (tourId: TourId, expectedStepId: string, reason: AdvanceReason) => {
-      const store = useOnboardingFlowStore.getState();
-      const current = selectActiveStep(store);
-      if (
-        store.chain !== "active" ||
-        current === null ||
-        current.tourId !== tourId ||
-        current.stepId !== expectedStepId
-      ) {
-        return false;
-      }
-      store.advance(tourId, expectedStepId, reason);
-      const after = selectActiveStep(useOnboardingFlowStore.getState());
-      const advanced =
-        useOnboardingFlowStore.getState().chain !== "active" ||
-        after === null ||
-        after.tourId !== tourId ||
-        after.stepId !== expectedStepId;
-      if (advanced) {
-        trackStep(tourId, expectedStepId, reason === "detour" ? "auto" : reason);
-      }
-      return advanced;
-    },
-    [],
+type GuardedAdvance = (
+  tourId: TourId,
+  expectedStepId: string,
+  reason: AdvanceReason,
+) => boolean;
+
+function useGuardedAdvance(): GuardedAdvance {
+  return useCallback((tourId, expectedStepId, reason) => {
+    const store = useOnboardingFlowStore.getState();
+    const current = selectActiveStep(store);
+    if (
+      store.chain !== "active" ||
+      current === null ||
+      current.tourId !== tourId ||
+      current.stepId !== expectedStepId
+    ) {
+      return false;
+    }
+    store.advance(tourId, expectedStepId, reason);
+    const after = selectActiveStep(useOnboardingFlowStore.getState());
+    const advanced =
+      useOnboardingFlowStore.getState().chain !== "active" ||
+      after === null ||
+      after.tourId !== tourId ||
+      after.stepId !== expectedStepId;
+    if (advanced) {
+      trackStep(tourId, expectedStepId, reason === "detour" ? "auto" : reason);
+    }
+    return advanced;
+  }, []);
+}
+
+/** The step this renderer's events are for is still the flow's active step. */
+function eventIsCurrent(data: EventData, active: ActiveStep): boolean {
+  if (data.step.id !== active.tourId) return false;
+  const current = selectActiveStep(useOnboardingFlowStore.getState());
+  return (
+    useOnboardingFlowStore.getState().chain === "active" &&
+    current !== null &&
+    current.tourId === active.tourId &&
+    current.stepId === active.stepId
   );
+}
 
+function handleStepAfter(
+  data: EventData,
+  active: ActiveStep,
+  guardedAdvance: GuardedAdvance,
+): void {
+  // F1: a suspension (`run` -> false) emits step:after with the LAST
+  // tracked action and status "paused". Only a running step counts.
+  if (data.status !== STATUS.RUNNING) return;
+  if (data.action === ACTIONS.NEXT) {
+    guardedAdvance(active.tourId, active.stepId, "next");
+  } else if (data.action === ACTIONS.CLOSE) {
+    dismissedThisLaunch = true;
+    trackStep(active.tourId, active.stepId, "pause");
+    useOnboardingFlowStore.getState().pauseChain();
+  }
+}
+
+function handleTourEnd(data: EventData, active: ActiveStep): void {
+  // F3: Skip emits no step:after; tour:end/skipped is the signal. A
+  // finished tour:end is Joyride's own bookkeeping after the last Next
+  // already advanced the flow, and changes nothing.
+  if (data.status !== STATUS.SKIPPED) return;
+  trackStep(active.tourId, active.stepId, "skip");
+  useOnboardingFlowStore.getState().skipChain();
+}
+
+interface EventAdapter {
+  readonly onEvent: (data: EventData) => void;
+  readonly announcement: string | null;
+}
+
+/**
+ * Joyride's events mapped to the flow store's guarded actions. Each handler
+ * closes over the activation token, the renderer epoch and the ids it was
+ * built for: a late event from a replaced renderer, a stale replay or
+ * another lesson reaches no store action.
+ */
+function useEventAdapter(
+  active: ActiveStep | null,
+  activation: number,
+  tracking: TargetTracking,
+  guardedAdvance: GuardedAdvance,
+): EventAdapter {
+  const { tracker, target } = tracking;
+  const epoch = target.epoch;
+  const [announcement, setAnnouncement] = useState<string | null>(null);
   const onEvent = useCallback(
     (data: EventData) => {
-      // Closed over the epoch and ids this renderer was built for: a late
-      // event from a replaced renderer, a stale replay or another lesson
-      // reaches no store action.
-      if (getActivationToken() !== activation) return;
-      if (tracker.getSnapshot().epoch !== epoch || active === null) return;
-      if (data.step.id !== active.tourId) return;
-      const store = useOnboardingFlowStore.getState();
-      const current = selectActiveStep(store);
-      if (
-        store.chain !== "active" ||
-        current === null ||
-        current.tourId !== active.tourId ||
-        current.stepId !== active.stepId
-      ) {
-        return;
-      }
-      switch (data.type) {
-        case EVENTS.TOOLTIP: {
-          tracker.markPresented();
-          setAnnouncement(
-            `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
-          );
-          return;
-        }
-        case EVENTS.TARGET_NOT_FOUND: {
-          // F4: upstream leaves a full dim with no card here. Same lesson,
-          // centred card, no cutout; progress untouched.
-          tracker.markUnanchored();
-          return;
-        }
-        case EVENTS.STEP_AFTER: {
-          // F1: a suspension (`run` -> false) emits step:after with the LAST
-          // tracked action and status "paused". Only a running step counts.
-          if (data.status !== STATUS.RUNNING) return;
-          if (data.action === ACTIONS.NEXT) {
-            guardedAdvance(active.tourId, active.stepId, "next");
-          } else if (data.action === ACTIONS.CLOSE) {
-            dismissedThisLaunch = true;
-            trackStep(active.tourId, active.stepId, "pause");
-            store.pauseChain();
-          }
-          return;
-        }
-        case EVENTS.TOUR_END: {
-          // F3: Skip emits no step:after; tour:end/skipped is the signal.
-          // A finished tour:end is Joyride's own bookkeeping after the last
-          // Next already advanced the flow, and changes nothing.
-          if (data.status === STATUS.SKIPPED) {
-            trackStep(active.tourId, active.stepId, "skip");
-            store.skipChain();
-          }
-          return;
-        }
-        default:
-          return;
+      if (getActivationToken() !== activation || active === null) return;
+      if (tracker.getSnapshot().epoch !== epoch) return;
+      if (!eventIsCurrent(data, active)) return;
+      if (data.type === EVENTS.TOOLTIP) {
+        tracker.markPresented();
+        setAnnouncement(
+          `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
+        );
+      } else if (data.type === EVENTS.TARGET_NOT_FOUND) {
+        // F4: upstream leaves a full dim with no card here. Same lesson,
+        // centred card, no cutout; progress untouched.
+        tracker.markUnanchored();
+      } else if (data.type === EVENTS.STEP_AFTER) {
+        handleStepAfter(data, active, guardedAdvance);
+      } else if (data.type === EVENTS.TOUR_END) {
+        handleTourEnd(data, active);
       }
     },
     [activation, epoch, active, guardedAdvance, tracker],
   );
+  return { onEvent, announcement };
+}
 
-  // ── Lesson predicates ───────────────────────────────────────────────────
+interface PredicateArgs {
+  readonly chainActive: boolean;
+  readonly active: ActiveStep | null;
+  readonly activation: number;
+  readonly lesson: LessonContext;
+  readonly context: OnboardingContext | null;
+  readonly inputs: LessonInputs;
+  readonly guardedAdvance: GuardedAdvance;
+}
 
-  // add-folder: a path absent at lesson entry is now present. Baseline per
-  // lesson + context; a picker suspension keeps it, a new context / replay /
-  // relaunch resets it. Length is not the signal (the 50-folder cap can keep
-  // the count equal while a path changes; a re-added existing path is not
-  // new).
-  const folderBaselineRef = useRef<{ key: string; paths: ReadonlySet<string> } | null>(null);
-  const folderBaselineKey =
-    chainActive && activeTourId === "add-folder"
-      ? `${activation}|${activeTourId}|${draftId ?? ""}|${hostId ?? ""}`
+/**
+ * add-folder: a path absent at lesson entry is now present. Baseline per
+ * activation + lesson + context; a picker suspension keeps it, a new
+ * context / replay / relaunch resets it. Length is not the signal (the
+ * 50-folder cap can keep the count equal while a path changes; a re-added
+ * existing path is not new).
+ */
+function useFolderPredicate(args: PredicateArgs): void {
+  const { chainActive, active, activation, lesson, inputs, guardedAdvance } =
+    args;
+  const { folders, pendingAttempt } = inputs;
+  const baselineRef = useRef<{
+    key: string;
+    paths: ReadonlySet<string>;
+  } | null>(null);
+  const key =
+    chainActive && active?.tourId === "add-folder"
+      ? `${activation}|${lesson.draftId ?? ""}|${lesson.hostId ?? ""}`
       : null;
   useEffect(() => {
-    if (folderBaselineKey === null) {
-      folderBaselineRef.current = null;
+    if (key === null) {
+      baselineRef.current = null;
       return;
     }
-    if (folderBaselineRef.current?.key !== folderBaselineKey) {
-      folderBaselineRef.current = {
-        key: folderBaselineKey,
-        paths: new Set(folders ?? []),
-      };
+    if (baselineRef.current?.key !== key) {
+      baselineRef.current = { key, paths: new Set(folders ?? []) };
       return;
     }
     if (active === null || pendingAttempt || folders === null) return;
-    const baseline = folderBaselineRef.current.paths;
+    const baseline = baselineRef.current.paths;
     if (!folders.some((path) => !baseline.has(path))) return;
     guardedAdvance(active.tourId, active.stepId, "auto");
-  }, [folderBaselineKey, folders, pendingAttempt, active, guardedAdvance]);
+  }, [key, folders, pendingAttempt, active, guardedAdvance]);
+}
 
-  // terminal-mode: the bound draft's composer is in terminal mode (already
-  // there at entry counts too). Never resets the mode.
+/**
+ * terminal-mode: the bound draft's composer is in terminal mode (already
+ * there at entry counts too). Never resets the mode.
+ */
+function useTerminalModePredicate(args: PredicateArgs): void {
+  const { chainActive, active, inputs, guardedAdvance } = args;
+  const { composerMode, pendingAttempt } = inputs;
   useEffect(() => {
-    if (!chainActive || active === null || active.tourId !== "terminal-mode") return;
+    if (!chainActive || active?.tourId !== "terminal-mode") return;
     if (pendingAttempt || composerMode !== "terminal") return;
     guardedAdvance(active.tourId, active.stepId, "auto");
   }, [chainActive, active, pendingAttempt, composerMode, guardedAdvance]);
+}
 
-  // Attempt capture: a landing create announced for THIS draft while the
-  // lesson that waits on it is active. Prompt receipts matter to the prompt
-  // lesson; a terminal Start (A2 detour) matters to mode and prompt alike.
+/**
+ * Attempt capture: a landing create announced for THIS draft on THIS host
+ * while a lesson that waits on it is active. Both landing lessons wait on
+ * both kinds: a Start is the A2 detour, a sent prompt during the mode
+ * lesson completes mode AND prompt.
+ */
+function useAttemptCapture(args: PredicateArgs): void {
+  const { chainActive, active, lesson, inputs } = args;
+  const { draftId, hostId, attemptId } = lesson;
+  const { dispatchSequence } = inputs;
+  const setContext = useOnboardingFlowStore((state) => state.setContext);
   useEffect(() => {
     if (!chainActive || active === null || draftId === null) return;
-    const state = useLandingReceiptsStore.getState();
-    const dispatches = Object.values(state.dispatchedByAttemptId);
-    const latest: LandingAttemptDispatch | undefined =
-      dispatches[dispatches.length - 1];
+    if (
+      active.tourId !== "submit-prompt" &&
+      active.tourId !== "terminal-mode"
+    ) {
+      return;
+    }
+    const latest = Object.values(
+      useLandingReceiptsStore.getState().dispatchedByAttemptId,
+    ).at(-1);
     if (latest === undefined || latest.draftId !== draftId) return;
     // The lesson is bound to a host for life: an attempt on another host is
     // not this lesson's, however the draft matches.
     if (hostId !== null && latest.hostId !== hostId) return;
     if (latest.attemptId === attemptId) return;
-    // Both landing lessons wait on both kinds: a Start is the A2 detour, a
-    // sent prompt during the mode lesson completes mode AND prompt.
-    const relevant =
-      active.tourId === "submit-prompt" || active.tourId === "terminal-mode";
-    if (!relevant) return;
     setContext({ attemptId: latest.attemptId, hostId: latest.hostId });
-  }, [chainActive, active, draftId, hostId, attemptId, dispatchSequence, setContext]);
+  }, [
+    chainActive,
+    active,
+    draftId,
+    hostId,
+    attemptId,
+    dispatchSequence,
+    setContext,
+  ]);
+}
 
-  // Accepted receipts: prompt-accepted completes the prompt lesson (and,
-  // arriving during the mode lesson, completes mode and prompt both - the
-  // user sent a real prompt); tui-accepted (accepted Start) detours mode or
-  // prompt to the panels. Every id must match; a receipt is consumed once.
+/**
+ * Accepted receipts: prompt-accepted completes the prompt lesson (and,
+ * arriving during the mode lesson, completes mode and prompt both - the
+ * user sent a real prompt); tui-accepted (accepted Start) detours mode or
+ * prompt to the panels. Every id must match; a receipt is consumed once.
+ */
+function useReceiptPredicate(args: PredicateArgs): void {
+  const { chainActive, active, context, inputs, guardedAdvance } = args;
+  const { receipt } = inputs;
+  const setContext = useOnboardingFlowStore((state) => state.setContext);
   useEffect(() => {
     if (!chainActive || active === null || context === null) return;
-    if (receipt === undefined || !receiptMatchesContext(receipt, context)) return;
+    if (receipt === undefined || !receiptMatchesContext(receipt, context))
+      return;
     const tourId = active.tourId;
     if (tourId !== "terminal-mode" && tourId !== "submit-prompt") return;
     useLandingReceiptsStore.getState().consume(receipt.attemptId);
@@ -699,36 +807,38 @@ export function useOnboardingTourController(): OnboardingTourController {
       return;
     }
     guardedAdvance(tourId, active.stepId, "auto");
-    if (tourId === "terminal-mode") {
-      const following = selectActiveStep(useOnboardingFlowStore.getState());
-      if (following !== null && following.tourId === "submit-prompt") {
-        guardedAdvance(following.tourId, following.stepId, "auto");
-      }
+    if (tourId !== "terminal-mode") return;
+    const following = selectActiveStep(useOnboardingFlowStore.getState());
+    if (following !== null && following.tourId === "submit-prompt") {
+      guardedAdvance(following.tourId, following.stepId, "auto");
     }
   }, [chainActive, active, context, receipt, setContext, guardedAdvance]);
+}
 
-  // history: the user opened a task - the focused ref became an epic that
-  // was NOT focused at lesson entry, and its surface is mounted. A restored
-  // unrelated epic already focused at entry is not that.
-  const historyBaselineRef = useRef<string | null>(null);
-  const historyEntryKey =
-    chainActive && activeTourId === "history"
-      ? `${activation}|history|${draftId ?? ""}`
+/**
+ * history: the user opened a task - the focused ref became an epic that
+ * was NOT focused at lesson entry, and its surface is mounted. A restored
+ * unrelated epic already focused at entry is not that.
+ */
+function useHistoryPredicate(args: PredicateArgs): void {
+  const { chainActive, active, activation, lesson, guardedAdvance } = args;
+  const setContext = useOnboardingFlowStore((state) => state.setContext);
+  const baselineRef = useRef<string | null>(null);
+  const key =
+    chainActive && active?.tourId === "history"
+      ? `${activation}|${lesson.draftId ?? ""}`
       : null;
   useEffect(() => {
-    if (historyEntryKey === null) {
-      historyBaselineRef.current = null;
+    if (key === null || active === null) {
+      baselineRef.current = null;
       return undefined;
     }
-    if (historyBaselineRef.current === null) {
-      historyBaselineRef.current =
-        refKey(selectHostFocusedRef(useTabsStore.getState())) ?? "";
-    }
+    baselineRef.current ??=
+      refKey(selectHostFocusedRef(useTabsStore.getState())) ?? "";
     const check = (): void => {
-      if (active === null) return;
       const focused = selectHostFocusedRef(useTabsStore.getState());
       if (focused === null || focused.kind !== "epic") return;
-      if (refKey(focused) === historyBaselineRef.current) return;
+      if (refKey(focused) === baselineRef.current) return;
       if (!epicSurfaceMounted(focused.id)) return;
       const tab = epicTabFor(focused);
       if (tab === null) return;
@@ -742,27 +852,102 @@ export function useOnboardingTourController(): OnboardingTourController {
       unsubscribe();
       stopObserving();
     };
-  }, [historyEntryKey, active, setContext, guardedAdvance]);
+  }, [key, active, setContext, guardedAdvance]);
+}
 
-  const presentationOut: TourPresentation =
-    !chainActive || active === null
-      ? "idle"
-      : modalSuspended
-        ? "modal-suspended"
-        : target.key !== lessonKey
-          ? "resolving"
-          : target.unanchored
-            ? "unanchored"
-            : target.presented
-              ? "presenting"
-              : "resolving";
+function presentationOf(
+  chainActive: boolean,
+  active: ActiveStep | null,
+  modalSuspended: boolean,
+  tracking: TargetTracking,
+): TourPresentation {
+  if (!chainActive || active === null) return "idle";
+  if (modalSuspended) return "modal-suspended";
+  const { target, lessonKey } = tracking;
+  if (target.key !== lessonKey) return "resolving";
+  if (target.unanchored) return "unanchored";
+  return target.presented ? "presenting" : "resolving";
+}
+
+export function useOnboardingTourController(): OnboardingTourController {
+  const flow = useFlowSlice();
+  const { context, activeTourId, stepId } = flow;
+  const chainActive = flow.chain === "active";
+  const lesson = useMemo<LessonContext>(
+    () => ({
+      draftId: context?.draftId ?? null,
+      tabId: context?.tabId ?? null,
+      hostId: context?.hostId ?? null,
+      attemptId: context?.attemptId ?? null,
+    }),
+    [context],
+  );
+  const active = useMemo<ActiveStep | null>(
+    () =>
+      activeTourId === null || stepId === null
+        ? null
+        : { tourId: activeTourId, stepId },
+    [activeTourId, stepId],
+  );
+  const reducedMotion = useReducedMotion() === true;
+  const suspension = useSuspension();
+  const modalSuspended = suspension === "suspended";
+  const run = chainActive && active !== null && suspension === "settled";
+  const activation = useActivationToken();
+
+  useTourPresence(chainActive);
+  useContextCapture(chainActive, activeTourId, lesson);
+  const inputs = useLessonInputs(lesson);
+  const tracking = useTargetTracking(
+    active,
+    chainActive,
+    lesson,
+    inputs.historyEpicIds,
+  );
+
+  const order = useMemo(
+    () => chainOrder(flow.chainScope, flow.branch, activeTourId),
+    [flow.chainScope, flow.branch, activeTourId],
+  );
+  const stepIndex = Math.max(
+    0,
+    activeTourId === null ? 0 : order.indexOf(activeTourId),
+  );
+  const { target, lessonKey } = tracking;
+  const steps = useMemo(
+    () => buildSteps(order, activeTourId, target, lessonKey),
+    [order, activeTourId, target, lessonKey],
+  );
+
+  useFocusOriginAndChainEnd(run, flow);
+  const guardedAdvance = useGuardedAdvance();
+  const { onEvent, announcement } = useEventAdapter(
+    active,
+    activation,
+    tracking,
+    guardedAdvance,
+  );
+  const predicateArgs: PredicateArgs = {
+    chainActive,
+    active,
+    activation,
+    lesson,
+    context,
+    inputs,
+    guardedAdvance,
+  };
+  useFolderPredicate(predicateArgs);
+  useTerminalModePredicate(predicateArgs);
+  useAttemptCapture(predicateArgs);
+  useReceiptPredicate(predicateArgs);
+  useHistoryPredicate(predicateArgs);
 
   return {
     run,
     steps,
     stepIndex,
-    epoch,
-    presentation: presentationOut,
+    epoch: target.epoch,
+    presentation: presentationOf(chainActive, active, modalSuspended, tracking),
     modalSuspended,
     reducedMotion,
     onEvent,

@@ -93,7 +93,9 @@ const EPIC_ID = "epic-1";
 function startChain(branch: "no-sessions" | "sessions"): void {
   act(() => {
     useOnboardingFlowStore.getState().finishModal(branch);
-    useOnboardingFlowStore.getState().setContext({ draftId: DRAFT_ID, hostId: HOST_ID });
+    useOnboardingFlowStore
+      .getState()
+      .setContext({ draftId: DRAFT_ID, hostId: HOST_ID });
   });
 }
 
@@ -245,7 +247,13 @@ describe("run gating and controlled props", () => {
 
 describe("event adapter", () => {
   it("Next (step:after / next / running) advances the expected step and tracks it", () => {
-    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add", "landing-terminal-switch"], true));
+    keep(
+      mountDraftSurface(
+        DRAFT_ID,
+        ["landing-folder-add", "landing-terminal-switch"],
+        true,
+      ),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     present();
@@ -264,26 +272,40 @@ describe("event adapter", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
     render(<OnboardingTour />);
     startChain("no-sessions");
-    emit({ type: "step:after", action: "next", status: "paused" }, currentProps());
+    emit(
+      { type: "step:after", action: "next", status: "paused" },
+      currentProps(),
+    );
     expect(flow().activeTourId).toBe("add-folder");
     expect(analyticsTrack).not.toHaveBeenCalled();
   });
 
   it("ignores a duplicate / late event for a step that already advanced", () => {
-    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add", "landing-terminal-switch"], true));
+    keep(
+      mountDraftSurface(
+        DRAFT_ID,
+        ["landing-folder-add", "landing-terminal-switch"],
+        true,
+      ),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     const before = currentProps();
     next();
     expect(flow().activeTourId).toBe("terminal-mode");
     // The same event again, from the renderer that was built for add-folder.
-    emit({ type: "step:after", action: "next", origin: "button_primary" }, before);
+    emit(
+      { type: "step:after", action: "next", origin: "button_primary" },
+      before,
+    );
     expect(flow().activeTourId).toBe("terminal-mode");
     expect(flow().tours["terminal-mode"].status).toBe("active");
   });
 
   it("ignores events from a replaced renderer (old epoch)", async () => {
-    const surface = keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     const old = currentProps();
@@ -301,7 +323,10 @@ describe("event adapter", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
     render(<OnboardingTour />);
     startChain("no-sessions");
-    emit({ type: "step:after", action: "close", origin: "keyboard" }, currentProps());
+    emit(
+      { type: "step:after", action: "close", origin: "keyboard" },
+      currentProps(),
+    );
     expect(flow().chain).toBe("paused");
     expect(flow().activeTourId).toBe("add-folder");
     expect(wasTourDismissedThisLaunch()).toBe(true);
@@ -318,7 +343,15 @@ describe("event adapter", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
     render(<OnboardingTour />);
     startChain("no-sessions");
-    emit({ type: "tour:end", action: "skip", status: "skipped", origin: "button_skip" }, currentProps());
+    emit(
+      {
+        type: "tour:end",
+        action: "skip",
+        status: "skipped",
+        origin: "button_skip",
+      },
+      currentProps(),
+    );
     expect(flow().chain).toBe("skipped");
     expect(analyticsTrack).toHaveBeenCalledWith("onboarding_tour_step", {
       tour: "add-folder",
@@ -357,11 +390,13 @@ describe("event adapter", () => {
 describe("targets and presentation", () => {
   it("resolves the anchor inside the VISIBLE surface of the context draft, never a hidden duplicate", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], false));
-    const visible = keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    const visible = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
     keep(mountDraftSurface("other-draft", ["landing-folder-add"], true));
     render(<OnboardingTour />);
     startChain("no-sessions");
-    const step = props().steps[0];
+    const step = props().steps.at(0);
     if (step === undefined || typeof step.target !== "function") {
       throw new Error("expected a function target");
     }
@@ -372,14 +407,17 @@ describe("targets and presentation", () => {
   it("keeps resolving (anchored step, null target) while the target is missing; target_not_found swaps in the centred fallback without touching progress", () => {
     render(<OnboardingTour />);
     startChain("no-sessions");
-    const step = props().steps[0];
+    const step = props().steps.at(0);
     if (step === undefined || typeof step.target !== "function") {
       throw new Error("expected a function target");
     }
     expect(step.target()).toBeNull();
     const epochBefore = joyride.mounts;
-    emit({ type: "error:target_not_found", lifecycle: "ready" }, currentProps());
-    const fallback = props().steps[0];
+    emit(
+      { type: "error:target_not_found", lifecycle: "ready" },
+      currentProps(),
+    );
+    const fallback = props().steps.at(0);
     expect(fallback?.placement).toBe("center");
     expect(fallback?.hideOverlay).toBe(true);
     expect(fallback?.id).toBe("add-folder");
@@ -391,7 +429,9 @@ describe("targets and presentation", () => {
   });
 
   it("a target that detaches after presenting drops to the fallback at once, and returns anchored when it is back", async () => {
-    const surface = keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     present();
@@ -400,13 +440,13 @@ describe("targets and presentation", () => {
     await mutate(() => {
       anchor.remove();
     });
-    expect(props().steps[0]?.placement).toBe("center");
-    expect(props().steps[0]?.hideOverlay).toBe(true);
+    expect(props().steps.at(0)?.placement).toBe("center");
+    expect(props().steps.at(0)?.hideOverlay).toBe(true);
     expect(flow().activeTourId).toBe("add-folder");
     await mutate(() => {
       surface.root.append(anchor);
     });
-    const back = props().steps[0];
+    const back = props().steps.at(0);
     if (back === undefined || typeof back.target !== "function") {
       throw new Error("expected a function target");
     }
@@ -415,7 +455,9 @@ describe("targets and presentation", () => {
   });
 
   it("submit-prompt falls back to the mode switch while terminal mode hides Send", () => {
-    const surface = keep(mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true));
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     act(() => {
@@ -423,7 +465,7 @@ describe("targets and presentation", () => {
       flow().advance("terminal-mode", "terminal-mode", "next");
     });
     expect(flow().activeTourId).toBe("submit-prompt");
-    const step = props().steps[props().stepIndex ?? 0];
+    const step = props().steps.at(props().stepIndex ?? 0);
     if (step === undefined || typeof step.target !== "function") {
       throw new Error("expected a function target");
     }
@@ -437,12 +479,15 @@ describe("targets and presentation", () => {
     act(() => {
       flow().replayTour("task-panels");
     });
-    const step = props().steps[0];
+    const step = props().steps.at(0);
     if (step === undefined || typeof step.target !== "function") {
       throw new Error("expected a function target");
     }
     expect(step.target()).toBe(surface.anchors.rail);
-    expect(flow().context).toMatchObject({ epicId: EPIC_ID, tabId: EPIC_TAB_ID });
+    expect(flow().context).toMatchObject({
+      epicId: EPIC_ID,
+      tabId: EPIC_TAB_ID,
+    });
     present();
     expect(flow().chain).toBe("active");
     next();
@@ -456,18 +501,25 @@ describe("lesson predicates", () => {
     act(() => {
       useLandingDraftStore
         .getState()
-        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/a"), folderInfo("/b")]);
+        .addDraftResolvedFolders(DRAFT_ID, [
+          folderInfo("/a"),
+          folderInfo("/b"),
+        ]);
     });
     render(<OnboardingTour />);
     startChain("no-sessions");
     act(() => {
       useLandingDraftStore.getState().removeDraftFolder(DRAFT_ID, "/a");
-      useLandingDraftStore.getState().addDraftResolvedFolders(DRAFT_ID, [folderInfo("/a")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/a")]);
     });
     expect(flow().activeTourId).toBe("add-folder");
     act(() => {
       useLandingDraftStore.getState().removeDraftFolder(DRAFT_ID, "/b");
-      useLandingDraftStore.getState().addDraftResolvedFolders(DRAFT_ID, [folderInfo("/c")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/c")]);
     });
     // Count unchanged (2 -> 2), path new.
     expect(flow().activeTourId).toBe("terminal-mode");
@@ -481,7 +533,9 @@ describe("lesson predicates", () => {
   it("add-folder: a Settings replay starts a fresh baseline - the folders already there do not count, a new one does", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
     act(() => {
-      useLandingDraftStore.getState().addDraftResolvedFolders(DRAFT_ID, [folderInfo("/a")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/a")]);
     });
     render(<OnboardingTour />);
     startChain("no-sessions");
@@ -493,21 +547,34 @@ describe("lesson predicates", () => {
     expect(flow().context?.draftId).toBe(DRAFT_ID);
     expect(flow().activeTourId).toBe("add-folder");
     act(() => {
-      useLandingDraftStore.getState().addDraftResolvedFolders(DRAFT_ID, [folderInfo("/b")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/b")]);
     });
     expect(flow().chain).toBe("completed");
   });
 
   it("a Next that races an auto-advance of the same step cannot advance twice", () => {
-    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add", "landing-terminal-switch"], true));
+    keep(
+      mountDraftSurface(
+        DRAFT_ID,
+        ["landing-folder-add", "landing-terminal-switch"],
+        true,
+      ),
+    );
     render(<OnboardingTour />);
     startChain("no-sessions");
     const before = currentProps();
     act(() => {
-      useLandingDraftStore.getState().addDraftResolvedFolders(DRAFT_ID, [folderInfo("/new")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/new")]);
     });
     expect(flow().activeTourId).toBe("terminal-mode");
-    emit({ type: "step:after", action: "next", origin: "button_primary" }, before);
+    emit(
+      { type: "step:after", action: "next", origin: "button_primary" },
+      before,
+    );
     expect(flow().activeTourId).toBe("terminal-mode");
     expect(flow().tours["terminal-mode"].status).toBe("active");
   });
@@ -518,7 +585,9 @@ describe("lesson predicates", () => {
     render(<OnboardingTour />);
     startChain("no-sessions");
     act(() => {
-      useLandingDraftStore.getState().addDraftResolvedFolders("other", [folderInfo("/x")]);
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders("other", [folderInfo("/x")]);
     });
     expect(flow().activeTourId).toBe("add-folder");
   });
@@ -532,11 +601,14 @@ describe("lesson predicates", () => {
     });
     expect(flow().activeTourId).toBe("terminal-mode");
     act(() => {
-      useLandingDraftStore.getState().setDraftComposerMode(DRAFT_ID, "terminal");
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
     });
     expect(flow().activeTourId).toBe("submit-prompt");
     expect(
-      useLandingDraftStore.getState().drafts.find((d) => d.id === DRAFT_ID)?.composerMode,
+      useLandingDraftStore.getState().drafts.find((d) => d.id === DRAFT_ID)
+        ?.composerMode,
     ).toBe("terminal");
   });
 
@@ -647,10 +719,9 @@ describe("lesson predicates", () => {
       attemptId: null,
     });
     // Consumed once; the unrelated draft's receipt is simply never matched.
-    expect(Object.keys(useLandingReceiptsStore.getState().byAttemptId)).toEqual([
-      "attempt-other",
-      "attempt-host",
-    ]);
+    expect(Object.keys(useLandingReceiptsStore.getState().byAttemptId)).toEqual(
+      ["attempt-other", "attempt-host"],
+    );
   });
 
   it("A2: an accepted terminal Start during terminal-mode detours to the panels and bypasses the prompt; a rejected one keeps the checkpoint", () => {
@@ -673,7 +744,9 @@ describe("lesson predicates", () => {
     expect(flow().context?.attemptId).toBe("start-1");
     // The pending Start freezes the ordinary mode predicate...
     act(() => {
-      useLandingDraftStore.getState().setDraftComposerMode(DRAFT_ID, "terminal");
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
     });
     expect(flow().activeTourId).toBe("terminal-mode");
     // ...a rejected create keeps the checkpoint and unfreezes it.
@@ -741,7 +814,10 @@ describe("lesson predicates", () => {
     expect(flow().activeTourId).toBe("task-panels");
     expect(flow().tours["terminal-mode"].status).toBe("done");
     expect(flow().tours["submit-prompt"].status).toBe("done");
-    expect(flow().context).toMatchObject({ epicId: EPIC_ID, tabId: EPIC_TAB_ID });
+    expect(flow().context).toMatchObject({
+      epicId: EPIC_ID,
+      tabId: EPIC_TAB_ID,
+    });
     expect(analyticsTrack).toHaveBeenCalledWith("onboarding_tour_step", {
       tour: "submit-prompt",
       step: "submit-prompt",
@@ -792,7 +868,10 @@ describe("lesson predicates", () => {
     expect(flow().chain).toBe("active");
     expect(flow().activeTourId).toBe("submit-prompt");
     // The old renderer's Next lands late: rejected (activation moved).
-    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    emit(
+      { type: "step:after", action: "next", origin: "button_primary" },
+      oldRenderer,
+    );
     expect(flow().chain).toBe("active");
     // The replay's own Next still works.
     next();
@@ -811,7 +890,10 @@ describe("lesson predicates", () => {
       flow().replayTour("task-panels");
     });
     expect(flow().context).toBeNull();
-    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    emit(
+      { type: "step:after", action: "next", origin: "button_primary" },
+      oldRenderer,
+    );
     expect(flow().chain).toBe("active");
     next();
     expect(flow().chain).toBe("completed");
@@ -831,12 +913,17 @@ describe("lesson predicates", () => {
           [],
         );
     });
-    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    emit(
+      { type: "step:after", action: "next", origin: "button_primary" },
+      oldRenderer,
+    );
     expect(flow().activeTourId).toBe("add-folder");
   });
 
   it("history: unrelated rows do not anchor the lesson; the first imported row mounting does, and scrolls to it", async () => {
-    const surface = keep(mountDraftSurface(DRAFT_ID, ["landing-history"], true));
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-history"], true),
+    );
     const container = surface.anchors["landing-history"];
     if (container === undefined) throw new Error("container missing");
     const unrelated = sized(document.createElement("li"));
@@ -847,7 +934,7 @@ describe("lesson predicates", () => {
     });
     render(<OnboardingTour />);
     startChain("sessions");
-    let step = props().steps[props().stepIndex ?? 0];
+    let step = props().steps.at(props().stepIndex ?? 0);
     if (step === undefined || typeof step.target !== "function") {
       throw new Error("expected a function target");
     }
@@ -857,8 +944,12 @@ describe("lesson predicates", () => {
     await mutate(() => {
       container.append(imported);
     });
-    step = props().steps[props().stepIndex ?? 0];
-    if (step === undefined || typeof step.target !== "function" || typeof step.scrollTarget !== "function") {
+    step = props().steps.at(props().stepIndex ?? 0);
+    if (
+      step === undefined ||
+      typeof step.target !== "function" ||
+      typeof step.scrollTarget !== "function"
+    ) {
       throw new Error("expected function targets");
     }
     expect(step.target()).toBe(container);
@@ -896,7 +987,10 @@ describe("lesson predicates", () => {
       useTabsStore.setState({ ...useTabsStore.getState() });
     });
     expect(flow().activeTourId).toBe("task-panels");
-    expect(flow().context).toMatchObject({ epicId: EPIC_ID, tabId: EPIC_TAB_ID });
+    expect(flow().context).toMatchObject({
+      epicId: EPIC_ID,
+      tabId: EPIC_TAB_ID,
+    });
   });
 
   it("history: an epic already focused at entry is not a user-opened transition", () => {

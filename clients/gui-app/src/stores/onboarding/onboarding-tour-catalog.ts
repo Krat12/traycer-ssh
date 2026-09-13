@@ -74,7 +74,12 @@ export const TOUR_STEP_IDS: Readonly<
 export const BRANCH_TOUR_ORDER: Readonly<
   Record<OnboardingBranch, ReadonlyArray<TourId>>
 > = {
-  "no-sessions": ["add-folder", "terminal-mode", "submit-prompt", "task-panels"],
+  "no-sessions": [
+    "add-folder",
+    "terminal-mode",
+    "submit-prompt",
+    "task-panels",
+  ],
   sessions: ["history", "task-panels"],
 };
 

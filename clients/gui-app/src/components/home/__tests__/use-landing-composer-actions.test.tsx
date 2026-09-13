@@ -2732,7 +2732,9 @@ describe("useLandingComposerActions", () => {
     }
 
     function mountFocusedDraft(id: string): string {
-      const draftId = useLandingDraftStore.getState().createDraftWithId(id, null);
+      const draftId = useLandingDraftStore
+        .getState()
+        .createDraftWithId(id, null);
       const draftRef = { kind: "draft" as const, id: draftId };
       useTabsStore.setState({
         items: [{ kind: "tab", id: tabItemId(draftRef), ref: draftRef }],
@@ -2757,9 +2759,7 @@ describe("useLandingComposerActions", () => {
       });
     }
 
-    function launchTerminal(result: {
-      current: LandingComposerActions;
-    }): void {
+    function launchTerminal(result: { current: LandingComposerActions }): void {
       act(() => {
         result.current.selectTerminalAgent(
           {
@@ -2799,7 +2799,7 @@ describe("useLandingComposerActions", () => {
       });
       const byAttemptId = receipts().byAttemptId;
       expect(Object.keys(byAttemptId)).toEqual([dispatched[0].attemptId]);
-      const [epicTab] = useTabsStore.getState().items;
+      const epicTab = useTabsStore.getState().items.at(0);
       if (epicTab === undefined || epicTab.kind !== "tab") {
         throw new Error("expected the draft tab to become an epic tab");
       }

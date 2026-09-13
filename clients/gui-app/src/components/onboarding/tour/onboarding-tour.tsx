@@ -51,7 +51,11 @@ export function OnboardingTour(): React.ReactElement | null {
 
   return (
     <>
-      <div aria-live="polite" className="sr-only" data-testid="onboarding-tour-live">
+      <div
+        aria-live="polite"
+        className="sr-only"
+        data-testid="onboarding-tour-live"
+      >
         {controller.announcement}
       </div>
       <Joyride

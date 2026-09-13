@@ -216,7 +216,6 @@ describe("/epics/$epicId/$tabId route", () => {
       focusThreadId: "thread-1",
     });
   });
-
 });
 
 /**

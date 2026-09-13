@@ -592,8 +592,7 @@ function CanvasWorkbench(props: {
   readonly taskScene: TaskScene;
   readonly navigationPhase: NavigationPhase;
 }) {
-  const { scene, animate, activeTaskIndex, taskScene, navigationPhase } =
-    props;
+  const { scene, animate, activeTaskIndex, taskScene, navigationPhase } = props;
   // Split-screen animates the build-up; task-tabs keeps a single pane so the
   // tab strip is the only thing that moves.
   const rightVisible =

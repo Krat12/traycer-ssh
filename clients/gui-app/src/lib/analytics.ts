@@ -1428,7 +1428,10 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
   ),
   ...eventKeyEntries([AnalyticsEvent.TaskCreated], ["mode"]),
   ...eventKeyEntries(
-    [AnalyticsEvent.OnboardingModalShown, AnalyticsEvent.OnboardingModalSkipped],
+    [
+      AnalyticsEvent.OnboardingModalShown,
+      AnalyticsEvent.OnboardingModalSkipped,
+    ],
     ["page"],
   ),
   ...eventKeyEntries(

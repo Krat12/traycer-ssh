@@ -40,7 +40,9 @@ const MAX_TRACKED_ATTEMPTS = 8;
 
 interface LandingReceiptsState {
   readonly byAttemptId: Readonly<Record<string, LandingReceipt>>;
-  readonly dispatchedByAttemptId: Readonly<Record<string, LandingAttemptDispatch>>;
+  readonly dispatchedByAttemptId: Readonly<
+    Record<string, LandingAttemptDispatch>
+  >;
   /** Monotonic; lets a subscriber notice a dispatch without diffing maps. */
   readonly dispatchSequence: number;
   /**
@@ -117,8 +119,9 @@ export const useLandingReceiptsStore = create<LandingReceiptsState>()(
         return { dispatchedByAttemptId: rest };
       }),
     consume: (attemptId) => {
-      const receipt = get().byAttemptId[attemptId];
-      if (receipt === undefined) return null;
+      const { byAttemptId } = get();
+      if (!Object.hasOwn(byAttemptId, attemptId)) return null;
+      const receipt = byAttemptId[attemptId];
       set((state) => {
         const { [attemptId]: _consumed, ...rest } = state.byAttemptId;
         const { [attemptId]: _dispatched, ...restDispatched } =

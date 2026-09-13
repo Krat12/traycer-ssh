@@ -15,7 +15,10 @@ import {
   type ModalStatus,
   type ChainStatus,
 } from "@/stores/onboarding/onboarding-flow-store";
-import { firstStepOf, type TourId } from "@/stores/onboarding/onboarding-tour-catalog";
+import {
+  firstStepOf,
+  type TourId,
+} from "@/stores/onboarding/onboarding-tour-catalog";
 
 // Hand-written, so a change to `PERSIST_PREFIX` or the store's leaf shows up
 // as a failing assertion here rather than a silently different key.
@@ -45,11 +48,7 @@ function tour(id: TourId): TourProgress {
   return useOnboardingFlowStore.getState().tours[id];
 }
 
-function advance(
-  tourId: TourId,
-  stepId: string,
-  reason: AdvanceReason,
-): void {
+function advance(tourId: TourId, stepId: string, reason: AdvanceReason): void {
   useOnboardingFlowStore.getState().advance(tourId, stepId, reason);
 }
 
@@ -364,7 +363,9 @@ describe("useOnboardingFlowStore", () => {
     useOnboardingFlowStore.getState().finishModal("no-sessions");
     expect(revision()).toBe(start + 1);
     useOnboardingFlowStore.getState().setContext({ draftId: "d" });
-    useOnboardingFlowStore.getState().advance("add-folder", "add-folder", "next");
+    useOnboardingFlowStore
+      .getState()
+      .advance("add-folder", "add-folder", "next");
     expect(revision()).toBe(start + 1);
     useOnboardingFlowStore.getState().pauseChain();
     useOnboardingFlowStore.getState().pauseChain();
@@ -379,7 +380,9 @@ describe("useOnboardingFlowStore", () => {
     useOnboardingFlowStore.getState().replayTour("task-panels");
     expect(revision()).toBe(start + 5);
     // A finishing advance is a chain end too.
-    useOnboardingFlowStore.getState().advance("task-panels", "task-panels", "next");
+    useOnboardingFlowStore
+      .getState()
+      .advance("task-panels", "task-panels", "next");
     expect(useOnboardingFlowStore.getState().chain).toBe("completed");
     expect(revision()).toBe(start + 6);
     useOnboardingFlowStore.getState().completeChain();
@@ -767,7 +770,10 @@ describe("useOnboardingFlowStore", () => {
   });
 
   describe("selectors", () => {
-    function flowWith(modal: ModalStatus, chain: ChainStatus): OnboardingFlowData {
+    function flowWith(
+      modal: ModalStatus,
+      chain: ChainStatus,
+    ): OnboardingFlowData {
       return { ...INITIAL_FLOW, modal, chain };
     }
 
@@ -791,9 +797,7 @@ describe("useOnboardingFlowStore", () => {
       ["done" as const, false],
       ["skipped" as const, false],
     ])("selectFirstRunModalDue(modal: %s) is %s", (modal, expected) => {
-      expect(selectFirstRunModalDue(flowWith(modal, "pending"))).toBe(
-        expected,
-      );
+      expect(selectFirstRunModalDue(flowWith(modal, "pending"))).toBe(expected);
     });
 
     it("selectActiveStep is null when no tour is active", () => {
