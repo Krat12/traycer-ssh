@@ -1269,6 +1269,64 @@ describe("layoutOffice floors", () => {
     });
   }
 
+  it("keeps the infirmary on the road beside the stairwell, on the storey the well stands on", () => {
+    // THE FIXTURE THE FIRST-COLUMN FALLBACK NEEDS, and the reason no case had
+    // reached it: every kerb fixture before this one was single-host, and a
+    // single-host Floor has no stairwell, so the first column's foot was never
+    // taken and `anchorInfirmaryToRoad`'s multi-storey branch never ran. The
+    // same fourteen roots as the packing case below, plus one root on a second
+    // host - which buys a stairwell and nothing else.
+    const deep = Array.from({ length: 14 }, (_, index) =>
+      agent({ id: `deep-${index}`, hostId: "host-a", createdAt: index }),
+    );
+    const layout = layoutOffice([
+      ...deep,
+      agent({ id: "root-b", hostId: "host-b", createdAt: 99 }),
+    ]);
+    const floor = layout.floors[0];
+    const stairs = floor.stairsTile;
+    if (stairs === null) throw new Error("expected a stairwell on floor 0");
+    const infirmary = floor.civic.find((room) => room.kind === "infirmary");
+    if (infirmary === undefined) throw new Error("no infirmary");
+    const kerb = infirmary.kerbTile;
+    if (kerb === null) throw new Error("no infirmary kerb");
+    const road = floor.road;
+    if (road === null) throw new Error("no road");
+
+    // GEOMETRY, RE-MEASURED. This storey's infirmary used to anchor two rows
+    // short of the road - the band the packer reserves so the well cannot cut
+    // a room's bottom wall - and `kerbOnRoad` still took its door's column, so
+    // the kerb measured 3 while the contract promises 1. It now clears the
+    // well SIDEWAYS instead: its right edge steps left by the well's width and
+    // it anchors to the last room row like every other column.
+    expect(infirmary.bounds.col + infirmary.bounds.cols - 1).toBe(
+      stairs.col - 1,
+    );
+    expect(
+      Math.abs(kerb.col - infirmary.doorTile.col) +
+        Math.abs(kerb.row - infirmary.doorTile.row),
+    ).toBe(1);
+    expect(kerb.row).toBe(road.tiles[0].row);
+
+    // The shifted storey still offers a stairs spot, which is what makes the
+    // multi-floor errand possible at all. It may be the tile beside the well
+    // or - where the infirmary's right wall now covers that candidate - the
+    // documented fall-through to the lobby row, which puts the waiting walker
+    // on a road tile. That is allowed: road tiles coincide with corridors and
+    // the lobby by design, and the road is drawn rather than searched.
+    expect(
+      floor.errandSpots.filter((spot) => spot.kind === "stairs").length,
+    ).toBe(1);
+
+    // THE LANE RUNS END TO END, UNDER THE WELL, and these two assertions exist
+    // so nobody later "fixes" that by shortening it. The well's footprint
+    // covers the lobby row at its last two columns, so the road's final tiles
+    // before the exit are the well's own - deliberate, and argued in
+    // `roadAlongLobby`.
+    expect(road.tiles.length).toBe(layout.cols);
+    expect(road.exitTile.col).toBe(layout.cols - 1);
+  });
+
   it("stacks the column rooms down one column while the storey is deep enough", () => {
     // A tall family: enough cabin bands that every room this floor earns fits
     // one above the other, which is the arrangement that costs no extra width.
