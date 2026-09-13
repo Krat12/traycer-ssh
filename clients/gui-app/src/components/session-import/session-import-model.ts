@@ -1086,6 +1086,34 @@ export function groupSessionImportFailures(
 }
 
 /**
+ * How many repos the submission actually brings over.
+ *
+ * Every other number on the event describes the import, so this one has to as
+ * well. `state.groups.length` counts the SCAN instead - folders the user
+ * cleared outright, and folders that only ever held unreadable or
+ * already-imported rows - which would read as "imported 3 sessions across 40
+ * repos". The selections are the source of truth rather than `state.selected`,
+ * so this cannot drift from whatever the submission decided to send.
+ */
+export function submittedGroupCount(
+  groups: ReadonlyArray<SessionImportGroup>,
+  selections: ReadonlyArray<SessionImportSelection>,
+): number {
+  const submitted = new Set(
+    selections.map((selection) =>
+      sessionImportSelectionKey(selection.harness, selection.nativeSessionId),
+    ),
+  );
+  return groups.filter((group) =>
+    group.sessions.some((candidate) =>
+      submitted.has(
+        sessionImportSelectionKey(candidate.harness, candidate.nativeSessionId),
+      ),
+    ),
+  ).length;
+}
+
+/**
  * The wizard submits every ticked session, in the order the scan produced
  * them, plus the display titles the progress and summary views need - the
  * `progress` frame names a session by id only, and nothing else in the client

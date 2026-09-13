@@ -126,6 +126,25 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
   useStreamMethodSupportFor: () => stream.support,
 }));
 
+// Page 2 probes the host for a run in flight and hands Import to the run
+// controller; neither is under test here (see `welcome-sessions-page.test`),
+// so the probe answers "idle" and the handle records nothing.
+vi.mock("@/hooks/session-import/use-session-import-check-status-query", () => ({
+  useSessionImportCheckStatus: () => ({
+    data: { active: null, lastCompleted: null },
+    isError: false,
+    isFetching: false,
+    isPending: false,
+    isSuccess: true,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("@/components/session-import/session-import-run-handle", () => ({
+  attachSessionImportRun: vi.fn(),
+  startSessionImportRun: vi.fn(),
+}));
+
 const readinessHarness = vi.hoisted(() => ({
   readiness: { kind: "ready" } as SurfaceReadiness,
 }));
