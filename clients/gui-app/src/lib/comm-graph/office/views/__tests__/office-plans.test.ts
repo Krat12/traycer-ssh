@@ -442,12 +442,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
           // it would give with the whole world to letter in.
           //
           // ASSERTED FOR THIS VIEW ONLY, and deliberately not for the others: a
-          // plate narrower than its reading is the LADDER WORKING, and four
-          // views already ship one - measured at 12 agents, `Waiting room` in
-          // Towers and in Building, `Medbay` and `Gallery` in Mission control
-          // and `Benches` on Campus all read without their counts, because those
-          // rooms are two and three tiles wide. What City may not do is lose a
-          // count on a seventeen-column ward, and that is what this pins.
+          // plate narrower than its reading is the LADDER WORKING, and four views
+          // already ship one. Measured over all six views at 12, 309 and 1,000 -
+          // 72 rooms, seven of which drop their count at close-up:
+          //
+          //   Towers        12    waiting-room  4 tiles  `Waiting room`
+          //   Building      12    waiting-room  4 tiles  `Waiting room`
+          //   Mission ctrl  12    infirmary     4 tiles  `Medbay`
+          //   Mission ctrl  all   waiting-room  2 tiles  `Gallery`
+          //   Campus        12    waiting-room  4 tiles  `Benches`
+          //
+          // Two corrections to the first wording of this comment, which said
+          // "two and three tiles wide" and put every drop "at 12 agents": the
+          // widths are FOUR and two, and the Gallery drops at EVERY population,
+          // not only the smallest. What City may not do is lose a count on a
+          // seventeen-column ward, and that is what this pins.
           const readingAt = (widthTiles: number): string =>
             officeCivicSignText({
               room,
