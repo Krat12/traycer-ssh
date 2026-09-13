@@ -194,11 +194,17 @@ const CITY_APPEND_COUNTS: ReadonlyArray<number> = [0, 90, 1000];
  * scene layout are carried through every append, exactly as
  * `t5-overview-handoff.test.ts`'s `grown-city-sweep` probe does. City
  * deliberately freezes a district's WIDTH across appends, so the roster
- * growing 3 -> 93 -> 1,003 grows the same 18-wide district from 18x15 to
- * 18x48 to 18x412 tiles - narrower against its height every append, not
- * larger on both axes. Each step measured, and each two rows taller than it
- * was before `CITY_FOOT_RING_ROWS`: the foot band the host plate needs is a
- * property of every City layout, not of one population.
+ * growing 3 -> 93 -> 1,003 grows the same 19-wide district from 19x25 to
+ * 19x58 to 19x422 tiles - narrower against its height every append, not
+ * larger on both axes. Each step measured.
+ *
+ * NINETEEN, not eighteen, and the ten extra rows are the CIVIC QUARTER. The
+ * width is the district's own floor now: a hospital band at the capacity cap is
+ * seventeen columns and the ring is one either side, which is wider than this
+ * district's three-lot shelf ever needed, so every City district is at least 19
+ * across (`ISO_MIN_DISTRICT_WIDTH` used to set the floor at 16 + 2). The rows are
+ * the two foot rows the host plate needs plus the quarter's three bands and their
+ * clearances - properties of every City layout, not of one population.
  */
 function growAppendedCity(): OfficeScene {
   const view = OFFICE_VIEWS.city;
@@ -230,14 +236,14 @@ function growAppendedCity(): OfficeScene {
 }
 
 describe("the grown-City overview coverage (H1)", () => {
-  it("covers every painted point of the final append-grown City district (18x412 tiles)", () => {
+  it("covers every painted point of the final append-grown City district (19x422 tiles)", () => {
     const view = OFFICE_VIEWS.city;
     const scene = growAppendedCity();
     const layout = scene.layout();
     if (layout === null) throw new Error("no layout");
     expect({ cols: layout.cols, rows: layout.rows }).toEqual({
-      cols: 18,
-      rows: 412,
+      cols: 19,
+      rows: 422,
     });
     const misses = sweepOverviewBlocks(scene, view, layout);
     // The symmetric-diamond overhang answered 634.2683906914502px on this

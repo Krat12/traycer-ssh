@@ -26,7 +26,7 @@ export const CIVIC_ROOMS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
   building: true,
   "mission-control": true,
   campus: true,
-  city: false,
+  city: true,
 };
 
 /**
@@ -49,7 +49,7 @@ export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
   building: true,
   "mission-control": false,
   campus: true,
-  city: false,
+  city: true,
 };
 
 /**
@@ -68,6 +68,15 @@ export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
  * four-second floor and leaves, which meets the contract at both ends. The other
  * three views give the rider bounds of 120, 66 and 83 ticks, where the rider is
  * plainly what sets the dwell.
+ *
+ * CITY IS THE SECOND `false`, and for the same geometric reason rather than by
+ * inheritance: its hospital is a band at the first content column and its kerb is
+ * the lane tile one step from that band's own door, which is Campus's arrangement
+ * in City's words. The measurement is the case itself, which asserts BOTH halves
+ * of this row - `riderBound - kerbTick < 40`, so the rider asks for less than the
+ * floor, and the floor as observed at 41 ticks. The tick numbers above are
+ * Campus's own and are not claimed of City; what the row says of City is the
+ * regime, and the case is what checks it.
  *
  * A TABLE RATHER THAN A LOOSENED BOUND, for the reason the other two exist. The
  * guard on those cases is `minimumDwell > 41`, and 41 is exactly what a vehicle
@@ -133,6 +142,7 @@ export const AMBULANCE_RIDER_SETS_THE_DWELL: Readonly<
   building: true,
   // No road, no vehicle: these cases never run here at all.
   "mission-control": false,
+  // Both districted views: the ward is a band at the lane, so the floor governs.
   campus: false,
   city: false,
 };

@@ -16,9 +16,11 @@ import {
   OFFICE_SIGN_NARROW_PLATE_MAX_CHARS,
   OFFICE_SIGN_PADDING_X,
   OFFICE_SIGN_PLATE_MAX_CHARS,
+  officeCivicSignText,
   officeSignCenterX,
   officeSignsToDraw,
 } from "@/lib/comm-graph/office/office-signs";
+import { OFFICE_LOD_CLOSEUP_ZOOM } from "@/lib/comm-graph/office/office-lod";
 import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
 import {
@@ -38,6 +40,7 @@ import {
   type OfficeLayout,
   type OfficeCivicKind,
   type OfficeCivicRoom,
+  type OfficeCivicTally,
   type OfficeRect,
   type OfficeSceneInput,
   type OfficeSign,
@@ -253,7 +256,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
         building: 0,
         "mission-control": 0,
         campus: 2,
-        city: 0,
+        // Its hospital and its warehouse. The bus stop is a shelter on a
+        // pavement, and the police station is the park's own counter.
+        city: 2,
       };
       const storeys = layout.floors.filter((floor) => floor.civic.length > 0);
       const walled = civic.filter((room) => room.enclosure === "walled");
@@ -350,6 +355,61 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
       }
     });
 
+    /**
+     * HOW EACH VIEW SIZES A CIVIC PLATE, declared because both rules are right
+     * and neither is derivable from the other.
+     *
+     * `frontage` is the original: a plate spans from its own tile to the room's
+     * right edge, so a sixteen-bed ward letters across sixteen tiles. Five views
+     * do this.
+     *
+     * `fixed` is City's, and City's own geometry forces it. A plate is centred
+     * over the tiles it spans, so a frontage-wide plate on a seventeen-column ward
+     * hangs its lettering eight tiles INTO the district - which is where the lot
+     * plates are. Measured with City on the frontage rule, sweeping every
+     * population from 8 to 140 and then 160, 200, 250, 309, 400, 500, 700 and
+     * 1,000: 48 overprints, every one the same pair - a lot plate four columns
+     * right and six rows above the hospital's sign, `col + row` two apart, 1.2 to
+     * 8.4 px deep at office zoom. Campus takes none in the same sweep, because its
+     * bench row widens its whole shelf and its ward's plate therefore centres over
+     * its own band.
+     *
+     * SIX IS NOT A ROUND NUMBER, it is the reading: `OFFICE_TILE` is 16, so six
+     * tiles are 154 px at close-up against City's longest rung at 137. The width
+     * is asserted as a literal here rather than imported, because a pin that
+     * evaluates the plan's own constant is not a pin.
+     */
+    const CIVIC_PLATE_RULE: Readonly<
+      Record<OfficeViewId, "frontage" | "fixed">
+    > = {
+      floor: "frontage",
+      towers: "frontage",
+      building: "frontage",
+      "mission-control": "frontage",
+      campus: "frontage",
+      city: "fixed",
+    };
+    const CITY_PLATE_TILES = 6;
+
+    /** A tally with something in every room, so no counter reads empty. */
+    const FULL_TALLY: OfficeCivicTally = {
+      occupiedByRoom: new Map(
+        layout.floors
+          .flatMap((floor) => floor.civic)
+          .map((room) => [room.civicRoomId, 1]),
+      ),
+      archivedByHost: new Map(
+        layout.floors.map((floor) => [floor.hostId, 3] as const),
+      ),
+    };
+    /** Wider than any plate a view hangs: the reading with room to spare. */
+    const GENEROUS_TILES = 64;
+    const plateMeasure = (text: string): number =>
+      text.length *
+        OFFICE_SIGN_FONT_PX *
+        (0.6 + OFFICE_SIGN_LETTER_SPACING_EM) +
+      OFFICE_SIGN_PADDING_X * 2;
+
     it("hangs one readable plate on each civic room, overprinting nothing", () => {
       if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
       const civicSigns = layout.signs.filter((sign) => sign.kind === "civic");
@@ -369,10 +429,40 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
         }
         expect(plate.tile).toEqual(room.signTile);
         expect(plate.text).toBe(room.name);
-        if (room.kind === "archive") {
+        if (CIVIC_PLATE_RULE[viewId] === "fixed") {
+          // ONE WIDTH FOR ALL FOUR, the records door included: see the table.
+          expect(plate.widthTiles).toBe(CITY_PLATE_TILES);
+          expect(plate.tile.col).toBeGreaterThanOrEqual(0);
+          expect(plate.tile.col + plate.widthTiles).toBeLessThanOrEqual(
+            layout.cols,
+          );
+          // AND IT KEEPS EVERY RUNG THE RESOLVER HAS, which is what the width
+          // was chosen for. Asked at close-up, where the counter exists at all
+          // (`OFFICE_SIGN_COUNTER_LOD`), the reading on this plate is the reading
+          // it would give with the whole world to letter in.
+          //
+          // ASSERTED FOR THIS VIEW ONLY, and deliberately not for the others: a
+          // plate narrower than its reading is the LADDER WORKING, and four
+          // views already ship one - measured at 12 agents, `Waiting room` in
+          // Towers and in Building, `Medbay` and `Gallery` in Mission control
+          // and `Benches` on Campus all read without their counts, because those
+          // rooms are two and three tiles wide. What City may not do is lose a
+          // count on a seventeen-column ward, and that is what this pins.
+          const readingAt = (widthTiles: number): string =>
+            officeCivicSignText({
+              room,
+              tally: FULL_TALLY,
+              lod: 2,
+              widthTiles,
+              zoom: OFFICE_LOD_CLOSEUP_ZOOM,
+              measure: plateMeasure,
+            });
+          expect(readingAt(plate.widthTiles)).toBe(readingAt(GENEROUS_TILES));
+        } else if (room.kind === "archive") {
           // WIDER THAN THE ROOM, on purpose: C5's archive is a DOOR, one tile,
           // and a one-tile plate holds no word. The constant is shared so that
-          // every view's records door is labelled the same width.
+          // every FRONTAGE view's records door is labelled the same width; the
+          // fixed-width view plates its door like its other three, wider.
           expect(plate.widthTiles).toBe(ARCHIVE_SIGN_WIDTH_TILES);
           // Whichever way the view hangs it - rightwards from the door in the
           // Floor and the plazas, leftwards to END at it in the hall, whose door

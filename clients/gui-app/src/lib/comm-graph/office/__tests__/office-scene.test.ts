@@ -7560,11 +7560,11 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     const riderBound = settledTick ?? kerbTick + 120;
     const minimumDwell = Math.max(40, Math.min(riderBound - kerbTick, 120));
     if (!AMBULANCE_RIDER_SETS_THE_DWELL[viewId]) {
-      // THE OTHER REGIME, ASSERTED AND NOT SKIPPED. Campus's ward stands at the
-      // first content column with its kerb beside its own door, so the patient
-      // is in bed BEFORE the ambulance arrives and the four-second floor is what
-      // the vehicle waits out. Both halves are pinned: the premise, as an
-      // observation, so a Campus whose geometry changed and made the rider late
+      // THE OTHER REGIME, ASSERTED AND NOT SKIPPED. Both districted views stand
+      // their ward at the first content column with its kerb beside its own door,
+      // so the rider asks for less than the four-second floor and the floor is
+      // what the vehicle waits out. Both halves are pinned: the premise, as an
+      // observation, so a view whose geometry changed and made the rider late
       // reddens here and has to move in the table...
       expect(settledTick).not.toBeNull();
       if (settledTick === null) return;

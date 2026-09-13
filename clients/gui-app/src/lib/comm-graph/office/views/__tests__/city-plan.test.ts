@@ -8,6 +8,7 @@ import {
   OfficeScene,
   OFFICE_CULL_MARGIN_PX,
 } from "@/lib/comm-graph/office/office-scene";
+import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import {
   OFFICE_CHARACTER_HEIGHT,
@@ -15,6 +16,8 @@ import {
   OFFICE_TILE,
   type OfficeAgentInput,
   type OfficeAgentStatus,
+  type OfficeCivicKind,
+  type OfficeCivicRoom,
   type OfficeDrawable,
   type OfficeErrandSpot,
   type OfficeFloor,
@@ -1143,6 +1146,12 @@ describe("planCity", () => {
     // Two rows and 32 x 16 px more than before `CITY_FOOT_RING_ROWS`: the foot
     // band the host plate needs is two rows deeper, and an isometric box grows
     // by half a tile each way per row, so +2 rows is +32 px wide and +16 tall.
+    //
+    // THEN FIVE MORE ROWS for the civic quarter, 83 -> 88. Two clearance rows
+    // between the last lot and the hospital, the hospital's own two, a gap, the
+    // bus stop's two, a gap, and the warehouse's two - and the warehouse left the
+    // shelf to become that third band, which takes rows off the content above.
+    // The columns do not move: 70 is already wider than the widest band.
     const input1280 = inputFor("triage", 1000, VIEWPORT_1280);
     const layout1280 = planCity(input1280);
     const size1280 = measureCity(input1280);
@@ -1150,9 +1159,9 @@ describe("planCity", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout1280.cols, rows: layout1280.rows }).toEqual({
         cols: 70,
-        rows: 83,
+        rows: 88,
       });
-      expect(size1280).toEqual({ width: 2448, height: 1316 });
+      expect(size1280).toEqual({ width: 2528, height: 1356 });
     });
 
     it("agrees with the projector's own bounds", () => {
@@ -1165,8 +1174,8 @@ describe("planCity", () => {
         VIEWPORT_1280.width / size1280.width,
         VIEWPORT_1280.height / size1280.height,
       );
-      // 0.5229, down from 0.5300: a taller world fits a little smaller.
-      expect(fit).toBeCloseTo(0.52, 2);
+      // 0.5063, down from 0.5229: a taller world fits a little smaller.
+      expect(fit).toBeCloseTo(0.51, 2);
     });
 
     it("pins the fit at 680x440", () => {
@@ -1176,13 +1185,16 @@ describe("planCity", () => {
         VIEWPORT_680.width / size680.width,
         VIEWPORT_680.height / size680.height,
       );
-      expect(fit).toBeCloseTo(0.28, 2);
+      expect(fit).toBeCloseTo(0.27, 2);
     });
   });
 
   describe("projected bounds at 309 agents", () => {
-    // Measured: 44 x 50 tiles, 1,504 x 844 px - the same two rows and the same
-    // 32 x 16 px the 1,000-agent case above explains.
+    // Measured: 44 x 61 tiles, 1,680 x 932 px - the same two foot rows and the
+    // same civic quarter the 1,000-agent case above explains, though here the
+    // quarter costs 11 rows rather than 5: at 309 agents the warehouse was the
+    // block setting the last shelf row's height, so taking it out of the shelf
+    // shortened the content by less than the three bands add.
     const input = inputFor("triage", 309, VIEWPORT_1280);
     const layout = planCity(input);
     const size = measureCity(input);
@@ -1190,9 +1202,9 @@ describe("planCity", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout.cols, rows: layout.rows }).toEqual({
         cols: 44,
-        rows: 50,
+        rows: 61,
       });
-      expect(size).toEqual({ width: 1504, height: 844 });
+      expect(size).toEqual({ width: 1680, height: 932 });
     });
 
     it("pins the fit at both viewports", () => {
@@ -1200,15 +1212,15 @@ describe("planCity", () => {
         VIEWPORT_1280.width / size.width,
         VIEWPORT_1280.height / size.height,
       );
-      // 0.8294 and 0.4521, from 0.8500 and 0.4600.
-      expect(fit1280).toBeCloseTo(0.83, 2);
+      // 0.7511 and 0.4048, from 0.8294 and 0.4521.
+      expect(fit1280).toBeCloseTo(0.75, 2);
       const input680 = inputFor("triage", 309, VIEWPORT_680);
       const size680 = measureCity(input680);
       const fit680 = Math.min(
         VIEWPORT_680.width / size680.width,
         VIEWPORT_680.height / size680.height,
       );
-      expect(fit680).toBeCloseTo(0.45, 2);
+      expect(fit680).toBeCloseTo(0.4, 2);
     });
   });
 
@@ -1380,6 +1392,11 @@ describe("planCity", () => {
 
     for (const seat of layout.seats.values()) {
       if (seat.hitBox === null) throw new Error(`no hitBox on ${seat.seatId}`);
+      // A CIVIC SEAT IS NOT PAINTED FROM THE SEAT. `paintSeat` returns nothing
+      // for one - its furniture is a PROP, drawn by the floor pass - so a union
+      // measured here would be empty. Its box is pinned by the case below
+      // instead, against the sprite that pass actually draws on its tile.
+      if (seat.civicRoomId !== null) continue;
       const occupantId = occupantBySeatId.get(seat.seatId) ?? null;
 
       // Occupied, not sheeted, `openRequests: 3` - the state the ticket
@@ -1412,6 +1429,65 @@ describe("planCity", () => {
           ).toBe(true);
         }
       }
+    }
+  });
+
+  /**
+   * A CIVIC SEAT'S BOX IS THE FURNITURE THE FLOOR PASS DRAWS ON ITS TILE.
+   *
+   * The other half of the case above, and the half that was missing in both
+   * isometric views: `paintSeat` returns nothing for a civic seat, so the union
+   * measured there is empty and that case can only skip. What a bed IS on screen
+   * is one prop sprite at `isoPropOrigin`, so the claim worth pinning is that the
+   * box a click lands on is exactly that sprite's rect - asserted against the
+   * painter's own output rather than against a formula repeated here.
+   *
+   * IT IS NOT EQUALITY IN ONE DIRECTION ONLY: the sprite is found BY the box and
+   * then its name is checked, so a box over the wrong tile finds no sprite at all
+   * and a box over the right tile with the wrong art fails on the name.
+   */
+  it("boxes every civic seat on the furniture the floor pass draws there", () => {
+    const layout = planCity(inputFor("triage", 60, VIEWPORT_1280));
+    const whole: OfficeTileRect = {
+      col: 0,
+      row: 0,
+      cols: layout.cols,
+      rows: layout.rows,
+    };
+    const painted = ISO_PAINTER.floor(layout, whole, 2).flatMap((drawable) => {
+      if (drawable.kind !== "sprite") return [];
+      const size = officeSpriteSize(drawable.sprite);
+      return [
+        {
+          name: drawable.sprite.name,
+          box: {
+            x: drawable.x,
+            y: drawable.y,
+            width: size.width,
+            height: size.height,
+          },
+        },
+      ];
+    });
+    const civicSeats = [...layout.seats.values()].filter(
+      (seat) => seat.civicRoomId !== null,
+    );
+    // Non-vacuous: this fixture plans a ward and a shelter, so there are seats.
+    expect(civicSeats.length).toBeGreaterThan(0);
+    for (const seat of civicSeats) {
+      const box = seat.hitBox;
+      if (box === null) throw new Error(`no hitBox on ${seat.seatId}`);
+      const at = painted.filter(
+        (entry) =>
+          entry.box.x === box.x &&
+          entry.box.y === box.y &&
+          entry.box.width === box.width &&
+          entry.box.height === box.height,
+      );
+      expect(at.length, `no sprite drawn at ${seat.seatId}'s box`).toBe(1);
+      expect(at[0].name).toBe(
+        seat.kind === "bed" ? "bed-iso" : "lounge-chair-iso",
+      );
     }
   });
 
@@ -1527,8 +1603,10 @@ describe("planCity", () => {
 
     const before = scene.layout();
     if (before === null) throw new Error("expected a layout after sync");
-    // 25, two more than before the foot band: every City layout carries it.
-    expect(before.rows).toBe(25);
+    // 35: the two foot rows every City layout carries, and the civic quarter's
+    // own bands under the content. 33 -> 34 still GROWS - which is what this case
+    // needs - and still by three rows, so the delta below is unmoved.
+    expect(before.rows).toBe(35);
     const beforeSeatIds = new Map(
       Array.from(before.desks.entries()).map(([id, desk]) => [id, desk.seatId]),
     );
@@ -1540,10 +1618,10 @@ describe("planCity", () => {
     );
     const beforeProjector = ISO_PAINTER.projector(before);
     const beforeOrigin = beforeProjector.project(0, 0);
-    // 400 and 448 below, each 32 px right of where they were: the projected
-    // origin is `rows * ISO_HALF_WIDTH` and the foot band added two rows. The
-    // DELTA between them is what this case is about, and it does not move.
-    expect(beforeOrigin.x).toBe(400);
+    // 560 and 608 below: the projected origin is `rows * ISO_HALF_WIDTH`, so the
+    // foot band and then the civic quarter each pushed it right. The DELTA between
+    // them is what this case is about, and it has not moved through either.
+    expect(beforeOrigin.x).toBe(560);
 
     let away = false;
     for (let step = 0; step < 500 && !away; step += 1) {
@@ -1557,12 +1635,12 @@ describe("planCity", () => {
 
     const after = scene.layout();
     if (after === null) throw new Error("expected a layout after growth");
-    expect(after.rows).toBe(28);
+    expect(after.rows).toBe(38);
     expect(after.cols).toBe(before.cols);
     expect(after.shiftFromPrevious).toBeNull();
     const afterProjector = ISO_PAINTER.projector(after);
     const afterOrigin = afterProjector.project(0, 0);
-    expect(afterOrigin.x).toBe(448);
+    expect(afterOrigin.x).toBe(608);
     const delta = {
       x: afterOrigin.x - beforeOrigin.x,
       y: afterOrigin.y - beforeOrigin.y,
@@ -2082,11 +2160,14 @@ describe("planCity", () => {
       rooms: countedArrayProxy(layout.rooms, roomCounts),
       props: countedArrayProxy(layout.props, propCounts),
     };
-    // Measured: the first district's park (with its two trees and its
-    // reception desk) sits near here on this fixture, so this window is one
-    // that actually holds non-fixture props - unlike the world's own corner,
-    // which City's shelf-packed districts leave empty.
-    const window: OfficeTileRect = { col: 50, row: 42, cols: 32, rows: 32 };
+    // Measured: this window holds the district's CIVIC QUARTER - the ward's beds
+    // and crosses, the shelter and its chairs, the records door - which is 34 of
+    // the layout's 49 non-fixture props, alongside 17 of its 60 rooms. It used to
+    // sit at 50,42 for the park's two trees and its reception, and the park moved
+    // to the head of the shelf when the lane's kerb promise needed the district's
+    // entrance at its first column. The quarter is the better window anyway: more
+    // props, and they are the ones this layer added.
+    const window: OfficeTileRect = { col: 0, row: 60, cols: 32, rows: 32 };
     ISO_PAINTER.floor(countingLayout, window, 2);
     // Before the fix the floor pass walked both arrays whole to find what
     // falls in one small window; the index built once by the plan makes both
@@ -2337,17 +2418,23 @@ describe("planCity", () => {
     expect(spread50.spots).toBeGreaterThan(spread8.spots * 5);
 
     // Measured on `95b4f16bd`: 8 hosts, 112 spots - 74 window reads against
-    // 680 whole-world; 50 hosts, 700 spots - 94 against 4,212.
+    // 680 whole-world; 50 hosts, 700 spots - 94 against 4,212. Then 90 / 4,212
+    // with the deeper district foot.
     //
-    // RE-MEASURED with the deeper district foot: the 50-host window reads
-    // DROPPED to 90, and the other three did not move. The window is a fixed
-    // rect of the world, so two extra rows at every district's foot put
-    // marginally sparser ground inside it - the claim below, that the window's
-    // cost barely moves while the world grows, is if anything strengthened.
-    expect(spread8.windowReads).toBe(74);
-    expect(spread8.wholeReads).toBe(680);
-    expect(spread50.windowReads).toBe(90);
-    expect(spread50.wholeReads).toBe(4212);
+    // RE-MEASURED with the civic quarter: 66 / 672 and 122 / 4,224. The spot
+    // COUNTS did not move - a bed is not an errand - and the two that moved most
+    // moved for one reason, the park. It is now pinned to the head of every
+    // district's shelf (the lane's kerb promise needs the entrance at the first
+    // content column), so every district's amenities sit in the same top band
+    // instead of wherever their block heights put them. A fixed window crossing
+    // that band therefore meets MORE of them in the 50-host world, 90 -> 122,
+    // and fewer in the 8-host one, 74 -> 66.
+    //
+    // The claim below survives it with room: 122 against a budget of 132.
+    expect(spread8.windowReads).toBe(66);
+    expect(spread8.wholeReads).toBe(672);
+    expect(spread50.windowReads).toBe(122);
+    expect(spread50.wholeReads).toBe(4224);
 
     // The window's cost barely moves while the world grows six-fold, and is
     // a small fraction of reading the world - which is the claim, rather
@@ -2567,5 +2654,406 @@ describe("planCity", () => {
       );
       expect(drawn).toBe(true);
     }
+  });
+});
+
+/**
+ * CITY'S CIVIC QUARTER, in City's own words and City's own geometry.
+ *
+ * What the cross-view suite already pins is not repeated here: that there are
+ * four rooms of the four kinds, one plate each, a road, kerbs one step from their
+ * doors, and a walk to every seat. What this describe block is for is the half
+ * only City can say - THREE BANDS at the district's foot in a known order, the
+ * park's own counter re-read as the police station, and the art that makes each
+ * band read as the thing it is.
+ */
+describe("planCity's civic quarter", () => {
+  /** Its rooms by kind, plus the lane its bands are promised to. */
+  function quarterOf(n: number): {
+    readonly layout: OfficeLayout;
+    readonly floor: OfficeFloor;
+    readonly byKind: ReadonlyMap<OfficeCivicKind, OfficeCivicRoom>;
+    readonly firstCol: number;
+  } {
+    const layout = planCity(inputFor("triage", n, VIEWPORT_1280));
+    const floor = layout.floors[0];
+    const road = floor.road;
+    if (road === null) throw new Error("City owes its district a lane");
+    return {
+      layout,
+      floor,
+      byKind: new Map(floor.civic.map((room) => [room.kind, room])),
+      // THE FIRST CONTENT COLUMN, read off the LANE rather than recomputed: the
+      // lane is the district's ring column, so the column beside it is where the
+      // bands are promised to stand. Taking it from the road is what makes the
+      // assertions below about the promise instead of about a constant.
+      firstCol: road.entryTile.col + 1,
+    };
+  }
+
+  function roomOf(
+    byKind: ReadonlyMap<OfficeCivicKind, OfficeCivicRoom>,
+    kind: OfficeCivicKind,
+  ): OfficeCivicRoom {
+    const room = byKind.get(kind);
+    if (room === undefined) throw new Error(`no ${kind}`);
+    return room;
+  }
+
+  /** Every prop of one sprite, by tile key. */
+  function propTiles(layout: OfficeLayout, name: string): ReadonlySet<string> {
+    return new Set(
+      layout.props
+        .filter((prop) => prop.sprite.name === name)
+        .map((prop) => `${String(prop.tile.col)},${String(prop.tile.row)}`),
+    );
+  }
+
+  it.each([12, 309, 1000])(
+    "stacks the hospital, the bus stop and the warehouse at the lane, at %i agents",
+    (n) => {
+      const { layout, byKind, firstCol } = quarterOf(n);
+      const ward = roomOf(byKind, "infirmary");
+      const stop = roomOf(byKind, "waiting-room");
+      const shed = roomOf(byKind, "archive");
+
+      // City's own words for the four rooms.
+      expect([...byKind.values()].map((room) => room.name).sort()).toEqual([
+        "Bus stop",
+        "Hospital",
+        "Police station",
+        "Warehouse",
+      ]);
+
+      // ALL THREE BANDS START AT THE FIRST CONTENT COLUMN, which is the column
+      // the lane runs beside.
+      for (const band of [ward, stop, shed]) {
+        expect(band.bounds.col).toBe(firstCol);
+      }
+      // AND THEY ARE STACKED IN THAT ORDER with one walkable row between them,
+      // the same gap two packed blocks keep.
+      expect(stop.bounds.row).toBe(ward.bounds.row + ward.bounds.rows + 1);
+      expect(shed.bounds.row).toBe(stop.bounds.row + stop.bounds.rows + 1);
+      // The foot band is what is left under the last of them: three rows, so the
+      // host plate has somewhere to hang clear of the shed's own plate.
+      expect(layout.rows).toBe(shed.bounds.row + shed.bounds.rows + 3);
+
+      // TWO ROWS OF CLEARANCE ABOVE THE QUARTER, which is what keeps a lot plate
+      // off the hospital's. Said of the ROOMS the packer placed rather than of a
+      // row number, because that is the thing the clearance is measured against.
+      for (const room of layout.rooms) {
+        expect(
+          room.bounds.row + room.bounds.rows,
+          `${room.name} reaches the hospital's clearance`,
+        ).toBeLessThanOrEqual(ward.bounds.row - 2);
+      }
+    },
+  );
+
+  it.each([12, 309, 1000])(
+    "fills each band with its own furniture at %i agents",
+    (n) => {
+      const { layout, byKind, firstCol } = quarterOf(n);
+      const ward = roomOf(byKind, "infirmary");
+      const stop = roomOf(byKind, "waiting-room");
+      const shed = roomOf(byKind, "archive");
+      const capacity = civicCapacityFor(n);
+      const beds = [...layout.seats.values()].filter(
+        (seat) => seat.kind === "bed",
+      );
+      const chairs = [...layout.seats.values()].filter(
+        (seat) => seat.kind === "lounge",
+      );
+
+      // BETWEEN THE FLOOR AND THIS POPULATION'S CAP, not equal to the cap: a
+      // City district counts the agents IT holds, and a district's own roster is
+      // smaller than the epic's whenever the epic has more than one host - so the
+      // epic-wide capacity is the ceiling here rather than the answer.
+      expect(beds.length).toBeGreaterThanOrEqual(2);
+      expect(beds.length).toBeLessThanOrEqual(capacity.beds);
+      expect(chairs.length).toBeGreaterThanOrEqual(4);
+      expect(chairs.length).toBeLessThanOrEqual(capacity.chairs);
+      // The rooms' own seat lists are the same seats.
+      expect(ward.seatIds.length).toBe(beds.length);
+      expect(stop.seatIds.length).toBe(chairs.length);
+      // A counter is stood at, not sat on (C5, C7).
+      expect(shed.seatIds).toEqual([]);
+      expect(roomOf(byKind, "help-desk").seatIds).toEqual([]);
+
+      // THE BAND IS AS WIDE AS WHAT IS IN IT: a wall column plus two tiles a bed,
+      // and a shelter or its seat row, whichever is longer.
+      expect(ward.bounds.cols).toBe(1 + beds.length * 2);
+      expect(stop.bounds.cols).toBe(Math.max(2, chairs.length));
+
+      // ONE CROSS PER BED, on the wall row above that bed's own column - never on
+      // the aisle column, which is where the plate hangs.
+      const crosses = propTiles(layout, "hospital-roof-cross");
+      expect(crosses.size).toBe(beds.length);
+      for (const bed of beds) {
+        expect(
+          crosses.has(`${String(bed.deskTile.col)},${String(ward.bounds.row)}`),
+          `no cross over the bed at ${String(bed.deskTile.col)}`,
+        ).toBe(true);
+      }
+      expect(
+        crosses.has(`${String(firstCol)},${String(ward.bounds.row)}`),
+      ).toBe(false);
+
+      // A SHELTER AT THE STOP'S FIRST TILE, its chairs on the pavement row in
+      // front of it - a queue stands in front of a shelter, not inside it.
+      expect(
+        propTiles(layout, "bus-shelter").has(
+          `${String(firstCol)},${String(stop.bounds.row)}`,
+        ),
+      ).toBe(true);
+      for (const chair of chairs) {
+        expect(chair.chairTile.row).toBe(stop.bounds.row + 1);
+      }
+      // AND A DOOR ON THE SHED'S LAST ROW, which is the whole archive (C5).
+      expect(
+        propTiles(layout, "warehouse-door-iso").has(
+          `${String(shed.doorTile.col)},${String(shed.doorTile.row)}`,
+        ),
+      ).toBe(true);
+      expect(shed.doorTile.row).toBe(shed.bounds.row + shed.bounds.rows - 1);
+    },
+  );
+
+  it("re-signs the park's own reception as the police station, and keeps the park", () => {
+    const { layout, byKind } = quarterOf(309);
+    const desk = roomOf(byKind, "help-desk");
+    // C7: THE COUNTER THAT WAS ALREADY THERE. The district's reception sprite
+    // stands on the room's own first tile, so this is a re-reading of the park's
+    // furniture and not a second counter beside it.
+    expect(
+      propTiles(layout, "reception").has(
+        `${String(desk.bounds.col)},${String(desk.bounds.row)}`,
+      ),
+    ).toBe(true);
+    expect(desk.bounds.rows).toBe(1);
+    expect(desk.bounds.cols).toBe(2);
+
+    // AND THE PARK IS STILL A PARK. Campus's courtyard bench row became its
+    // waiting room and lost its own label; City's did not - the bus stop is a
+    // shelter at the kerb, so the benches stay two, stay furniture, and the area
+    // sign over them still says what it always said.
+    const areas = layout.signs
+      .filter((sign) => sign.kind === "area")
+      .map((sign) => sign.text);
+    expect(areas).toContain("Park");
+    const benchSeats = [...layout.seats.values()].filter(
+      (seat) => seat.civicRoomId === roomOf(byKind, "waiting-room").civicRoomId,
+    );
+    for (const seat of benchSeats) {
+      expect(seat.chairTile.row).toBeGreaterThan(desk.bounds.row);
+    }
+  });
+
+  /**
+   * THE WALLED PAIR GETS WALL PIECES AND THE OPEN PAIR GETS NONE - City's twin
+   * of the Campus case, and the reason `pushCivicWalls` is not Campus-only.
+   *
+   * A City block raises its own walls out of the building sprites its lots carry.
+   * A civic room has no lots: measured with this quarter planned and the civic
+   * call still inside the campus-gated `pushRoomWalls`, the whole world at lod 1
+   * held ZERO `wall-iso-*` and the hospital's wall row - blocked, and walkable by
+   * nobody - drew only the crosses standing on it. So here the wall art is not
+   * decoration, it is the only thing that makes a walled civic room a building.
+   */
+  it("walls the hospital and the warehouse, and neither the shelter nor the counter", () => {
+    const { layout, byKind } = quarterOf(309);
+    const whole: OfficeTileRect = {
+      col: 0,
+      row: 0,
+      cols: layout.cols,
+      rows: layout.rows,
+    };
+    const projector = ISO_PAINTER.projector(layout);
+    const cornerKey = (col: number, row: number): string => {
+      const point = projector.project(col, row);
+      return `${String(point.x)},${String(point.y)}`;
+    };
+    const right = new Set<string>();
+    const left = new Set<string>();
+    for (const drawable of ISO_PAINTER.floor(layout, whole, 1)) {
+      if (drawable.kind !== "sprite") continue;
+      if (drawable.sprite.name === "wall-iso-right") {
+        right.add(`${String(drawable.x)},${String(drawable.y + 24)}`);
+      } else if (drawable.sprite.name === "wall-iso-left") {
+        // A left wall is drawn at `corner.x - ISO_HALF_WIDTH`, so the corner it
+        // belongs to is one tile right of where it was painted.
+        left.add(
+          `${String(drawable.x + ISO_HALF_WIDTH)},${String(drawable.y + 24)}`,
+        );
+      }
+    }
+    expect(right.size).toBeGreaterThan(0);
+
+    const ward = roomOf(byKind, "infirmary");
+    const shed = roomOf(byKind, "archive");
+    for (const walled of [ward, shed]) {
+      // ITS BACK WALL IS A WALL, every column of it.
+      for (
+        let col = walled.bounds.col;
+        col < walled.bounds.col + walled.bounds.cols;
+        col += 1
+      ) {
+        expect(
+          right.has(cornerKey(col, walled.bounds.row)),
+          `${walled.name} top row col ${String(col)} has no wall`,
+        ).toBe(true);
+      }
+      // ITS CORNER CARRIES THE LEFT WALL, and the row below it does NOT: the
+      // hospital's aisle and the shed's door are both in that column, and a wall
+      // there would brick the way in. The plan says so by leaving those tiles
+      // walkable, and this is the assertion a painter deriving walls from bounds
+      // alone would fail.
+      expect(left.has(cornerKey(walled.bounds.col, walled.bounds.row))).toBe(
+        true,
+      );
+      for (
+        let row = walled.bounds.row + 1;
+        row < walled.bounds.row + walled.bounds.rows;
+        row += 1
+      ) {
+        expect(layout.walkable[row]?.[walled.bounds.col]).toBe(true);
+        expect(
+          left.has(cornerKey(walled.bounds.col, row)),
+          `${walled.name} row ${String(row)} was walled shut`,
+        ).toBe(false);
+      }
+    }
+
+    // AND THE OPEN PAIR IS UNWALLED, both ways it can be open. The bus stop's
+    // shelter tiles are BLOCKED because a shelter is solid, so it reds a painter
+    // that reads blockedness; the police station's counter is blocked too and
+    // stands in the middle of an open park.
+    for (const open of [
+      roomOf(byKind, "waiting-room"),
+      roomOf(byKind, "help-desk"),
+    ]) {
+      expect(layout.walkable[open.bounds.row]?.[open.bounds.col]).toBe(false);
+      for (
+        let col = open.bounds.col;
+        col < open.bounds.col + open.bounds.cols;
+        col += 1
+      ) {
+        expect(
+          right.has(cornerKey(col, open.bounds.row)),
+          `${open.name} was walled at col ${String(col)}`,
+        ).toBe(false);
+      }
+      for (
+        let row = open.bounds.row;
+        row < open.bounds.row + open.bounds.rows;
+        row += 1
+      ) {
+        expect(
+          left.has(cornerKey(open.bounds.col, row)),
+          `${open.name} was walled at row ${String(row)}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  /**
+   * AND A DISTRICT THAT GREW INTO ITS CAP STAYS IN ITS OWN COLUMN BAND.
+   *
+   * This is the hazard the floor exists for, and the only way to see it is to
+   * GROW one: a district's width is frozen at its first plan, so a two-host City
+   * opened at twelve agents and grown to four hundred keeps the budget it chose
+   * when its ward was two beds wide, while the ward itself goes to eight. Without
+   * the floor that band runs out of its district and into the one beside it, and
+   * districts are side-by-side column bands with nothing between them but the
+   * ring.
+   *
+   * The bands are read off the LANES - each district's own ring column - so the
+   * boundary this asserts against is the plan's own, not a recomputed one.
+   */
+  it("keeps a district's grown quarter inside its own column band", () => {
+    const lanes: number[] = [];
+    let previous: OfficeLayout | null = null;
+    for (const n of [12, 60, 200, 400]) {
+      const epic = makeTestEpic("triage", n, 1);
+      const agents = epic.agents.map((agent, index) => ({
+        ...agent,
+        hostId: `host-${String(index % 2)}`,
+      }));
+      const partition = partitionOfficePopulation({
+        agents,
+        statusById: epic.statusById,
+        previous: null,
+      });
+      previous = planCity({
+        agents,
+        partition,
+        occupancy: new Map<string, string>(),
+        needsCapacity: [],
+        activityById: new Map<string, number>(),
+        viewport: VIEWPORT_1280,
+        previous,
+      });
+    }
+    if (previous === null) throw new Error("no grown layout");
+    const layout = previous;
+    // Two districts, so there IS a neighbour to run into.
+    expect(layout.floors.length).toBe(2);
+    for (const floor of layout.floors) {
+      const road = floor.road;
+      if (road === null) throw new Error("a district owes its lane");
+      lanes.push(road.entryTile.col);
+    }
+    const frozen = readCityFrozen(layout);
+    if (frozen === null) throw new Error("expected City's frozen packing");
+    for (const [index, floor] of layout.floors.entries()) {
+      const lane = lanes[index];
+      const district = frozen.districts.find((entry) => entry.col === lane);
+      if (district === undefined) throw new Error("no frozen district at lane");
+      // ITS OWN BUDGET IS THE LIMIT, not the neighbour's lane. The gap between
+      // districts would swallow a one-column overflow and this case would pass
+      // through the very defect it is about; the budget is the promise, and it is
+      // the FROZEN one - chosen when this district's ward was two beds wide.
+      const limit = lane + 1 + district.widthBudget;
+      for (const room of floor.civic) {
+        expect(
+          room.bounds.col,
+          `${room.name} starts left of its own lane`,
+        ).toBeGreaterThanOrEqual(lane);
+        expect(
+          room.bounds.col + room.bounds.cols,
+          `${room.name} runs past its district's frozen width`,
+        ).toBeLessThanOrEqual(limit);
+      }
+      // Non-vacuous: the grown district really did reach the capped ward, which
+      // is the width the frozen budget was not chosen for.
+      const ward = floor.civic.find((room) => room.kind === "infirmary");
+      if (ward === undefined) throw new Error("no ward");
+      expect(ward.bounds.cols).toBeGreaterThanOrEqual(9);
+    }
+  });
+
+  /**
+   * THE DISTRICT IS AT LEAST AS WIDE AS THE WIDEST BAND IT WILL EVER OWE.
+   *
+   * A width budget is FROZEN at a district's first plan, and civic capacity grows
+   * with the population - so a district sized for the twelve agents it opened with
+   * would have no room for the eight-bed ward it owes at three hundred, and its
+   * band would run out of its own column band into the district beside it. The
+   * budget therefore pays the CAP once, up front: seventeen columns for a
+   * capped ward, plus the ring either side.
+   */
+  it("floors every district's width at the capped ward, ring included", () => {
+    const small = quarterOf(12);
+    expect(small.layout.cols).toBe(19);
+    // Non-vacuous: this district's own ward is nowhere near that wide, so the
+    // floor is what is holding the width up rather than the content.
+    expect(roomOf(small.byKind, "infirmary").bounds.cols).toBeLessThan(17);
+    // And a capped ward fits inside it, at the population that has one.
+    const big = quarterOf(1000);
+    const ward = roomOf(big.byKind, "infirmary");
+    expect(ward.bounds.cols).toBe(17);
+    expect(ward.bounds.col + ward.bounds.cols).toBeLessThanOrEqual(
+      big.layout.cols,
+    );
   });
 });
