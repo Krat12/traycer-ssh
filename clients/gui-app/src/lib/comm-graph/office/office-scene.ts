@@ -2693,6 +2693,15 @@ export class OfficeScene {
     character.queueTile = null;
     character.waitMs = 0;
     character.hurrying = false;
+    // AND THE ERRAND IT WAS ON IS OVER, which every other route starter here
+    // already says: `returnToDesk`, both queue branches and `startCivicWalk`
+    // all null this out, and leaving was the one that did not. A retained
+    // target is a destination this character is no longer walking to, and
+    // anything that reads targets to find a walker then finds the wrong one -
+    // measured: an archived agent that had strolled to a bench was sent BACK TO
+    // ITS DESK by the bench's new claimant, replacing its walk to the door, and
+    // with no further sync the body never left.
+    character.errandTarget = null;
   }
 
   /**
@@ -3119,9 +3128,13 @@ export class OfficeScene {
         shortfall: "none",
       });
       if (seat === null) continue;
-      this.evictStrollerFrom(seat.seatId);
       this.startCivicWalk(character, seat);
     }
+    // AFTER every claim this sync could make, and reading the book rather than
+    // what the loop above returned - see `yieldStrollsOnTakenSeats`. A claim
+    // rebuilt by `recomputeClaims` and seated by rehome never passes through the
+    // loop at all, and its bench needs clearing just the same.
+    this.yieldStrollsOnTakenSeats();
   }
 
   /**
@@ -3148,14 +3161,30 @@ export class OfficeScene {
    * loop; an eviction deferred to a tick would leave one frame - the frame a
    * reduced-motion sync paints immediately - with both characters drawn sitting
    * on the bench. Nothing is left to observe by the time this returns.
+   *
+   * IT ASKS THE BOOK, NOT THE PASS, and the first form of this did the opposite:
+   * it took the seat the claiming loop had just handed out and looked for a
+   * stroll on that. A sync makes claims in more than one way - `recomputeClaims`
+   * rebuilds them and rehome seats their holders before this pass runs at all,
+   * and the pass then SKIPS an agent whose claim already matches what it wants -
+   * so a bench claimed by a recompute never reached the eviction and kept its
+   * duplicate. Reading the book covers every route to a claim, including ones
+   * added later, because it asks the only question that matters: does this bench
+   * now belong to somebody else.
    */
-  private evictStrollerFrom(seatId: string): void {
+  private yieldStrollsOnTakenSeats(): void {
     for (const character of this.characters.values()) {
       const target = character.errandTarget;
-      if (target === null || target.seatId !== seatId) continue;
+      if (target === null || target.seatId === null) continue;
+      // `occupant` is the INJECTIVE reading - one agent per seat - and a held
+      // civic claim puts its holder there. A bench with only a stroller on it
+      // has no occupant at all, which is the whole defect this rule answers, so
+      // an untaken bench is correctly left alone.
+      const holder = this.seats.occupant(target.seatId);
+      if (holder === null || holder === character.agentId) continue;
       // Not `onCancellableErrand`: the question is who is ON this bench or
-      // heading for it, and the answer is the same either way - the seat is
-      // about to belong to somebody else, so this errand is over.
+      // heading for it, and the answer is the same either way - the seat
+      // belongs to somebody else now, so this errand is over.
       this.returnToDesk(character);
     }
   }
