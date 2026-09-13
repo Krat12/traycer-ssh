@@ -38,7 +38,10 @@ import { sortGuiHarnessesByProviderOrder } from "@/lib/provider-ordering";
  */
 
 /** A folder group's key on this page: the harness first, then the wizard's view key. */
-export function welcomeGroupKey(harness: GuiHarnessId, viewKey: string): string {
+export function welcomeGroupKey(
+  harness: GuiHarnessId,
+  viewKey: string,
+): string {
   return `${harness}|${viewKey}`;
 }
 
@@ -229,8 +232,8 @@ function sectionFor(
     state.selected.has(key),
   ).length;
   const failure =
-    state.providerFailures.find((entry) => entry.harness === harness)
-      ?.detail ?? null;
+    state.providerFailures.find((entry) => entry.harness === harness)?.detail ??
+    null;
   return {
     harness,
     name: harnessDisplayName(harness),

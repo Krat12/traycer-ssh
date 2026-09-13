@@ -64,7 +64,9 @@ export function WelcomeProvidersPage(props: {
   // press Continue" branched on the old roster and could finish the modal
   // as `no-sessions` for a user who had just turned their one scannable
   // provider on.
-  const rosterSettling = !roster.settled;
+  // Plus this page's OWN toggle in flight, whichever host it named: the
+  // switch the user just pressed is the reason Continue should wait.
+  const rosterSettling = setEnabled.isPending || !roster.settled;
   const enabledProviderCount =
     providers?.filter((provider) => provider.enabled).length ?? 0;
 

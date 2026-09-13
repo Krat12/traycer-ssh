@@ -103,8 +103,7 @@ export function WelcomeSessionsPage(props: {
   // A run found on the host is watched, never re-submitted: attaching gives
   // the progress toast something to show once the modal finishes.
   useEffect(() => {
-    if (runInFlight || !statusQuery.isSuccess || statusQuery.isFetching)
-      return;
+    if (runInFlight || !statusQuery.isSuccess || statusQuery.isFetching) return;
     if (activeRun !== null) attachSessionImportRun(streamBinding, activeRun);
   }, [
     activeRun,
@@ -141,8 +140,8 @@ export function WelcomeSessionsPage(props: {
     return (
       <>
         <WelcomeSessionsNotice testId="welcome-sessions-already-running">
-          An import is already running on this machine. You can pick up where
-          it leaves off in your task list.
+          An import is already running on this machine. You can pick up where it
+          leaves off in your task list.
         </WelcomeSessionsNotice>
         <WelcomeModalFooter
           leading={null}

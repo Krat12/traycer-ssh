@@ -78,7 +78,10 @@ function missingFolder(
 function reduce(
   actions: ReadonlyArray<SessionImportWizardAction>,
 ): SessionImportWizardState {
-  return actions.reduce(sessionImportWizardReducer, SESSION_IMPORT_INITIAL_STATE);
+  return actions.reduce(
+    sessionImportWizardReducer,
+    SESSION_IMPORT_INITIAL_STATE,
+  );
 }
 
 // Folder A (a repo): claude×2 + codex×1 + one claude row already imported.
@@ -88,22 +91,47 @@ const FIXTURE: ReadonlyArray<SessionImportWizardAction> = [
   {
     kind: "scanGroupArrived",
     group: folder("/repo/b", false, [
-      candidate({ harness: "claude", id: "b1", state: UNREADABLE, updatedAt: 5 }),
+      candidate({
+        harness: "claude",
+        id: "b1",
+        state: UNREADABLE,
+        updatedAt: 5,
+      }),
     ]),
   },
   {
     kind: "scanGroupArrived",
     group: folder("/repo/a", true, [
-      candidate({ harness: "claude", id: "a1", state: IMPORTABLE, updatedAt: 3 }),
-      candidate({ harness: "codex", id: "a2", state: IMPORTABLE, updatedAt: 2 }),
-      candidate({ harness: "claude", id: "a3", state: IMPORTABLE, updatedAt: 1 }),
+      candidate({
+        harness: "claude",
+        id: "a1",
+        state: IMPORTABLE,
+        updatedAt: 3,
+      }),
+      candidate({
+        harness: "codex",
+        id: "a2",
+        state: IMPORTABLE,
+        updatedAt: 2,
+      }),
+      candidate({
+        harness: "claude",
+        id: "a3",
+        state: IMPORTABLE,
+        updatedAt: 1,
+      }),
       candidate({ harness: "claude", id: "a4", state: IMPORTED, updatedAt: 9 }),
     ]),
   },
   {
     kind: "scanGroupArrived",
     group: missingFolder("/gone", [
-      candidate({ harness: "claude", id: "g1", state: IMPORTABLE, updatedAt: 4 }),
+      candidate({
+        harness: "claude",
+        id: "g1",
+        state: IMPORTABLE,
+        updatedAt: 4,
+      }),
     ]),
   },
 ];
@@ -159,7 +187,11 @@ describe("buildWelcomeSessionsView", () => {
     );
     expect(allKeys).not.toContain("claude:a4");
     expect(allKeys).toContain("claude:b1");
-    expect(claude.importableKeys).toEqual(["claude:a1", "claude:a3", "claude:g1"]);
+    expect(claude.importableKeys).toEqual([
+      "claude:a1",
+      "claude:a3",
+      "claude:g1",
+    ]);
     const folderB = claude.groups[1];
     if (folderB === undefined) throw new Error("no folder b");
     expect(groupImportableKeys(folderB)).toEqual([]);

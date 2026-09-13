@@ -34,9 +34,11 @@ const fixtures = vi.hoisted(() => ({
   resolved: true,
   isError: false,
   isFetching: false,
-  /** When the list last read successfully; the roster's freshness stamp. */
-  dataUpdatedAt: 1_000,
+  /** A refetch is paused (offline): neither idle nor fetching. */
+  paused: false,
   refetch: vi.fn(),
+  /** The host the list is keyed on; toggles name theirs in `onMutate`. */
+  hostId: "host-a",
 }));
 
 vi.mock("@/hooks/providers/use-providers-list-query", () => ({
@@ -45,10 +47,22 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
     isPending: !fixtures.resolved && !fixtures.isError,
     isError: fixtures.isError,
     isFetching: fixtures.isFetching,
-    fetchStatus: fixtures.isFetching ? "fetching" : "idle",
-    dataUpdatedAt: fixtures.resolved ? fixtures.dataUpdatedAt : 0,
+    fetchStatus: fixtures.isFetching
+      ? "fetching"
+      : fixtures.paused
+        ? "paused"
+        : "idle",
+    status: fixtures.isError
+      ? "error"
+      : fixtures.resolved
+        ? "success"
+        : "pending",
     refetch: fixtures.refetch,
   }),
+}));
+
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => fixtures.hostId,
 }));
 
 /**
@@ -63,6 +77,8 @@ const setEnabledFixture = vi.hoisted(() => ({
     readonly resolve: () => void;
     readonly reject: (error: Error) => void;
   } | null,
+  /** The host the toggle is aimed at - what `useHostScopedMutation` captures. */
+  hostId: "host-a",
 }));
 
 vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
@@ -72,6 +88,11 @@ vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
     useProvidersSetEnabled: () =>
       useMutation({
         mutationKey: providersMutationKeys.setEnabled(),
+        // The shape `useHostScopedMutation` captures at `onMutate`.
+        onMutate: () => ({
+          hostId: setEnabledFixture.hostId,
+          captured: undefined,
+        }),
         mutationFn: (variables: unknown) => {
           setEnabledFixture.requests.push(variables);
           return new Promise<void>((resolve, reject) => {
@@ -86,6 +107,7 @@ import { WithTestQueryClient } from "@/__tests__/with-test-query-client";
 import { WelcomeProvidersPage } from "@/components/onboarding/welcome/welcome-providers-page";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ORDERED_PROVIDERS } from "@/lib/provider-ordering";
+import { useWelcomeRosterFreshnessStore } from "@/stores/onboarding/welcome-roster-freshness-store";
 
 const UNKNOWN_AUTH: ProviderAuth = {
   status: "unknown",
@@ -255,10 +277,13 @@ describe("<WelcomeProvidersPage />", () => {
     fixtures.resolved = true;
     fixtures.isError = false;
     fixtures.isFetching = false;
-    fixtures.dataUpdatedAt = 1_000;
+    fixtures.paused = false;
+    fixtures.hostId = "host-a";
     fixtures.refetch.mockReset();
     setEnabledFixture.requests.length = 0;
     setEnabledFixture.deferred = null;
+    setEnabledFixture.hostId = "host-a";
+    useWelcomeRosterFreshnessStore.getState().reset();
     onContinueMock.mockReset();
     onSkipMock.mockReset();
   });
@@ -459,7 +484,14 @@ describe("<WelcomeProvidersPage />", () => {
   const continueButton = (): HTMLElement =>
     screen.getByRole("button", { name: "Continue" });
 
-  it("withholds Continue through a toggle in flight AND the providers.list refresh it triggers", async () => {
+  const grokEnabled = (): ProviderCliState[] =>
+    defaultProviders().map((provider) =>
+      provider.providerId === "grok"
+        ? { ...provider, enabled: true }
+        : provider,
+    );
+
+  it("withholds Continue through a toggle in flight AND until a fetch that started after its success completes", async () => {
     const { onContinue } = renderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(false);
 
@@ -472,29 +504,34 @@ describe("<WelcomeProvidersPage />", () => {
     fireEvent.click(continueButton());
     expect(onContinue).not.toHaveBeenCalled();
 
-    // The mutation settled and invalidated the list, which is refetching:
-    // still not the roster Continue should read.
+    // The refetch the toggle's success invalidates into starts BEFORE the
+    // mutation reports success (the invalidation runs inside its
+    // onSuccess), so this fetch began under the old generation.
     fixtures.isFetching = true;
+    rerenderPage();
     await settleRequest("success");
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(true);
     fireEvent.click(continueButton());
     expect(onContinue).not.toHaveBeenCalled();
 
-    // The refresh finished but did NOT land a newer roster (a refetch that
-    // was cancelled, or one whose result the cache discarded): the roster
-    // is still the one from before the toggle, so Continue stays withheld.
+    // It lands. It is not the receipt - it was not stamped after the toggle
+    // - so the hook asks for one more fetch and Continue stays withheld.
     fixtures.isFetching = false;
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(true);
+    await waitFor(() => {
+      expect(fixtures.refetch).toHaveBeenCalledTimes(1);
+    });
+    // Asked for once, not on every render.
+    rerenderPage();
+    expect(fixtures.refetch).toHaveBeenCalledTimes(1);
 
-    // The refreshed roster landed, stamped after the toggle.
-    fixtures.dataUpdatedAt = Date.now() + 1;
-    fixtures.providers = defaultProviders().map((provider) =>
-      provider.providerId === "grok"
-        ? { ...provider, enabled: true }
-        : provider,
-    );
+    // That fetch starts under the new generation and lands the new roster.
+    fixtures.isFetching = true;
+    rerenderPage();
+    fixtures.isFetching = false;
+    fixtures.providers = grokEnabled();
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(false);
     expect(switchFor("Grok").getAttribute("aria-checked")).toBe("true");
@@ -506,34 +543,77 @@ describe("<WelcomeProvidersPage />", () => {
     const { onContinue } = renderPage();
     fireEvent.click(switchFor("Grok"));
     await sentRequest(0);
-    fixtures.isFetching = true;
     await settleRequest("success");
+    // The refetch starts after the success this time, and fails: TanStack
+    // keeps the OLD data and drops isFetching.
+    fixtures.isFetching = true;
     rerenderPage();
-
-    // The refresh failed: TanStack keeps the OLD data, drops isFetching.
     fixtures.isFetching = false;
     fixtures.isError = true;
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(true);
     fireEvent.click(continueButton());
     expect(onContinue).not.toHaveBeenCalled();
-    // Cached data or not, the way forward is the retry.
+    // Cached data or not, the way forward is the retry - the hook does not
+    // fetch on its own over an error.
     expect(screen.getByTestId("welcome-providers-error")).not.toBeNull();
     expect(switchFor("Grok").getAttribute("aria-checked")).toBe("false");
+    expect(fixtures.refetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(fixtures.refetch).toHaveBeenCalledTimes(1);
 
     // The retry succeeds with the post-toggle roster.
     fixtures.isError = false;
-    fixtures.dataUpdatedAt = Date.now() + 1;
-    fixtures.providers = defaultProviders().map((provider) =>
-      provider.providerId === "grok"
-        ? { ...provider, enabled: true }
-        : provider,
-    );
+    fixtures.isFetching = true;
+    rerenderPage();
+    fixtures.isFetching = false;
+    fixtures.providers = grokEnabled();
     rerenderPage();
     expect(screen.queryByTestId("welcome-providers-error")).toBeNull();
     expect(continueButton().hasAttribute("disabled")).toBe(false);
+    fireEvent.click(continueButton());
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("a paused refresh is not a receipt", async () => {
+    const { onContinue } = renderPage();
+    fireEvent.click(switchFor("Grok"));
+    await sentRequest(0);
+    await settleRequest("success");
+    fixtures.isFetching = true;
+    rerenderPage();
+    // Offline: the fetch is paused, neither reading nor failing.
+    fixtures.isFetching = false;
+    fixtures.paused = true;
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.click(continueButton());
+    expect(onContinue).not.toHaveBeenCalled();
+    expect(fixtures.refetch).not.toHaveBeenCalled();
+    // Back online: it resumes and lands.
+    fixtures.paused = false;
+    fixtures.isFetching = true;
+    rerenderPage();
+    fixtures.isFetching = false;
+    fixtures.providers = grokEnabled();
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("a toggle aimed at ANOTHER host is not this roster's business", async () => {
+    setEnabledFixture.hostId = "host-b";
+    const { onContinue } = renderPage();
+    fireEvent.click(switchFor("Grok"));
+    await sentRequest(0);
+    await waitFor(() => {
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+    });
+    await settleRequest("success");
+    // No refresh of host A's list is owed, and none is asked for.
+    await waitFor(() => {
+      expect(continueButton().hasAttribute("disabled")).toBe(false);
+    });
+    expect(fixtures.refetch).not.toHaveBeenCalled();
     fireEvent.click(continueButton());
     expect(onContinue).toHaveBeenCalledTimes(1);
   });

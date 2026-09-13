@@ -74,11 +74,13 @@ const providersFixture = vi.hoisted(() => ({
   resolved: true,
   /** A refresh of an already-resolved list is in flight. */
   refreshing: false,
-  /** When the list last read successfully; the roster's freshness stamp. */
-  dataUpdatedAt: 1_000,
   /** The last read of an already-resolved list failed (data is kept). */
   errored: false,
   refetch: vi.fn(),
+}));
+
+vi.mock("@/hooks/host/use-addressable-host-id", () => ({
+  useAddressableHostId: () => "host-a",
 }));
 
 vi.mock("@/hooks/providers/use-providers-list-query", () => ({
@@ -90,7 +92,7 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
           isError: providersFixture.errored,
           isFetching: providersFixture.refreshing,
           fetchStatus: providersFixture.refreshing ? "fetching" : "idle",
-          dataUpdatedAt: providersFixture.dataUpdatedAt,
+          status: providersFixture.errored ? "error" : "success",
           refetch: providersFixture.refetch,
         }
       : {
@@ -99,7 +101,7 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
           isError: false,
           isFetching: true,
           fetchStatus: "fetching",
-          dataUpdatedAt: 0,
+          status: "pending",
           refetch: providersFixture.refetch,
         },
 }));
@@ -122,6 +124,8 @@ vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
     useProvidersSetEnabled: () =>
       useMutation({
         mutationKey: providersMutationKeys.setEnabled(),
+        // The shape `useHostScopedMutation` captures at `onMutate`.
+        onMutate: () => ({ hostId: "host-a", captured: undefined }),
         mutationFn: (variables: unknown) => {
           setEnabled.requests.push(variables);
           return new Promise<void>((resolve) => {
@@ -214,6 +218,7 @@ import {
   useOnboardingFlowStore,
 } from "@/stores/onboarding/onboarding-flow-store";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
+import { useWelcomeRosterFreshnessStore } from "@/stores/onboarding/welcome-roster-freshness-store";
 
 function providerState(
   providerId: ProviderId,
@@ -318,8 +323,8 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     ];
     providersFixture.resolved = true;
     providersFixture.refreshing = false;
-    providersFixture.dataUpdatedAt = 1_000;
     providersFixture.errored = false;
+    useWelcomeRosterFreshnessStore.getState().reset();
     providersFixture.refetch.mockReset();
     setEnabled.requests.length = 0;
     setEnabled.resolve = null;
@@ -548,8 +553,10 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
         expect(continueButton().hasAttribute("disabled")).toBe(true);
       });
 
-      // Mutation settled; the list it invalidated is refetching.
+      // The refetch the success invalidates into starts before the mutation
+      // reports success, so it is stamped with the old generation.
       providersFixture.refreshing = true;
+      view.rerender(<OnboardingFlowHost />);
       const resolve = setEnabled.resolve;
       if (resolve === null) throw new Error("no toggle in flight");
       await act(async () => {
@@ -562,17 +569,31 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(flow().modal).toBe("in-progress");
       expect(flow().modalPage).toBe(1);
 
-      // The refresh FAILED and left the pre-toggle roster: still withheld,
+      // It lands, but is no receipt: the hook asks for one more fetch.
+      providersFixture.refreshing = false;
+      view.rerender(<OnboardingFlowHost />);
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      await waitFor(() => {
+        expect(providersFixture.refetch).toHaveBeenCalledTimes(1);
+      });
+
+      // That fetch FAILS and leaves the pre-toggle roster: still withheld,
       // and the retry is on offer even though data is cached.
+      providersFixture.refreshing = true;
+      view.rerender(<OnboardingFlowHost />);
       providersFixture.refreshing = false;
       providersFixture.errored = true;
       view.rerender(<OnboardingFlowHost />);
       expect(continueButton().hasAttribute("disabled")).toBe(true);
       expect(screen.getByRole("button", { name: "Try again" })).not.toBeNull();
+      expect(providersFixture.refetch).toHaveBeenCalledTimes(1);
 
-      // The refreshed roster: Claude is on, and the scan for it starts.
+      // The retry lands the refreshed roster: Claude is on, and the scan
+      // for it starts.
       providersFixture.errored = false;
-      providersFixture.dataUpdatedAt = Date.now() + 1;
+      providersFixture.refreshing = true;
+      view.rerender(<OnboardingFlowHost />);
+      providersFixture.refreshing = false;
       providersFixture.providers = [
         providerState("cursor", true),
         providerState("claude-code", true),

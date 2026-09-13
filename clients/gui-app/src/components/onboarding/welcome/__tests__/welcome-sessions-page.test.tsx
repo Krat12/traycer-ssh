@@ -274,7 +274,9 @@ function playSharedFolders(): void {
         importable("claude", "c2", "Claude two"),
       ]),
     );
-    callbacks().onGroup(folder("/repo/b", [importable("codex", "x2", "Codex two")]));
+    callbacks().onGroup(
+      folder("/repo/b", [importable("codex", "x2", "Codex two")]),
+    );
     callbacks().onComplete(ZERO_TOTALS);
   });
 }
@@ -288,7 +290,9 @@ function section(harness: GuiHarnessId): HTMLElement {
 }
 
 function sectionCheckbox(harness: GuiHarnessId): HTMLElement {
-  return within(section(harness)).getByTestId("welcome-sessions-section-select");
+  return within(section(harness)).getByTestId(
+    "welcome-sessions-section-select",
+  );
 }
 
 function folderGroup(harness: GuiHarnessId, path: string): HTMLElement {
@@ -366,7 +370,9 @@ describe("<WelcomeSessionsPage />", () => {
     // Provider header: all Claude rows off, Codex untouched.
     expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(sectionCheckbox("claude"));
-    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("false");
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe(
+      "false",
+    );
     expect(sectionCheckbox("codex").getAttribute("aria-checked")).toBe("true");
     expect(importButton().textContent).toBe("Import 2 tasks");
 
@@ -378,7 +384,9 @@ describe("<WelcomeSessionsPage />", () => {
       ),
     );
     expect(sectionCheckbox("codex").getAttribute("aria-checked")).toBe("mixed");
-    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("false");
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe(
+      "false",
+    );
     expect(importButton().textContent).toBe("Import 1 task");
 
     // A row: expand Claude's folder A and tick one row back on.
@@ -394,7 +402,9 @@ describe("<WelcomeSessionsPage />", () => {
     const firstRow = rows[0];
     if (firstRow === undefined) throw new Error("no first row");
     fireEvent.click(firstRow);
-    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("mixed");
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe(
+      "mixed",
+    );
     expect(importButton().textContent).toBe("Import 2 tasks");
     // Expansion is per provider: Codex's slice of the same folder stays shut.
     expect(
@@ -506,9 +516,9 @@ describe("<WelcomeSessionsPage />", () => {
     stream.support = "unsupported";
     const page = renderPage();
     expect(scanClient.callbacks).toBeNull();
-    expect(
-      screen.getByTestId("welcome-sessions-unsupported").textContent,
-    ).toBe("This machine can't import sessions.");
+    expect(screen.getByTestId("welcome-sessions-unsupported").textContent).toBe(
+      "This machine can't import sessions.",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(page.onNoSessions).toHaveBeenCalledTimes(1);
   });
@@ -546,7 +556,9 @@ describe("<WelcomeSessionsPage />", () => {
 
     // ...and the user can still take them out.
     fireEvent.click(sectionCheckbox("claude"));
-    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe("false");
+    expect(sectionCheckbox("claude").getAttribute("aria-checked")).toBe(
+      "false",
+    );
     expect(importButton().textContent).toBe("Import 2 tasks");
     fireEvent.click(importButton());
     expect(startSessionImportRunMock.mock.calls[0]?.[0]?.selections).toEqual([
