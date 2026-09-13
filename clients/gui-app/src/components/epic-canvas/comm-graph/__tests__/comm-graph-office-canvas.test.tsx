@@ -1996,6 +1996,92 @@ function sixNumberTransform(
   return [a, b, c, d, e, f];
 }
 
+/**
+ * EVERY 2D-context method that moves the CTM. The stepper below must have a
+ * rule for each one, and throws rather than shrugging when it does not.
+ *
+ * The list is the tripwire: a context op added here without a branch, or an
+ * argument shape the branch cannot read, stops the replay loudly instead of
+ * returning the previous matrix and letting a case assert a transform that
+ * was never in force. That silence is what let a rotation around the beacon
+ * through - the recorder logged `rotate`, the stepper ignored it, and the
+ * reconstructed CTM stayed the DPR-only one while the real paint turned.
+ */
+const TRANSFORM_AFFECTING_METHODS: ReadonlySet<string> = new Set([
+  "save",
+  "restore",
+  "setTransform",
+  "resetTransform",
+  "scale",
+  "translate",
+  "transform",
+  "rotate",
+]);
+
+/** The six numbers a matrix op was called with, or a throw naming the op. */
+function requiredTransformArgs(call: RecordedCall): CanvasTransform {
+  const six = sixNumberTransform(call.args);
+  if (six !== null) return six;
+  // The `DOMMatrix` / `DOMMatrix2DInit` overload is VALID and is REJECTED
+  // rather than modelled, deliberately. A reader for it would have to pull
+  // `a`…`f` off the argument, and those are prototype getters on a real
+  // `DOMMatrix` - so the obvious implementation is right for a plain init
+  // object and silently the identity for an actual matrix, which is the
+  // same silence this commit exists to remove, moved one level down.
+  // Nothing in the office renderer uses the form; if something ever does,
+  // this throw is the prompt to model it properly rather than to guess.
+  throw new Error(
+    `stepCanvasTransform: ${call.method} was not called with six numbers ` +
+      "(the DOMMatrix form is not modelled)",
+  );
+}
+
+/** Two numeric arguments, or a throw naming the op that wanted them. */
+function requiredNumberPair(call: RecordedCall): readonly [number, number] {
+  const first = call.args[0];
+  const second = call.args[1];
+  if (typeof first !== "number" || typeof second !== "number") {
+    throw new Error(`stepCanvasTransform: ${call.method} needs two numbers`);
+  }
+  return [first, second];
+}
+
+/**
+ * The ops that COMPOSE with the matrix already in force, rather than
+ * replacing it - which is what a real context does with each of them.
+ */
+function composeCanvasTransform(
+  current: CanvasTransform,
+  call: RecordedCall,
+): CanvasTransform {
+  if (call.method === "scale") {
+    const [sx, sy] = requiredNumberPair(call);
+    return multiplyCanvasTransform(current, [sx, 0, 0, sy, 0, 0]);
+  }
+  if (call.method === "translate") {
+    const [tx, ty] = requiredNumberPair(call);
+    return multiplyCanvasTransform(current, [1, 0, 0, 1, tx, ty]);
+  }
+  if (call.method === "rotate") {
+    const radians = call.args[0];
+    if (typeof radians !== "number") {
+      throw new Error("stepCanvasTransform: rotate needs a number");
+    }
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    return multiplyCanvasTransform(current, [cos, sin, -sin, cos, 0, 0]);
+  }
+  if (call.method === "transform") {
+    return multiplyCanvasTransform(current, requiredTransformArgs(call));
+  }
+  if (TRANSFORM_AFFECTING_METHODS.has(call.method)) {
+    throw new Error(
+      `stepCanvasTransform models no rule for ${call.method}, which moves the CTM`,
+    );
+  }
+  return current;
+}
+
 function stepCanvasTransform(
   current: CanvasTransform,
   stack: CanvasTransform[],
@@ -2009,27 +2095,9 @@ function stepCanvasTransform(
     const previous = stack.pop();
     return previous ?? current;
   }
-  if (call.method === "setTransform") {
-    return sixNumberTransform(call.args) ?? current;
-  }
+  if (call.method === "setTransform") return requiredTransformArgs(call);
   if (call.method === "resetTransform") return CANVAS_IDENTITY;
-  if (call.method === "scale") {
-    const sx = call.args[0];
-    const sy = call.args[1];
-    if (typeof sx !== "number" || typeof sy !== "number") return current;
-    return multiplyCanvasTransform(current, [sx, 0, 0, sy, 0, 0]);
-  }
-  if (call.method === "translate") {
-    const tx = call.args[0];
-    const ty = call.args[1];
-    if (typeof tx !== "number" || typeof ty !== "number") return current;
-    return multiplyCanvasTransform(current, [1, 0, 0, 1, tx, ty]);
-  }
-  if (call.method === "transform") {
-    const extra = sixNumberTransform(call.args);
-    return extra === null ? current : multiplyCanvasTransform(current, extra);
-  }
-  return current;
+  return composeCanvasTransform(current, call);
 }
 
 /**
