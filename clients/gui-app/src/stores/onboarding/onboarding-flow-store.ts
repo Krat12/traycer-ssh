@@ -389,20 +389,24 @@ function persistedFlowData(persistedState: unknown): OnboardingFlowData {
     context: persistedContext(persistedState.context),
     legacyCompleted: persistedState.legacyCompleted === true,
   };
-  if (
+  // The one cross-field invariant: a running (active or paused) chain names
+  // an active tour. Two ways a blob breaks it - the id names a tour that is
+  // not active, or there is no usable id at all (missing, or a tour a later
+  // build retired, which validation turned into null) - and both get the
+  // same repair, because a running chain with no selectable step is one that
+  // can neither advance nor resume, and never settles. A valid paused
+  // checkpoint - id, step and context - is kept exactly.
+  const hasActiveTour =
     data.activeTourId !== null &&
-    data.tours[data.activeTourId].status !== "active"
-  ) {
-    return {
-      ...data,
-      activeTourId: null,
-      chain:
-        data.chain === "active" || data.chain === "paused"
-          ? "pending"
-          : data.chain,
-    };
-  }
-  return data;
+    data.tours[data.activeTourId].status === "active";
+  if (hasActiveTour) return data;
+  const chainRunning = data.chain === "active" || data.chain === "paused";
+  if (data.activeTourId === null && !chainRunning) return data;
+  return {
+    ...data,
+    activeTourId: null,
+    chain: chainRunning ? "pending" : data.chain,
+  };
 }
 
 /**

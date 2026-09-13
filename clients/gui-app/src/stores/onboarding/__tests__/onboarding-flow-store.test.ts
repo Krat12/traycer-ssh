@@ -460,6 +460,122 @@ describe("useOnboardingFlowStore", () => {
       expect(state.activeTourId).toBe("add-folder");
       expect(state.chain).toBe("active");
     });
+
+    it("keeps a valid paused checkpoint exactly, and resumeChain picks it up", async () => {
+      localStorage.setItem(
+        FLOW_KEY,
+        JSON.stringify({
+          version: 1,
+          state: {
+            modal: "done",
+            modalPage: 1,
+            branch: "no-sessions",
+            chain: "paused",
+            chainScope: "branch",
+            activeTourId: "terminal-mode",
+            tours: {
+              "add-folder": { status: "done", stepId: null, completedAt: 1 },
+              "terminal-mode": {
+                status: "active",
+                stepId: "terminal-mode",
+                completedAt: null,
+              },
+            },
+            context: {
+              draftId: "d1",
+              epicId: "e1",
+              tabId: "t1",
+              hostId: "h1",
+              attemptId: "a1",
+            },
+            legacyCompleted: false,
+          },
+        }),
+      );
+
+      await useOnboardingFlowStore.persist.rehydrate();
+
+      const state = useOnboardingFlowStore.getState();
+      expect(state.chain).toBe("paused");
+      expect(state.activeTourId).toBe("terminal-mode");
+      expect(tour("terminal-mode")).toEqual({
+        status: "active",
+        stepId: "terminal-mode",
+        completedAt: null,
+      });
+      expect(state.context).toEqual({
+        draftId: "d1",
+        epicId: "e1",
+        tabId: "t1",
+        hostId: "h1",
+        attemptId: "a1",
+      });
+      expect(selectChainResumable(data())).toBe(true);
+
+      useOnboardingFlowStore.getState().resumeChain();
+      expect(useOnboardingFlowStore.getState().chain).toBe("active");
+      expect(selectActiveStep(data())).toEqual({
+        tourId: "terminal-mode",
+        stepId: "terminal-mode",
+      });
+    });
+
+    // A running chain with no usable active id can neither advance nor
+    // resume and never settles, so it is repaired to pending - whether the
+    // id is missing or names a tour a later build retired.
+    it.each([
+      ["missing", undefined],
+      ["unknown", "retired-tour"],
+    ] as const)(
+      "repairs a %s activeTourId on a running chain to pending",
+      async (_label, activeTourId) => {
+        for (const chain of ["active", "paused"] as const) {
+          localStorage.setItem(
+            FLOW_KEY,
+            JSON.stringify({
+              version: 1,
+              state: {
+                modal: "done",
+                branch: "no-sessions",
+                chain,
+                activeTourId,
+                tours: {
+                  "add-folder": {
+                    status: "active",
+                    stepId: "add-folder",
+                    completedAt: null,
+                  },
+                },
+              },
+            }),
+          );
+
+          await useOnboardingFlowStore.persist.rehydrate();
+
+          const state = useOnboardingFlowStore.getState();
+          expect(state.activeTourId, chain).toBeNull();
+          expect(state.chain, chain).toBe("pending");
+          // The tour rows themselves are not touched by the repair.
+          expect(tour("add-folder").status).toBe("active");
+        }
+      },
+    );
+
+    it("leaves a settled chain with no activeTourId alone", async () => {
+      localStorage.setItem(
+        FLOW_KEY,
+        JSON.stringify({
+          version: 1,
+          state: { modal: "done", chain: "completed", activeTourId: null },
+        }),
+      );
+
+      await useOnboardingFlowStore.persist.rehydrate();
+
+      const state = useOnboardingFlowStore.getState();
+      expect(state.chain).toBe("completed");
+      expect(state.activeTourId).toBeNull();
+    });
   });
 
   describe("migrateLegacyOnboardingKey", () => {
