@@ -18,7 +18,6 @@ import {
   SPEECH_MODEL_DOWNLOADING_POLL_LANE,
 } from "@/lib/host-rpc-policy/host-method-policy-table";
 import { createAppQueryClient } from "@/lib/query-client";
-import { getConditionPollEpisodeCoordinator } from "@/lib/query/condition-poll-episode-coordinator";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 
 const hostClientMock = vi.hoisted(() => ({
