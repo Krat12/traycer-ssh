@@ -26,13 +26,21 @@
  *   drawing step, given a reading too long for the room, centres it anyway and
  *   paints the pod next door. A sign that declares a ladder comes down it here,
  *   where the measured face is, and is dropped rather than drawn over its
- *   neighbour when even the last rung is too wide.
+ *   neighbour when even the last rung is too wide. The one exception is a
+ *   CIVIC sign, whose last rung is the room's own word: a ward is an area with
+ *   floor around it rather than one of a dense row of pods, so its name
+ *   overflows its tiles exactly as `CAFETERIA` always has.
+ * - **A civic sign says what is inside the room.** Its counter is read off the
+ *   seat book and the partition at the cursor, never written by a plan, and
+ *   one ward's sign carries a beacon whose frame this module chooses.
  */
 import type { RoleClaim } from "@traycer/protocol/persistence/epic/role-claims";
 import { officeFloorName } from "@/lib/comm-graph/office/office-floor-name";
 import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type {
   OfficeAgentStatus,
+  OfficeCivicRoom,
+  OfficeCivicTally,
   OfficeFloor,
   OfficeLod,
   OfficePoint,
@@ -52,6 +60,15 @@ export interface OfficeSignToDraw {
   readonly subtext: string | null;
   /** The sign's own tile, projected. Both the plate and its text hang off this. */
   readonly anchor: OfficePoint;
+  /**
+   * Which frame of the beacon this sign carries, or `null` for the signs that
+   * carry none - which is all of them but one ward's.
+   *
+   * A NUMBER RATHER THAN A SPRITE NAME, because the art is the renderer's and
+   * the cadence is this module's: the resolver is where the room's occupancy
+   * and the clock meet, and it has no business naming pixel maps.
+   */
+  readonly sirenFrame: 0 | 1 | null;
 }
 
 /** A storey's name over its stairwell, already projected. */
@@ -507,6 +524,212 @@ export function officeBoardText(args: {
   });
 }
 
+// ---- A civic room's sign -------------------------------------------- //
+//
+// The one sign that says what is INSIDE the room it names, which is why it is
+// resolved here beside the boards rather than written by a plan: `Infirmary`
+// is a plan fact, `3 of 4` is a fact about right now, and a counter baked into
+// the lettering at plan time is a number that stops being true on the next
+// sync.
+
+/**
+ * The band from which a civic sign carries its counter.
+ *
+ * At office zoom the room itself is the reading - three beds with somebody on
+ * two of them - and the plate is already competing with every amenity sign on
+ * the storey. Close-up is where a number is worth the pixels, and it is the
+ * same band the role claims under a plate appear at.
+ */
+const OFFICE_SIGN_COUNTER_LOD: OfficeLod = 2;
+
+/**
+ * HOW LONG ONE FRAME OF A WARD'S BEACON IS UP.
+ *
+ * Mission control has no street, so no ambulance can come for the agent lying
+ * in its medbay (C6) - the light on the ward's own sign is the whole of the
+ * alarm there. A quarter-second is the vehicles' own cadence, stated once
+ * here because the two are meant to read as the same light.
+ */
+export const OFFICE_SIREN_FRAME_MS = 250;
+
+/**
+ * WHAT A SIGN NEEDS TO KNOW ABOUT TIME, which is one sign's whole reason for
+ * asking: the office's own animation clock, and whether the person watching
+ * asked for less motion.
+ *
+ * The two travel together because neither is any use to a sign alone - a clock
+ * with no preference beside it would blink at a reader who asked it not to,
+ * and a preference with no clock could not blink at all.
+ */
+export interface OfficeSignClock {
+  /** The scene's animation clock (`OfficeScene.animationClockMs`). */
+  readonly nowMs: number;
+  /** `prefers-reduced-motion`, as the scene was last synced with. */
+  readonly reducedMotion: boolean;
+}
+
+/**
+ * THE BEACON'S TWO FRAMES, as a contract with the art: **0 is the dark lens
+ * and 1 is the lit one.**
+ *
+ * Three states have to be told apart with two frames, which is what fixes the
+ * meaning of each:
+ *
+ * - an EMPTY ward is frame 0 at every clock - a lamp that is there and is not
+ *   telling anybody to hurry;
+ * - an OCCUPIED ward alternates, which is the alarm;
+ * - an occupied ward under REDUCED MOTION holds frame 1. Somebody who asked
+ *   for less motion should not be shown a flashing sign, and holding the dark
+ *   frame instead would make an occupied ward indistinguishable from an empty
+ *   one for exactly the reader who cannot watch it blink.
+ */
+const SIREN_DARK_FRAME = 0;
+const SIREN_LIT_FRAME = 1;
+
+/**
+ * WHAT ONE CIVIC SIGN COUNTS, or `null` where its room counts nothing.
+ *
+ * Three rules, one per kind that has one:
+ *
+ * - a ward or a waiting room says how many of ITS OWN seats are taken, because
+ *   "is there a bed free" is the question somebody looking at it has;
+ * - the archive says how many records it holds, which is its whole content
+ *   (C5: no crate per agent, the number is the room);
+ * - the help desk says nothing. The queue standing in front of it is the
+ *   count, drawn at full size, and a number over it would be the same fact
+ *   said twice.
+ */
+function civicCounterOf(
+  room: OfficeCivicRoom,
+  tally: OfficeCivicTally,
+): string | null {
+  if (room.kind === "help-desk") return null;
+  if (room.kind === "archive") {
+    return `${tally.archivedByHost.get(room.hostId) ?? 0}`;
+  }
+  // A room a view could not fit any seats into counts nothing rather than
+  // saying `0 of 0`, which reads as a fault in the floor plan.
+  if (room.seatIds.length === 0) return null;
+  const taken = tally.occupiedByRoom.get(room.civicRoomId) ?? 0;
+  return `${taken} of ${room.seatIds.length}`;
+}
+
+/**
+ * ONE CIVIC SIGN AT TWO LENGTHS, widest first: the room and its count, then
+ * the room alone.
+ *
+ * **THE WORD IS THE FLOOR.** A civic sign is never dropped and never comes
+ * down to a glyph: a room's name is the one thing on it that is true at every
+ * width, and a civic room is an AREA - every `area` plate on a Floor storey
+ * already says `CAFETERIA` across two tiles of wall and overflows them without
+ * anybody minding. What a plate is dropped for is two POD plates overprinting
+ * each other in a dense row, which a ward and a lounge two columns apart are
+ * not. So the COUNTER is the only rung that gives way, and the help desk - two
+ * tiles of counter row, `Front desk` at 76 px against 51 at close-up - reads
+ * its own name rather than `…` at every zoom in every view.
+ */
+function civicRungs(
+  name: string,
+  counter: string | null,
+): ReadonlyArray<string> {
+  if (counter === null) return [name];
+  return [`${name} · ${counter}`, name];
+}
+
+/**
+ * WHAT ONE CIVIC SIGN SAYS at this band and this zoom. Never `null`: see the
+ * ladder above - the room's word is drawn whether or not it fits.
+ *
+ * Exported for the same reason `officeBoardText` is: the rule is worth testing
+ * without a camera around it, and a view's own regression should be able to
+ * call the real resolver rather than a copy of it.
+ *
+ * NO CHARACTER BUDGET, and that is deliberate rather than an oversight. The
+ * budget on a NAME plate (`plateMaxChars`) exists to keep the ladder in step
+ * with the renderer's own ellipsis - it cuts a name-bearing plate to twelve
+ * characters after the reading has been chosen, so a rung longer than that
+ * would come out as `BULLPEN · 9…`. A civic sign is a SUMMARY, like a board:
+ * the renderer draws it as chosen and truncates nothing, so the only budget
+ * that applies to it is the one the room's own tiles impose. Move one half and
+ * the other has to move with it; they are `signPlateText`'s two branches.
+ */
+export function officeCivicSignText(args: {
+  readonly room: OfficeCivicRoom;
+  readonly tally: OfficeCivicTally;
+  readonly lod: OfficeLod;
+  /** The sign's own span in tiles, as the plan placed it. */
+  readonly widthTiles: number;
+  readonly zoom: number;
+  readonly measure: OfficePlateMeasure;
+}): string {
+  const { lod, measure, room, tally, widthTiles, zoom } = args;
+  const counter =
+    lod < OFFICE_SIGN_COUNTER_LOD ? null : civicCounterOf(room, tally);
+  return widestThatFits({
+    renderings: civicRungs(room.name, counter),
+    available: officePlateWidthPx(widthTiles, zoom),
+    measure,
+  });
+}
+
+/**
+ * WHICH FRAME OF THE BEACON A WARD'S SIGN SHOWS, or `null` for a sign that
+ * carries no beacon.
+ *
+ * A ward carries one exactly where NO AMBULANCE CAN COME: decision C6 gives
+ * every view with a street a vehicle and gives the one without - Mission
+ * control, whose amphitheatre has no road - a light on the medbay's own sign
+ * instead. Derived from the room and its storey rather than from a table of
+ * view names, so a later view that plans a ward on a roadless floor lights up
+ * without a line of code here.
+ *
+ * The clock is the scene's, and the cadence is the vehicles' (250 ms), so the
+ * light in the amphitheatre and the light on the road read as the same alarm.
+ * An empty ward rests on the dark frame: nothing is happening, and a lamp
+ * going round over an empty bed would be an alarm about nobody. Under reduced
+ * motion the lit frame is HELD instead of alternating - see the frame
+ * constants for why it is the lit one and not the dark.
+ */
+function sirenFrameOf(args: {
+  readonly room: OfficeCivicRoom;
+  readonly floor: OfficeFloor;
+  readonly tally: OfficeCivicTally;
+  readonly clock: OfficeSignClock;
+}): 0 | 1 | null {
+  const { clock, floor, room, tally } = args;
+  if (room.kind !== "infirmary") return null;
+  if (floor.road !== null) return null;
+  const taken = tally.occupiedByRoom.get(room.civicRoomId) ?? 0;
+  if (taken === 0) return SIREN_DARK_FRAME;
+  if (clock.reducedMotion) return SIREN_LIT_FRAME;
+  return Math.floor(clock.nowMs / OFFICE_SIREN_FRAME_MS) % 2 === 0
+    ? SIREN_DARK_FRAME
+    : SIREN_LIT_FRAME;
+}
+
+/** A civic room and the storey it stands on, which is what decides its beacon. */
+interface CivicPlacement {
+  readonly room: OfficeCivicRoom;
+  readonly floor: OfficeFloor;
+}
+
+/**
+ * Every civic room on the plan, by id.
+ *
+ * Built per resolve rather than carried, because it is four rooms a storey and
+ * the alternative is a cache to invalidate when a plan changes - which is the
+ * kind of second copy this module exists to avoid.
+ */
+function civicPlacements(
+  floors: ReadonlyArray<OfficeFloor>,
+): ReadonlyMap<string, CivicPlacement> {
+  const byId = new Map<string, CivicPlacement>();
+  for (const floor of floors) {
+    for (const room of floor.civic) byId.set(room.civicRoomId, { room, floor });
+  }
+  return byId;
+}
+
 /** Any sign's own width on screen: its tiles, through the camera's zoom. */
 export function officePlateWidthPx(widthTiles: number, zoom: number): number {
   return Math.max(1, widthTiles) * OFFICE_TILE * zoom;
@@ -548,18 +771,27 @@ function signTextOf(args: {
 
 export function officeSignsToDraw(args: {
   readonly signs: ReadonlyArray<OfficeSign>;
+  /** The storeys, for the civic rooms a `civic` sign counts and lights. */
+  readonly floors: ReadonlyArray<OfficeFloor>;
   readonly visibleAgentIds: ReadonlySet<string>;
   readonly statusById: ReadonlyMap<string, OfficeAgentStatus>;
   readonly nameById: ReadonlyMap<string, string>;
   readonly hostNameById: ReadonlyMap<string, string>;
   readonly roleClaims: Readonly<Record<string, readonly RoleClaim[]>>;
+  /** What the civic signs count: the scene's, because the seat book is. */
+  readonly civicTally: OfficeCivicTally;
   readonly projector: OfficeProjector;
   readonly lod: OfficeLod;
   /** The camera's zoom, because a board's width on screen is a camera fact. */
   readonly zoom: number;
+  /** What the ward's beacon is phased on, and whether it may blink at all. */
+  readonly clock: OfficeSignClock;
   readonly measure: OfficePlateMeasure;
 }): ReadonlyArray<OfficeSignToDraw> {
   const {
+    civicTally,
+    clock,
+    floors,
     hostNameById,
     lod,
     measure,
@@ -573,11 +805,37 @@ export function officeSignsToDraw(args: {
   } = args;
   // NO LETTERING AT OVERVIEW. The block map carries the whole reading there.
   if (lod === 0) return NO_SIGNS_TO_DRAW;
+  const placements = civicPlacements(floors);
   const out: OfficeSignToDraw[] = [];
   for (const sign of signs) {
     const owner = sign.ownerAgentId;
     if (owner !== null && !visibleAgentIds.has(owner)) continue;
     const anchor = projector.project(sign.tile.col, sign.tile.row);
+    const placed =
+      sign.civicRoomId === null ? undefined : placements.get(sign.civicRoomId);
+    if (sign.kind === "civic" && placed !== undefined) {
+      out.push({
+        sign,
+        text: officeCivicSignText({
+          room: placed.room,
+          tally: civicTally,
+          lod,
+          widthTiles: sign.widthTiles,
+          zoom,
+          measure,
+        }),
+        // A room is not somebody's, so there is no role to letter under it.
+        subtext: null,
+        anchor,
+        sirenFrame: sirenFrameOf({
+          room: placed.room,
+          floor: placed.floor,
+          tally: civicTally,
+          clock,
+        }),
+      });
+      continue;
+    }
     if (sign.kind === "board" || sign.kind === "hq-board") {
       const text = officeBoardText({
         sign,
@@ -597,6 +855,7 @@ export function officeSignsToDraw(args: {
         text,
         subtext: null,
         anchor,
+        sirenFrame: null,
       });
       continue;
     }
@@ -611,7 +870,7 @@ export function officeSignsToDraw(args: {
     // every view but the two oblique ones: their plates are the only lettering
     // whose room is narrow enough for the reading to have to give way.
     if (rungs === null) {
-      out.push({ sign, text, subtext: claim, anchor });
+      out.push({ sign, text, subtext: claim, anchor, sirenFrame: null });
       continue;
     }
     const fitted = officePlateTextThatFits({
@@ -637,6 +896,7 @@ export function officeSignsToDraw(args: {
               measure,
             }),
       anchor,
+      sirenFrame: null,
     });
   }
   return out;

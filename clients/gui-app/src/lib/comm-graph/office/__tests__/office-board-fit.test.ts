@@ -29,6 +29,21 @@ import {
 } from "@/lib/comm-graph/office/views/office-view";
 
 /**
+ * NOTHING IN ANY WARD, AND NO ARCHIVE TALLY: what a case that is not about the
+ * civic signs hands the resolver.
+ *
+ * The storeys passed beside it are the real plan's, so a civic sign that does
+ * appear still resolves against its own room - it just counts nobody.
+ */
+const NO_CIVIC_COUNTS = {
+  occupiedByRoom: new Map<string, number>(),
+  archivedByHost: new Map<string | null, number>(),
+};
+
+/** A stopped clock with motion unreduced: no sign in these cases blinks. */
+const STILL_SIGN_CLOCK = { nowMs: 0, reducedMotion: false };
+
+/**
  * A plate's width in the face it is ACTUALLY DRAWN IN, derived the same way
  * `office-signs.test.ts` derives it rather than hard-coded: `ctx.letterSpacing`
  * counts towards `measureText` as well as the painted glyphs, so leaving the
@@ -247,6 +262,9 @@ describe("board text never overflows its board - the F11 absolute property", () 
     const projector = OFFICE_VIEWS[viewId].painter.projector(layout);
     const drawnAt = (zoom: number) =>
       officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [oneTileBoard],
         visibleAgentIds,
         statusById,

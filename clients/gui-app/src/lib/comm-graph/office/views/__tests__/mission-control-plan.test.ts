@@ -56,6 +56,21 @@ import {
   type OfficeTilePos,
 } from "@/lib/comm-graph/office/office-types";
 
+/**
+ * NOTHING IN ANY WARD, AND NO ARCHIVE TALLY: what a case that is not about the
+ * civic signs hands the resolver.
+ *
+ * The storeys passed beside it are the real plan's, so a civic sign that does
+ * appear still resolves against its own room - it just counts nobody.
+ */
+const NO_CIVIC_COUNTS = {
+  occupiedByRoom: new Map<string, number>(),
+  archivedByHost: new Map<string | null, number>(),
+};
+
+/** A stopped clock with motion unreduced: no sign in these cases blinks. */
+const STILL_SIGN_CLOCK = { nowMs: 0, reducedMotion: false };
+
 const TRIAGE_SCALES: ReadonlyArray<number> = [12, 309, 1000];
 const VIEWPORT_WIDE: OfficeSize = { width: 1280, height: 700 };
 const VIEWPORT_NARROW: OfficeSize = { width: 680, height: 440 };
@@ -1670,6 +1685,9 @@ describe("mission control plates: fixup 5 - plates fit their own arc segment and
     const offenders: string[] = [];
     for (const zoom of zooms) {
       const drawn = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: plates,
         visibleAgentIds,
         statusById,
@@ -1886,6 +1904,9 @@ describe("mission control plates: fixup 5 - plates fit their own arc segment and
     const projector = MISSION_CONTROL_VIEW.painter.projector(layout);
     function resolvedAt(zoom: number): OfficeSignToDraw | undefined {
       return officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [candidate.sign],
         visibleAgentIds,
         statusById,

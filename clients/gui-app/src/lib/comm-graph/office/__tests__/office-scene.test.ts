@@ -5179,9 +5179,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
         if (frame.awayAgentIds.has(id) && book.civicClaimOf(id) === want) {
           // `civic-out` is not a public reader: away, holding the seat, and
           // named by the room it is walking TO is exactly what
-          // `awayWhereabouts` answers for one.
+          // `awayWhereabouts` answers for one. K4 made that answer say so out
+          // loud - `Walking to the Infirmary` rather than `Infirmary` - so a
+          // card cannot read as though somebody were already in the bed while
+          // they are still crossing the floor to it.
           sawAway.add(id);
-          expect(scene.whereabouts(id)).toBe(room);
+          expect(scene.whereabouts(id)).toBe(`Walking to the ${room}`);
         }
         const was = starts.get(id);
         if (was === undefined) continue;
@@ -5865,6 +5868,29 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     );
   }
 
+  /**
+   * Does this `whereabouts` reading name an infirmary - whether the agent is
+   * lying in a bed or still crossing the floor to one?
+   *
+   * A CIVIC WALKER READS `Walking to the <room>` (K4), and these cases ask
+   * their question on the sync the claim is made, when the character has not
+   * moved a pixel yet. A bare set of room names answered that before the
+   * walker's reading was refined and does not now.
+   *
+   * The NEGATIVE assertions need this same predicate rather than the bare set,
+   * and that is the half worth stating: `Walking to the Sick bay` is not in the
+   * set either, so an overflow agent that wrongly got a bed would have slipped
+   * past a `has()` check that only knows the seated reading. Using it in both
+   * directions keeps the guard a guard.
+   */
+  function namesInfirmary(names: ReadonlySet<string>, where: string): boolean {
+    if (names.has(where)) return true;
+    for (const name of names) {
+      if (where === `Walking to the ${name}`) return true;
+    }
+    return false;
+  }
+
   const CAP_TRIO: ReadonlyArray<OfficeAgentInput> = [
     agent({ id: "cap-a", hostId: "cap-h1", createdAt: 1 }),
     agent({ id: "cap-b", hostId: "cap-h2", createdAt: 2 }),
@@ -5902,9 +5928,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: failures("beta"),
       }),
     );
-    expect(infirmaryNames(layout).has(scene.whereabouts("beta") ?? "")).toBe(
-      true,
-    );
+    expect(
+      namesInfirmary(infirmaryNames(layout), scene.whereabouts("beta") ?? ""),
+    ).toBe(true);
     expect(
       vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
         (vehicle) => vehicle.vehicleKind,
@@ -5952,7 +5978,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     );
     const names = infirmaryNames(layout);
     expect(
-      beddedIds.every((id) => names.has(scene.whereabouts(id) ?? "")),
+      beddedIds.every((id) =>
+        namesInfirmary(names, scene.whereabouts(id) ?? ""),
+      ),
     ).toBe(true);
     for (let step = 0; step < 500; step += 1) scene.tick(100);
     scene.sync(
@@ -5962,7 +5990,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         statusById: new Map([...beddedStatuses, [overflowId, "failure"]]),
       }),
     );
-    expect(names.has(scene.whereabouts(overflowId) ?? "")).toBe(false);
+    expect(namesInfirmary(names, scene.whereabouts(overflowId) ?? "")).toBe(
+      false,
+    );
     expect(
       vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
         (vehicle) => vehicle.vehicleKind === "ambulance",
@@ -6165,7 +6195,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         const onKerb = vehicleDrawables(frame).some(atKerb);
         const riderAway = frame.awayAgentIds.has("beta");
         if (riderAway) sawUnsettledRider = true;
-        if (!riderAway && names.has(scene.whereabouts("beta") ?? "")) {
+        if (
+          !riderAway &&
+          namesInfirmary(names, scene.whereabouts("beta") ?? "")
+        ) {
           settledTick ??= step;
         }
         if (onKerb) kerbTick ??= step;

@@ -189,6 +189,18 @@ const ROOM_MIN_COLS = 10;
 const ROOM_DOOR_RIGHT_OFFSET = 3;
 /** Left tile of a room's own two-tile name sign, clear of the menu board. */
 const AREA_SIGN_COL_OFFSET = 4;
+/**
+ * THE ARCHIVE'S PLATE, in tiles: the one civic sign whose room cannot size it.
+ *
+ * The archive is a door in the outer wall, one tile wide (C5 - the count is the
+ * whole room), and a one-tile plate can say nothing. Four is what its counter
+ * needs at close-up (`Archive · 262` measures 96 px against 102), hung one tile
+ * left of the door so the plate is centred over it - to within the half tile an
+ * even span always is. FIVE WOULD REACH THE ENTRANCE: the building's own front
+ * door stands two tiles to the archive's left, and a plate across it would read
+ * as naming the way out.
+ */
+export const ARCHIVE_SIGN_WIDTH_TILES = 4;
 /** One corridor tile between two rooms, stacked or side by side. */
 const ROOM_GAP_TILES = 1;
 /**
@@ -3174,7 +3186,9 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,
-      signTile: archiveDoor,
+      // One tile left of the door, so the plate `ARCHIVE_SIGN_WIDTH_TILES`
+      // spans is centred over it rather than running off along the wall.
+      signTile: { col: Math.max(archiveDoor.col - 1, 0), row: archiveDoor.row },
       name: "Archive",
       seatIds: [],
       floorIndex,
@@ -3550,6 +3564,29 @@ function visitTileOf(
 }
 
 /**
+ * HOW WIDE A CIVIC SIGN IS: the room's own span, from its sign tile to its
+ * right wall.
+ *
+ * Every other sign on this storey is two tiles and overflows them - an `area`
+ * plate says `CAFETERIA` over a lobby with nothing beside it to paint on. A
+ * civic sign cannot: it is FITTED to its tiles (`officeCivicSignText`), so two
+ * tiles is 22 px at office zoom and 51 at close-up, and `Infirmary` measures
+ * 69. At the ward's own six tiles the word fits from zoom 0.73 and
+ * `Infirmary · 3 of 7` (130 px) fits at close-up's 154. The width is what
+ * decides whether the counter this layer exists to show can ever be read.
+ *
+ * The archive is the exception, and it is one because it is a DOOR rather than
+ * a room: its bounds are the single tile the records door stands in, and a
+ * one-tile plate can say nothing at all. {@link ARCHIVE_SIGN_WIDTH_TILES} is
+ * what its counter needs, centred on the door by the record's own `signTile`.
+ */
+function civicSignWidthTiles(room: OfficeCivicRoom): number {
+  if (room.kind === "archive") return ARCHIVE_SIGN_WIDTH_TILES;
+  const span = room.bounds.col + room.bounds.cols - room.signTile.col;
+  return Math.max(span, ROOM_SIGN_WIDTH_TILES);
+}
+
+/**
  * Every piece of lettering the floor carries, in the order the prop pass emits
  * it today: each cabin's sign and its pods' plates, then the amenity signs.
  *
@@ -3608,7 +3645,7 @@ function floorSigns(
       signs.push({
         kind: "civic",
         tile: room.signTile,
-        widthTiles: ROOM_SIGN_WIDTH_TILES,
+        widthTiles: civicSignWidthTiles(room),
         text: room.name,
         ownerAgentId: null,
         hostId: floor.hostId,

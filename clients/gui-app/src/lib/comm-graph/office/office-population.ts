@@ -840,6 +840,38 @@ export function partitionOfficePopulation(
 }
 
 /**
+ * HOW MANY OF EACH BUILDING'S AGENTS HAVE BEEN ARCHIVED, as of the cursor.
+ *
+ * What the archive's sign counts (C5). It is asked of the PARTITION and the
+ * statuses rather than of the scene's walk-outs, and that is the whole point:
+ * a walk-out is a character that happened to leave while somebody was
+ * watching, so a floor opened at a cursor where three hundred records were
+ * already archived has seen none of them go. The partition knows which
+ * building every record belongs to and the status map says which of them are
+ * archived at this cursor, so the count is right on the first frame and at
+ * every cursor - including one scrubbed back to before an archival, where the
+ * agent is at its desk and must not be in the tally.
+ *
+ * Keyed by `hostId` with `null` a key of its own, because the unattributed
+ * building is a building and its archive counts its own records.
+ *
+ * An agent with no entry in `statusById` does not exist at this cursor and is
+ * not counted: `officeAgentStatuses` gives a status to exactly the agents the
+ * cursor has reached, which is the same filter a board's roster applies.
+ */
+export function officeArchivedByHost(
+  partition: OfficePopulation,
+  statusById: ReadonlyMap<string, OfficeAgentStatus>,
+): ReadonlyMap<string | null, number> {
+  const byHost = new Map<string | null, number>();
+  for (const member of partition.members.values()) {
+    if (statusById.get(member.agentId) !== "archived") continue;
+    byHost.set(member.hostId, (byHost.get(member.hostId) ?? 0) + 1);
+  }
+  return byHost;
+}
+
+/**
  * One team per team id REFERENCED, its members in creation order with the lead
  * at the front where the lead is still here.
  *

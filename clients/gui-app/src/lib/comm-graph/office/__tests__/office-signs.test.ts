@@ -36,6 +36,21 @@ import {
 } from "@/lib/comm-graph/office/views/office-view";
 
 /**
+ * NOTHING IN ANY WARD, AND NO ARCHIVE TALLY: what a case that is not about the
+ * civic signs hands the resolver.
+ *
+ * The storeys passed beside it are the real plan's, so a civic sign that does
+ * appear still resolves against its own room - it just counts nobody.
+ */
+const NO_CIVIC_COUNTS = {
+  occupiedByRoom: new Map<string, number>(),
+  archivedByHost: new Map<string | null, number>(),
+};
+
+/** A stopped clock with motion unreduced: no sign in these cases blinks. */
+const STILL_SIGN_CLOCK = { nowMs: 0, reducedMotion: false };
+
+/**
  * A plate's width in the face it is ACTUALLY DRAWN IN, derived rather than
  * guessed.
  *
@@ -235,6 +250,9 @@ describe("officeSignsToDraw - F5 projected anchor", () => {
   it("puts a sign's anchor through the projector, not raw tile math", () => {
     const sign = boardSign({ agentIds: [] });
     const drawn = officeSignsToDraw({
+      floors: [],
+      civicTally: NO_CIVIC_COUNTS,
+      clock: STILL_SIGN_CLOCK,
       signs: [sign],
       visibleAgentIds: new Set(),
       statusById: new Map(),
@@ -261,6 +279,9 @@ describe("officeSignsToDraw / officeFloorSignsToDraw - F10 LOD-0 gate", () => {
   it("draws no signs at all at LOD 0", () => {
     const sign = boardSign({ agentIds: [] });
     const resolved = officeSignsToDraw({
+      floors: [],
+      civicTally: NO_CIVIC_COUNTS,
+      clock: STILL_SIGN_CLOCK,
       signs: [sign],
       visibleAgentIds: new Set(),
       statusById: new Map(),
@@ -506,6 +527,9 @@ for (const viewId of ["towers", "building"] as const) {
       const { epic, layout, names, statusById } = realObliqueSigns(viewId);
       expect(
         officeSignsToDraw({
+          floors: layout.floors,
+          civicTally: NO_CIVIC_COUNTS,
+          clock: STILL_SIGN_CLOCK,
           signs: layout.signs,
           visibleAgentIds: new Set(epic.agents.map((person) => person.id)),
           statusById,
@@ -531,6 +555,9 @@ for (const viewId of ["towers", "building"] as const) {
       for (const agentId of board.agentIds) statuses.set(agentId, "working");
       statuses.set(hidden, "idle");
       const drawn = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [{ ...board, widthTiles: 6 }],
         visibleAgentIds,
         statusById: statuses,
@@ -594,6 +621,9 @@ for (const viewId of ["towers", "building"] as const) {
       const tilesFor = (text: string): number =>
         Math.ceil(measure(text) / OFFICE_TILE);
       const drawn = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [
           { ...board, widthTiles: tilesFor(full) },
           { ...board, widthTiles: tilesFor(short) },
@@ -669,6 +699,9 @@ for (const viewId of ["towers", "building"] as const) {
       // rung this case used to pin.
       const available = boardWidthPx(hq.widthTiles);
       const drawnAtOwnWidth = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [hq],
         visibleAgentIds,
         statusById: statuses,
@@ -691,6 +724,9 @@ for (const viewId of ["towers", "building"] as const) {
       // first and keeps all five identities - the point of an HQ board.
       const wideTiles = Math.ceil(measure(firstNamesJoined) / OFFICE_TILE);
       const drawnWide = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [{ ...hq, widthTiles: wideTiles }],
         visibleAgentIds,
         statusById: statuses,
@@ -723,6 +759,9 @@ for (const viewId of ["towers", "building"] as const) {
     }
     const renamed = new Map(names).set(owner.ownerAgentId, "Renamed owner");
     const drawn = officeSignsToDraw({
+      floors: layout.floors,
+      civicTally: NO_CIVIC_COUNTS,
+      clock: STILL_SIGN_CLOCK,
       signs: [...aggregate, owner],
       visibleAgentIds: new Set(epic.agents.map((person) => person.id)),
       statusById,
@@ -1024,6 +1063,9 @@ describe("officeBoardText - fixup 7: the HQ board never letters manufactured ini
     const hq = layout.signs.find((sign) => sign.kind === "hq-board");
     if (hq === undefined) throw new Error("expected a real HQ board");
     const drawn = officeSignsToDraw({
+      floors: layout.floors,
+      civicTally: NO_CIVIC_COUNTS,
+      clock: STILL_SIGN_CLOCK,
       signs: [hq],
       visibleAgentIds: new Set(epic.agents.map((person) => person.id)),
       statusById,
@@ -1262,6 +1304,9 @@ describe("officeFloorSignsToDraw - fixup 6 rule 1: one host label per building, 
       const hostSigns = layout.signs.filter((sign) => sign.kind === "host");
       expect(hostSigns).toHaveLength(2);
       const drawnHostSigns = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: hostSigns,
         visibleAgentIds: new Set(epic.agents.map((agent) => agent.id)),
         statusById,
@@ -1384,6 +1429,9 @@ describe("officeSignsToDraw - fixup 6 rule 3: bullpen and solo plates come down 
       const names = new Map(epic.agents.map((agent) => [agent.id, agent.name]));
       const visibleAgentIds = new Set(epic.agents.map((agent) => agent.id));
       const drawn = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: wideBullpens,
         visibleAgentIds,
         statusById,
@@ -1448,6 +1496,9 @@ describe("officeSignsToDraw - fixup 6 rule 3: bullpen and solo plates come down 
     const names = new Map(epic.agents.map((agent) => [agent.id, agent.name]));
     const visibleAgentIds = new Set(epic.agents.map((agent) => agent.id));
     const drawn = officeSignsToDraw({
+      floors: layout.floors,
+      civicTally: NO_CIVIC_COUNTS,
+      clock: STILL_SIGN_CLOCK,
       signs: [narrowBullpen],
       visibleAgentIds,
       statusById,
@@ -1494,6 +1545,9 @@ describe("officeSignsToDraw - fixup 6 rule 3: bullpen and solo plates come down 
         rungs,
       };
       const drawn = officeSignsToDraw({
+        floors: [],
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [sign],
         visibleAgentIds: new Set(),
         statusById: new Map(),

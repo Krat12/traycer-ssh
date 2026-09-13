@@ -1246,6 +1246,27 @@ export interface OfficeFrame {
   readonly focus: OfficePoint | null;
 }
 
+/**
+ * WHAT THE CIVIC SIGNS COUNT, as of this moment.
+ *
+ * Two numbers with two different sources, which is why they travel together
+ * rather than being derived where they are read: a room's occupancy is the
+ * SEAT BOOK's - it moves when a claim is made or released, and only the book
+ * knows - while the archive's tally is the PARTITION's and the statuses', so
+ * that it is right on the first frame and at any cursor rather than counting
+ * the walk-outs somebody happened to watch (C5).
+ *
+ * Outside the frame because a sign is not culled: the frame is built for the
+ * view rect, and a counter on a sign two screens away is still the same
+ * number when the camera reaches it.
+ */
+export interface OfficeCivicTally {
+  /** Seats taken right now, by `civicRoomId`; a room with none is absent. */
+  readonly occupiedByRoom: ReadonlyMap<string, number>;
+  /** Archived records by host, `null` being the unattributed building's own. */
+  readonly archivedByHost: ReadonlyMap<string | null, number>;
+}
+
 /** Center of a tile, in sprite space. */
 export function officeTileCenter(tile: OfficeTilePos): OfficePoint {
   return {

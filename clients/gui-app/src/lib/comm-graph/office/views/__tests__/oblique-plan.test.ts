@@ -57,6 +57,21 @@ import {
 import { OBLIQUE_FIXTURES } from "../oblique/oblique-painter";
 
 /**
+ * NOTHING IN ANY WARD, AND NO ARCHIVE TALLY: what a case that is not about the
+ * civic signs hands the resolver.
+ *
+ * The storeys passed beside it are the real plan's, so a civic sign that does
+ * appear still resolves against its own room - it just counts nobody.
+ */
+const NO_CIVIC_COUNTS = {
+  occupiedByRoom: new Map<string, number>(),
+  archivedByHost: new Map<string | null, number>(),
+};
+
+/** A stopped clock with motion unreduced: no sign in these cases blinks. */
+const STILL_SIGN_CLOCK = { nowMs: 0, reducedMotion: false };
+
+/**
  * A plate's width in the face it is ACTUALLY DRAWN IN, derived the same way
  * `office-signs.test.ts` and `office-board-fit.test.ts` derive it, rather than
  * hard-coded: `ctx.letterSpacing` counts towards `measureText` as well as the
@@ -1490,6 +1505,9 @@ describe("oblique plates: fixup 6 rule 2 - plates fit their pods and never overl
         for (const zoom of ZOOMS) {
           combinationsChecked += 1;
           const drawn = officeSignsToDraw({
+            floors: layout.floors,
+            civicTally: NO_CIVIC_COUNTS,
+            clock: STILL_SIGN_CLOCK,
             signs: plates,
             visibleAgentIds,
             statusById,
@@ -1535,6 +1553,9 @@ describe("oblique plates: fixup 6 rule 2 - plates fit their pods and never overl
     );
     const resolvedAt = (zoom: number) =>
       officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: plates,
         visibleAgentIds,
         statusById,
@@ -1593,6 +1614,9 @@ describe("oblique plates: fixup 6 rule 2 - plates fit their pods and never overl
     expect(sign.widthTiles).toBe(6);
     const resolvedAt = (zoom: number): string | undefined =>
       officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [sign],
         visibleAgentIds,
         statusById,

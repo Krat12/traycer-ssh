@@ -59,6 +59,21 @@ import {
   type OfficeView,
 } from "@/lib/comm-graph/office/views/office-view";
 
+/**
+ * NOTHING IN ANY WARD, AND NO ARCHIVE TALLY: what a case that is not about the
+ * civic signs hands the resolver.
+ *
+ * The storeys passed beside it are the real plan's, so a civic sign that does
+ * appear still resolves against its own room - it just counts nobody.
+ */
+const NO_CIVIC_COUNTS = {
+  occupiedByRoom: new Map<string, number>(),
+  archivedByHost: new Map<string | null, number>(),
+};
+
+/** A stopped clock with motion unreduced: no sign in these cases blinks. */
+const STILL_SIGN_CLOCK = { nowMs: 0, reducedMotion: false };
+
 type Shape = "triage" | "two-hosts" | "many-roots";
 
 function inputFor(
@@ -1873,6 +1888,9 @@ describe("planCampus", () => {
       // What the painter actually reads: the officeSignsToDraw entry for
       // this sign anchors identically to a direct `projector.project` call.
       const drawn = officeSignsToDraw({
+        floors: layout.floors,
+        civicTally: NO_CIVIC_COUNTS,
+        clock: STILL_SIGN_CLOCK,
         signs: [sign],
         visibleAgentIds: new Set(layout.desks.keys()),
         statusById: new Map(),

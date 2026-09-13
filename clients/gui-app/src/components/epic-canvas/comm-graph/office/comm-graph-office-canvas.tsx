@@ -155,6 +155,7 @@ import {
   officeSignsToDraw,
   type OfficePlateMeasure,
   type OfficeFloorSignToDraw,
+  type OfficeSignClock,
   type OfficeSignToDraw,
 } from "@/lib/comm-graph/office/office-signs";
 import {
@@ -168,6 +169,7 @@ import {
   type OfficeAgentInput,
   type OfficeAgentStatus,
   type OfficeBlockFill,
+  type OfficeCivicTally,
   type OfficeDrawable,
   type OfficeFloor,
   type OfficeFrame,
@@ -784,11 +786,14 @@ interface FrameChrome {
   readonly floors: ReadonlyArray<OfficeFloor>;
   readonly visibleAgentIds: ReadonlySet<string>;
   readonly statusById: ReadonlyMap<string, OfficeAgentStatus>;
+  readonly civicTally: OfficeCivicTally;
+  readonly clock: OfficeSignClock;
 }
 
 function frameChrome(
   layout: OfficeLayout | null,
   synced: OfficeSceneInput | null,
+  scene: OfficeScene,
 ): FrameChrome {
   return {
     signs: layout === null ? NO_SIGNS : layout.signs,
@@ -798,6 +803,16 @@ function frameChrome(
     // under them is showing.
     visibleAgentIds: synced === null ? EMPTY_MATCH_IDS : synced.visibleAgentIds,
     statusById: synced === null ? NO_STATUSES : synced.statusById,
+    // FROM THE SCENE, because both halves are the scene's: a bed is taken when
+    // the seat book says so, and the ward's beacon is phased on the same clock
+    // the lit monitors are. Neither is in the frame - a sign is not culled.
+    civicTally: scene.civicTally(),
+    clock: {
+      nowMs: scene.animationClockMs(),
+      // OFF THE SYNCED INPUT, like the statuses beside it: the preference is
+      // what the scene was last told, not what a prop says this render.
+      reducedMotion: synced?.reducedMotion ?? false,
+    },
   };
 }
 
@@ -930,6 +945,10 @@ interface DrawFrameArgs {
   readonly roleClaims: Readonly<Record<string, readonly RoleClaim[]>>;
   /** One per host. A single-floor building names nothing - there is no choice to explain. */
   readonly floors: ReadonlyArray<OfficeFloor>;
+  /** What the civic signs count, and what lights the medbay's beacon. */
+  readonly civicTally: OfficeCivicTally;
+  /** The clock the one alternating sign runs on, and its motion preference. */
+  readonly clock: OfficeSignClock;
   readonly hostNameById: ReadonlyMap<string, string>;
   readonly hoveredAgentId: string | null;
   /** Whose detail panel is open; named at lod 1 even when unhovered. */
@@ -1538,6 +1557,53 @@ function signArtOverhang(name: OfficeSpriteName): number {
 }
 
 /**
+ * The two frames of the ward's beacon, in the order the resolver numbers them.
+ *
+ * The resolver says WHICH frame and this says what that frame is drawn from:
+ * the cadence is a rule about occupancy and a clock, and the art is a pair of
+ * pixel maps, so neither module needs to know the other's half.
+ */
+const SIREN_FRAME_SPRITES: readonly [OfficeSpriteName, OfficeSpriteName] = [
+  "siren-light",
+  "siren-light-b",
+];
+
+/**
+ * WHERE A SIGN'S BOARD HANGS, in sprite space.
+ *
+ * At the sign's own tile for every sign that is two tiles wide, which is every
+ * one of them but a civic room's: a cabin, an area and a host sign are all
+ * `SIGN_WIDTH_TILES` across and the board fills them.
+ *
+ * A CIVIC SIGN IS AS WIDE AS ITS ROOM - seven tiles for a Floor lounge, twenty
+ * for a Towers dispensary - because that width is what its reading is fitted
+ * to, and the lettering is centred on it (`officeSignCenterX`). A board left
+ * at the tile would then sit three tiles left of its own words. So the board
+ * follows the words: the art is centred under the text it backs, exactly as it
+ * is for the two-tile signs where the two coincide.
+ */
+function signBoardX(entry: OfficeSignToDraw, name: OfficeSpriteName): number {
+  if (entry.sign.kind !== "civic") return entry.anchor.x;
+  return officeSignCenterX(entry) - officeSpriteSize({ name }).width / 2;
+}
+
+/**
+ * Where the beacon hangs: ON the sign's own board, at its right end, standing
+ * clear above it.
+ *
+ * Derived from the two sprites rather than written down, so a wider board or a
+ * bigger lamp moves it instead of leaving it overlapping the lettering. In
+ * SPRITE space, added to the board's own left edge exactly as
+ * `signArtOverhang` is added to its top - "on the right end of the board" is a
+ * fact about the art, not about which way an isometric view happens to point.
+ */
+function sirenOffset(): OfficePoint {
+  const board = officeSpriteSize({ name: "sign" });
+  const lamp = officeSpriteSize({ name: SIREN_FRAME_SPRITES[0] });
+  return { x: board.width - lamp.width, y: -lamp.height };
+}
+
+/**
  * The lettering the PLAN placed: cabin signs, pod plates, area names, boards.
  *
  * Two passes, because a sign is two things in two coordinate spaces: the board
@@ -1551,16 +1617,27 @@ function drawSignArt(args: {
   readonly theme: OfficeTheme;
 }): void {
   const { ctx, signs, theme } = args;
+  const lamp = sirenOffset();
   for (const entry of signs) {
     const name = signSpriteFor(entry.sign);
     if (name === null) continue;
+    const boardX = signBoardX(entry, name);
     drawOfficeSprite(
       ctx,
       { name },
-      {
-        x: entry.anchor.x,
-        y: entry.anchor.y + signArtOverhang(name),
-      },
+      { x: boardX, y: entry.anchor.y + signArtOverhang(name) },
+      theme,
+    );
+    // THE WARD'S BEACON, where a ward has one: Mission control's medbay, which
+    // has no street for an ambulance to come down (C6). Which frame is up is
+    // the resolver's answer - it is the one place the room's occupancy and the
+    // clock meet - and a sign that carries no beacon says `null`.
+    const frame = entry.sirenFrame;
+    if (frame === null) continue;
+    drawOfficeSprite(
+      ctx,
+      { name: SIREN_FRAME_SPRITES[frame] },
+      { x: boardX + lamp.x, y: entry.anchor.y + lamp.y },
       theme,
     );
   }
@@ -1609,9 +1686,19 @@ function drawSignLabels(args: {
  * A board is already laid out to its own width by the resolver, so truncating
  * it here would cut a reading that was chosen to fit. A NAME is different: it
  * cannot be abbreviated by rule and keeps the ellipsis it always had.
+ *
+ * A CIVIC SIGN IS A SUMMARY, not a name, and so belongs with the boards: its
+ * widest reading is the room plus what is in it (`Infirmary · 3 of 4`), chosen
+ * by `officeCivicSignText` against the same measured face this draws in. Cut
+ * to twelve characters here it would come out `INFIRMARY ·…` - the
+ * `BULLPEN · 9…` the ladder exists to prevent, one sign kind later.
  */
 function signPlateText(entry: OfficeSignToDraw): string {
-  if (entry.sign.kind === "board" || entry.sign.kind === "hq-board") {
+  if (
+    entry.sign.kind === "board" ||
+    entry.sign.kind === "hq-board" ||
+    entry.sign.kind === "civic"
+  ) {
     return entry.text;
   }
   return truncateSign(entry.text, signMaxChars(entry.sign.widthTiles));
@@ -1827,6 +1914,8 @@ function drawNameTags(args: {
 function drawOfficeFrame(args: DrawFrameArgs): void {
   const {
     camera,
+    civicTally,
+    clock,
     ctx,
     dpr,
     floors,
@@ -1853,13 +1942,18 @@ function drawOfficeFrame(args: DrawFrameArgs): void {
       ? NO_SIGN_ENTRIES
       : officeSignsToDraw({
           signs: args.signs,
+          floors,
           visibleAgentIds,
           statusById,
           nameById,
           hostNameById,
           roleClaims,
+          civicTally,
           projector,
           lod,
+          // A ward's beacon alternates on the scene's own clock, so the light
+          // in the amphitheatre and the lit monitors below it share a phase.
+          clock,
           // A board is laid out to ITS OWN width on screen, which moves with
           // the camera: the same six tiles are ninety-six pixels at 1x and
           // sixty-seven at 0.7, and the reading that fits is not the same one.
@@ -3288,7 +3382,7 @@ export function CommGraphOfficeCanvas(props: CommGraphOfficeCanvasProps) {
         hostNameById: runtime.getHostNames(),
         hoveredAgentId: runtime.getHoveredAgentId(),
         vehicleArt: OFFICE_VEHICLE_ART[officeView.id],
-        ...frameChrome(layout, synced),
+        ...frameChrome(layout, synced, scene),
       });
       raf = requestAnimationFrame(step);
     };

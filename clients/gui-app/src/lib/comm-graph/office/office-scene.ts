@@ -52,6 +52,7 @@ import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { OfficeSeatBook } from "@/lib/comm-graph/office/office-seat-book";
 import type { OfficeSeatWant } from "@/lib/comm-graph/office/office-seat-book";
 import type { OfficePopulation } from "@/lib/comm-graph/office/office-population";
+import { officeArchivedByHost } from "@/lib/comm-graph/office/office-population";
 import {
   OFFICE_CHARACTER_HEIGHT,
   OFFICE_CHARACTER_WIDTH,
@@ -63,6 +64,7 @@ import {
   type OfficeCharacterPose,
   type OfficeCivicKind,
   type OfficeCivicRoom,
+  type OfficeCivicTally,
   type OfficeDrawable,
   type OfficeEnvelopeHitRegion,
   type OfficeErrandKind,
@@ -1447,6 +1449,10 @@ const NO_CRASH_COUNTS: ReadonlyMap<string, number> = new Map();
 /** Nobody spoken for, which is what a plan made from scratch is told. */
 const NO_OCCUPANCY: ReadonlyMap<string, string> = new Map();
 
+/** An office with no floor plan yet counts nothing, in either half. */
+const NO_ROOM_COUNTS: ReadonlyMap<string, number> = new Map();
+const NO_HOST_COUNTS: ReadonlyMap<string | null, number> = new Map();
+
 /**
  * What a painter is told about a reserve seat standing empty. Shared rather
  * than rebuilt per frame: it is the same answer for every empty seat in the
@@ -1633,6 +1639,17 @@ export class OfficeScene {
   private synced = false;
   /** Archived AS OF the cursor at the last sync; the walk-out reads changes. */
   private archivedIds: ReadonlySet<string> = new Set<string>();
+  /**
+   * What each building's archive sign says, folded once per sync.
+   *
+   * Per sync rather than per frame because both its inputs - the partition and
+   * the statuses - move only here, and a thousand-agent epic would otherwise
+   * walk its whole membership thirty times a second to letter two signs.
+   */
+  private archivedByHost: ReadonlyMap<string | null, number> = new Map<
+    string | null,
+    number
+  >();
   /** Archived agents whose character has already walked out; their desk is sheeted. */
   private readonly departedIds = new Set<string>();
   /** Agents un-archived by a scrub back, which walk in again on this sync. */
@@ -1826,6 +1843,13 @@ export class OfficeScene {
     this.clockMs = input.clockMs;
     this.pulse = input.pulse;
     this.partition = input.partition;
+    // The archive's counter, taken here because this is where both halves of
+    // it arrive. Not from the walk-outs (C5): a floor opened at a cursor where
+    // three hundred records were already archived has watched nobody leave.
+    this.archivedByHost = officeArchivedByHost(
+      input.partition,
+      input.statusById,
+    );
     this.activityById = input.activityById;
     this.viewport = input.viewport;
     this.agentById = new Map(input.agents.map((agent) => [agent.id, agent]));
@@ -2047,6 +2071,49 @@ export class OfficeScene {
     const room = this.roomOfSeat(seat);
     if (room !== null) return room.name;
     return this.placeNameAt(layout, seat.chairTile, seat.floorIndex);
+  }
+
+  /**
+   * WHAT THE CIVIC SIGNS COUNT right now: each room's taken seats, and each
+   * building's archived records.
+   *
+   * The scene answers it because the scene owns the seat book, and the book is
+   * the only thing that knows a bed is spoken for - a plan knows how many beds
+   * there are, and the signs have to say how many of them are somebody's.
+   * OCCUPIED is `occupant`, which is "who is in this seat", so a claim being
+   * released reads as a free bed from the moment its holder stands up rather
+   * than when it finishes walking home.
+   */
+  civicTally(): OfficeCivicTally {
+    const layout = this.layoutOrNull;
+    if (layout === null) {
+      return { occupiedByRoom: NO_ROOM_COUNTS, archivedByHost: NO_HOST_COUNTS };
+    }
+    const occupiedByRoom = new Map<string, number>();
+    for (const floor of layout.floors) {
+      for (const room of floor.civic) {
+        let taken = 0;
+        for (const seatId of room.seatIds) {
+          if (this.seats.occupant(seatId) !== null) taken += 1;
+        }
+        if (taken > 0) occupiedByRoom.set(room.civicRoomId, taken);
+      }
+    }
+    return { occupiedByRoom, archivedByHost: this.archivedByHost };
+  }
+
+  /**
+   * THE SCENE'S OWN ANIMATION CLOCK, in milliseconds since it opened.
+   *
+   * What every alternating frame in the office is phased on (`screenFrameOf`),
+   * exposed because one of them is painted from outside: a sign is lettered by
+   * the renderer, so the medbay's beacon has to read the same clock the lit
+   * monitors do or the floor would carry two notions of "now" - and this one
+   * advances with `tick`, so a suspended office does not silently blink its
+   * way through the time it spent off screen.
+   */
+  animationClockMs(): number {
+    return this.nowMs;
   }
 
   /** Characters win over desks: a person is the more specific target. */
@@ -6150,12 +6217,15 @@ export class OfficeScene {
       return "Lobby";
     }
     // A civic walker is named by where it is GOING, not by the corridor it is
-    // crossing: "Walking to the Sick bay" is the useful answer while somebody
-    // is halfway there, and the tile lookup below would say "Open floor".
+    // crossing - and it is named as ON ITS WAY there, because the card would
+    // otherwise put somebody in a bed one end of the floor away from where the
+    // eye can see them standing. The room's own word, whatever the view calls
+    // it: "Walking to the Sick bay" in the Building, "Walking to the Hospital"
+    // in the City. The tile lookup below would say "Open floor".
     if (this.inCivicWalk(character)) {
       const seat = this.seats.effectiveSeat(character.agentId);
       const room = seat === null ? null : this.civicRoomOfSeat(layout, seat);
-      if (room !== null) return room.name;
+      if (room !== null) return `Walking to the ${room.name}`;
     }
     const target = character.errandTarget;
     if (target !== null && target.kind === "visit") return "Visiting";
