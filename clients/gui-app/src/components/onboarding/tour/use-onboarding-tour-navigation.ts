@@ -1,5 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  getActivationToken,
+  subscribeActivation,
+} from "@/components/onboarding/tour/tour-activation";
 import { activateTabIntent } from "@/lib/tab-navigation";
 import { draftTabIntent, newDraftTabIntent } from "@/lib/tab-navigation/intents";
 import {
@@ -40,19 +44,21 @@ export function useOnboardingTourNavigation(): void {
   const navigate = useNavigate();
   const chainActive = useOnboardingFlowStore((state) => state.chain === "active");
   const activeTourId = useOnboardingFlowStore((state) => state.activeTourId);
-  // One navigation per activation: reset when the chain leaves `active`.
-  const navigatedRef = useRef(false);
+  // One navigation per ACTIVATION (`tour-activation.ts`): a chain start, a
+  // launch resume or a replay - a same-tour replay while active included.
+  const activation = useSyncExternalStore(
+    subscribeActivation,
+    getActivationToken,
+    getActivationToken,
+  );
+  const navigatedForRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!chainActive) {
-      navigatedRef.current = false;
-      return;
-    }
-    if (navigatedRef.current) return;
+    if (!chainActive || navigatedForRef.current === activation) return;
     const flow = useOnboardingFlowStore.getState();
     const active = selectActiveStep(flow);
     if (active === null || !LANDING_TOURS.includes(active.tourId)) return;
-    navigatedRef.current = true;
+    navigatedForRef.current = activation;
 
     const focused = selectHostFocusedRef(useTabsStore.getState());
     const drafts = useLandingDraftStore.getState().drafts;
@@ -73,5 +79,5 @@ export function useOnboardingTourNavigation(): void {
     // seam selects, so a stale one is cleared here.
     if (savedDraftId !== null) flow.setContext({ draftId: null });
     activateTabIntent(navigate, newDraftTabIntent(null), undefined);
-  }, [chainActive, activeTourId, navigate]);
+  }, [chainActive, activeTourId, activation, navigate]);
 }

@@ -21,6 +21,7 @@ import { MobileAppStatusBar } from "@/components/layout/status-bar/mobile-app-st
 import { TopLevelTabHost } from "@/components/layout/top-level-tab-host";
 import { TopLevelSurfaceActivationProvider } from "@/components/layout/top-level-surface-activation-provider";
 import { HostScopeReady } from "@/components/layout/host-readiness-controller";
+import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host";
 import { MigrationRunController } from "@/components/migration/migration-run-controller";
 import { LandingTerminalHost } from "@/components/home/terminal-panel/landing-terminal-host";
 import { OpenFolderDialog } from "@/components/open-folder-dialog";
@@ -165,6 +166,9 @@ export function AppShell(props: AppShellProps) {
               {showStatusBar && !isMobile ? <AppStatusBar /> : null}
               <OpenFolderDialog />
               <RemoteFolderPickerDialog />
+              {/* The spotlight tours' one mount: beside the picker it
+                suspends for, outside every epic surface it spotlights. */}
+              <OnboardingFlowHost />
               <QuitInterceptBridge />
               {/* Mounted unconditionally: the bridge itself reads the action's
                 `desktopOnly` flag and registers nothing in the installed

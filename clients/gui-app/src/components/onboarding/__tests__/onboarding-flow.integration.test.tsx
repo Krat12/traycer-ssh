@@ -1,0 +1,485 @@
+import { useEffect, type ReactNode } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { Props as JoyrideProps } from "react-joyride";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host";
+import { ONBOARDING_COMPLETION_TOAST_ID } from "@/components/onboarding/tour/onboarding-completion-toast";
+import { resetActivationForTests } from "@/components/onboarding/tour/tour-activation";
+import { resetTourDismissalForTests } from "@/components/onboarding/tour/use-onboarding-tour-controller";
+import { resetModalPresenceForTests } from "@/components/ui/modal-presence";
+import { TRAYCER_GITHUB_URL } from "@/lib/onboarding-links";
+import { useAuthStore } from "@/stores/auth/auth-store";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
+import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import {
+  INITIAL_FLOW,
+  useOnboardingFlowStore,
+} from "@/stores/onboarding/onboarding-flow-store";
+import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
+import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
+import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
+import { setSystemTabModalApi } from "@/stores/tabs/system-tab-modal-bridge";
+import type { SystemTabModalApi } from "@/stores/tabs/use-system-tab-modal";
+import { useTabsStore } from "@/stores/tabs/store";
+import {
+  emit,
+  focusDraftTab,
+  joyride,
+  props,
+  mountDraftSurface,
+  mountEpicSurface,
+  next,
+  type Surface,
+} from "@/components/onboarding/tour/__tests__/joyride-test-harness";
+
+/**
+ * The shell-level wiring end to end: the flow host's gates, launch resume,
+ * entry navigation through the tab-navigation seam, and the completion
+ * toast - against the real flow / presence / receipts / draft / tab /
+ * announcement stores. Faked at the boundaries only: host readiness (the
+ * gate renders its children), the router's `navigate`, the seam's
+ * `activateTabIntent` (what is asked of it is the contract), the OS link
+ * opener, sonner (the element it is handed is rendered here) and Joyride
+ * (the harness fires its events).
+ */
+
+const seam = vi.hoisted(() => ({
+  activateTabIntent: vi.fn(),
+  navigate: vi.fn(),
+  openLink: vi.fn(),
+  toast: vi.fn(),
+  toastDismiss: vi.fn(),
+}));
+
+vi.mock("react-joyride", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-joyride")>();
+  const harness = await import(
+    "@/components/onboarding/tour/__tests__/joyride-test-harness"
+  );
+  function FakeJoyride(props: JoyrideProps): null {
+    harness.joyride.props = props;
+    useEffect(() => {
+      harness.joyride.mounts += 1;
+    }, []);
+    return null;
+  }
+  return { ...actual, Joyride: FakeJoyride };
+});
+
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => seam.navigate,
+}));
+
+vi.mock("@/lib/tab-navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tab-navigation")>();
+  return { ...actual, activateTabIntent: seam.activateTabIntent };
+});
+
+vi.mock("@/components/layout/host-readiness-controller", () => ({
+  HostScopeReady: (props: { readonly children: ReactNode }) => props.children,
+}));
+
+vi.mock("@/lib/links/open-link", () => ({
+  useOpenLink: () => seam.openLink,
+}));
+
+vi.mock("sonner", () => ({
+  toast: Object.assign(seam.toast, { dismiss: seam.toastDismiss }),
+}));
+
+vi.mock("@/lib/analytics", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/analytics")>();
+  return {
+    ...actual,
+    Analytics: {
+      getInstance: () => ({
+        track: () => undefined,
+        identify: () => undefined,
+        reset: () => undefined,
+      }),
+    },
+  };
+});
+
+const DRAFT_ID = "draft-flow";
+const EPIC_TAB_ID = "tab-flow";
+
+function flow() {
+  return useOnboardingFlowStore.getState();
+}
+
+function signIn(): void {
+  useAuthStore
+    .getState()
+    .setSignedIn(
+      { userId: "user-flow", userName: "U", email: "u@example.com" },
+      { userId: "user-flow", username: "U" },
+      [],
+    );
+}
+
+function fakeSettingsApi(): SystemTabModalApi & {
+  readonly openSettings: Mock<SystemTabModalApi["openSettings"]>;
+} {
+  return {
+    active: null,
+    openSettings: vi.fn<SystemTabModalApi["openSettings"]>(),
+    openHistory: () => undefined,
+    close: () => undefined,
+    setSection: () => undefined,
+    promoteToTab: () => undefined,
+    isOverlayActive: () => false,
+  };
+}
+
+/** The element the toast was handed, rendered so its buttons can be clicked. */
+function renderShownToast(): HTMLElement {
+  const call = seam.toast.mock.calls.at(-1);
+  if (call === undefined) throw new Error("no toast shown");
+  const [element, options] = call;
+  expect(options).toMatchObject({ id: ONBOARDING_COMPLETION_TOAST_ID });
+  render(<>{element}</>);
+  return screen.getByTestId("onboarding-completion-toast");
+}
+
+const surfaces: Surface[] = [];
+function keep(surface: Surface): Surface {
+  surfaces.push(surface);
+  return surface;
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  seam.activateTabIntent.mockReset();
+  seam.navigate.mockReset();
+  seam.openLink.mockReset();
+  seam.toast.mockReset();
+  seam.toastDismiss.mockReset();
+  joyride.props = null;
+  joyride.mounts = 0;
+  resetTourDismissalForTests();
+  resetActivationForTests();
+  resetModalPresenceForTests();
+  setSystemTabModalApi(null);
+  useOnboardingFlowStore.setState({ ...INITIAL_FLOW });
+  useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
+  useLandingReceiptsStore.getState().reset();
+  useFeatureAnnouncementsStore.setState({ consumed: {} });
+  useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+  useTabsStore.setState({
+    items: [],
+    activeItemId: null,
+    systemTabs: { history: null, settings: null },
+    stripOrder: [],
+  });
+  useEpicCanvasStore.setState({
+    tabsById: {},
+    openTabOrder: [],
+    activeTabId: null,
+    mostRecentTabIdByEpicId: {},
+  });
+  if (typeof Element.prototype.checkVisibility !== "function") {
+    Object.defineProperty(Element.prototype, "checkVisibility", {
+      configurable: true,
+      value(this: Element) {
+        return !this.closest("[hidden]");
+      },
+    });
+  }
+  signIn();
+});
+
+afterEach(() => {
+  cleanup();
+  for (const surface of surfaces.splice(0)) surface.remove();
+  useAuthStore.getState().setSignedOut();
+});
+
+describe("flow host gates and mount", () => {
+  it("renders nothing signed out, nothing while the chain is pending, and exactly one tour once a chain is active", () => {
+    useAuthStore.getState().setSignedOut();
+    const view = render(<OnboardingFlowHost />);
+    expect(joyride.props).toBeNull();
+    act(() => {
+      signIn();
+    });
+    view.rerender(<OnboardingFlowHost />);
+    expect(joyride.props).toBeNull();
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    expect(joyride.props?.run).toBe(true);
+    expect(
+      document.querySelectorAll('[data-testid="onboarding-tour-live"]'),
+    ).toHaveLength(1);
+    expect(useOnboardingPresenceStore.getState().tourBusy).toBe(true);
+  });
+
+  it("skipped and completed chains never start on launch", () => {
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().skipChain();
+    });
+    render(<OnboardingFlowHost />);
+    expect(joyride.props).toBeNull();
+    expect(flow().chain).toBe("skipped");
+  });
+});
+
+describe("launch resume", () => {
+  it("resumes a paused checkpoint on the next launch, at the same step", () => {
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().advance("add-folder", "add-folder", "next");
+      flow().pauseChain();
+    });
+    expect(flow().chain).toBe("paused");
+    keep(mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    render(<OnboardingFlowHost />);
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("terminal-mode");
+    expect(joyride.props?.stepIndex).toBe(1);
+  });
+
+  it("does not resume in the launch that paused it (Esc), only on the next one", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    const view = render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    emit({ type: "step:after", action: "close", origin: "keyboard" }, props());
+    expect(flow().chain).toBe("paused");
+    // The host re-mounting in the same launch (a host switch, say).
+    view.unmount();
+    render(<OnboardingFlowHost />);
+    expect(flow().chain).toBe("paused");
+    expect(joyride.props?.run ?? false).toBe(false);
+  });
+});
+
+describe("entry navigation", () => {
+  it("binds to the visible open draft without navigating", () => {
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(flow().context?.draftId).toBe(DRAFT_ID);
+  });
+
+  it("activates the saved draft when it is open but not focused, and a new draft when it is gone - once per activation", () => {
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    // Something else is focused (an epic tab).
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().advance("add-folder", "add-folder", "next");
+      flow().setContext({ draftId: DRAFT_ID });
+      flow().pauseChain();
+    });
+    render(<OnboardingFlowHost />);
+    expect(flow().chain).toBe("active");
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      { kind: "draft", draftId: DRAFT_ID },
+      undefined,
+    );
+    // A later store tick / route change does not pull the user back.
+    act(() => {
+      flow().setContext({ hostId: "host-x" });
+    });
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+
+    // The saved draft is closed: a fresh draft through the seam, never the
+    // old id, and the stale context cleared for the controller to re-bind.
+    act(() => {
+      flow().skipChain();
+      useLandingDraftStore.getState().closeDraft(DRAFT_ID);
+      flow().replayTour("add-folder");
+      flow().setContext({ draftId: DRAFT_ID });
+    });
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(2);
+    expect(seam.activateTabIntent).toHaveBeenLastCalledWith(
+      seam.navigate,
+      { kind: "new-draft", settings: null },
+      undefined,
+    );
+    expect(flow().context?.draftId).toBeNull();
+  });
+
+  it("the panels lesson waits for its surface rather than navigating", () => {
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().replayTour("task-panels");
+    });
+    render(<OnboardingFlowHost />);
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(joyride.props?.run).toBe(true);
+  });
+});
+
+describe("completion toast", () => {
+  function completeChainViaFinish(): void {
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useEpicCanvasStore.setState({
+      tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+      openTabOrder: [EPIC_TAB_ID],
+      activeTabId: EPIC_TAB_ID,
+      mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
+    });
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().replayTour("task-panels");
+    });
+    next();
+    expect(flow().chain).toBe("completed");
+  }
+
+  it("is held while the API is unpublished, then shows once, claims the announcement, and never repeats on a replay", () => {
+    render(<OnboardingFlowHost />);
+    completeChainViaFinish();
+    expect(useOnboardingPresenceStore.getState().tourBusy).toBe(false);
+    expect(seam.toast).not.toHaveBeenCalled();
+    act(() => {
+      setSystemTabModalApi(fakeSettingsApi());
+    });
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["onboarding-completion"],
+    ).toBeDefined();
+    // A later replay that completes again: claimed, so no second toast.
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    next();
+    expect(flow().chain).toBe("completed");
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("is held while the flow is busy (a running tour), and a Skip qualifies", () => {
+    setSystemTabModalApi(fakeSettingsApi());
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    expect(seam.toast).not.toHaveBeenCalled();
+    emit({ type: "tour:end", action: "skip", status: "skipped" }, props());
+    expect(flow().chain).toBe("skipped");
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not toast on a pause, nor for the legacy migration's synthetic skipped chain", () => {
+    setSystemTabModalApi(fakeSettingsApi());
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    const view = render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    emit({ type: "step:after", action: "close", origin: "keyboard" }, props());
+    expect(flow().chain).toBe("paused");
+    expect(seam.toast).not.toHaveBeenCalled();
+    view.unmount();
+
+    // What `migrateLegacyOnboardingKey` writes for an old-tour completer.
+    useOnboardingFlowStore.setState({
+      ...INITIAL_FLOW,
+      modal: "done",
+      chain: "skipped",
+      chainScope: "single",
+      legacyCompleted: true,
+    });
+    render(<OnboardingFlowHost />);
+    expect(seam.toast).not.toHaveBeenCalled();
+    // ...but a deliberate replay that ends here does qualify.
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useEpicCanvasStore.setState({
+      tabsById: { [EPIC_TAB_ID]: { tabId: EPIC_TAB_ID, epicId: "epic-flow", name: "E" } },
+      openTabOrder: [EPIC_TAB_ID],
+      activeTabId: EPIC_TAB_ID,
+      mostRecentTabIdByEpicId: { "epic-flow": EPIC_TAB_ID },
+    });
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    next();
+    expect(flow().chain).toBe("completed");
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+  });
+
+  it("Star on GitHub opens the repo through openLink(url, 'app', null) exactly once; Learn more opens Settings > Onboarding", () => {
+    const api = fakeSettingsApi();
+    setSystemTabModalApi(api);
+    render(<OnboardingFlowHost />);
+    completeChainViaFinish();
+    const body = renderShownToast();
+    const star = screen.getByRole("button", { name: "Star on GitHub" });
+    fireEvent.click(star);
+    fireEvent.click(star);
+    expect(seam.openLink).toHaveBeenCalledTimes(1);
+    expect(seam.openLink).toHaveBeenCalledWith(TRAYCER_GITHUB_URL, "app", null);
+    expect(seam.toastDismiss).toHaveBeenCalledWith(ONBOARDING_COMPLETION_TOAST_ID);
+    expect(body).toBeTruthy();
+    cleanup();
+
+    seam.toastDismiss.mockReset();
+    renderShownToast();
+    fireEvent.click(screen.getByRole("button", { name: "Learn more" }));
+    expect(api.openSettings).toHaveBeenCalledWith({
+      section: "onboarding",
+      resetToGeneral: false,
+    });
+    expect(seam.toastDismiss).toHaveBeenCalledWith(ONBOARDING_COMPLETION_TOAST_ID);
+  });
+
+  it("Learn more is retained (disabled, not dismissed) when the Settings bridge vanished before the click", () => {
+    const api = fakeSettingsApi();
+    setSystemTabModalApi(api);
+    render(<OnboardingFlowHost />);
+    completeChainViaFinish();
+    renderShownToast();
+    act(() => {
+      setSystemTabModalApi(null);
+    });
+    const learnMore = screen.getByRole("button", { name: "Learn more" });
+    expect(learnMore.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(learnMore);
+    expect(api.openSettings).not.toHaveBeenCalled();
+    expect(seam.toastDismiss).not.toHaveBeenCalled();
+  });
+});

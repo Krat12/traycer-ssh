@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { act, cleanup, render } from "@testing-library/react";
-import type { EventData, Props as JoyrideProps } from "react-joyride";
+import type { Props as JoyrideProps } from "react-joyride";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingTour } from "@/components/onboarding/tour/onboarding-tour";
 import {
@@ -12,11 +12,26 @@ import {
   resetTourDismissalForTests,
   wasTourDismissedThisLaunch,
 } from "@/components/onboarding/tour/use-onboarding-tour-controller";
-import type { TourAnchor } from "@/components/onboarding/tour/tour-targets";
+import {
+  currentProps,
+  emit,
+  focusEpicTab,
+  focusDraftTab,
+  joyride,
+  mountDraftSurface,
+  mountEpicSurface,
+  mutate,
+  next,
+  present,
+  props,
+  sized,
+  type Surface,
+} from "./joyride-test-harness";
 import {
   registerPresentedModal,
   resetModalPresenceForTests,
 } from "@/components/ui/modal-presence";
+import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import {
   INITIAL_FLOW,
@@ -24,10 +39,8 @@ import {
 } from "@/stores/onboarding/onboarding-flow-store";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
-import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
 import { useSettingsStore } from "@/stores/settings/settings-store";
-import { tabItemId } from "@/stores/tabs/layout";
 import { useTabsStore } from "@/stores/tabs/store";
 import { useRemoteFolderPickerStore } from "@/stores/workspace/remote-folder-picker-store";
 import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-store";
@@ -43,17 +56,13 @@ import { useWorkspaceFoldersStore } from "@/stores/workspace/workspace-folders-s
  * resolver's presentability filter can answer.
  */
 
-const joyride = vi.hoisted(() => ({
-  props: null as JoyrideProps | null,
-  mounts: 0,
-}));
-
 vi.mock("react-joyride", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-joyride")>();
+  const harness = await import("./joyride-test-harness");
   function FakeJoyride(props: JoyrideProps): null {
-    joyride.props = props;
+    harness.joyride.props = props;
     useEffect(() => {
-      joyride.mounts += 1;
+      harness.joyride.mounts += 1;
     }, []);
     return null;
   }
@@ -73,219 +82,6 @@ const DRAFT_ID = "draft-tour";
 const HOST_ID = "host-tour";
 const EPIC_TAB_ID = "tab-epic-1";
 const EPIC_ID = "epic-1";
-
-function props(): JoyrideProps {
-  if (joyride.props === null) throw new Error("Joyride not rendered");
-  return joyride.props;
-}
-
-function currentProps(): JoyrideProps {
-  return props();
-}
-
-/** Fires an event the way react-joyride 3.2 would for the current step. */
-function emit(
-  overrides: Partial<EventData> & { readonly type: EventData["type"] },
-  from: JoyrideProps,
-): void {
-  const stepIndex = from.stepIndex ?? 0;
-  const step = from.steps[stepIndex];
-  if (step === undefined) throw new Error("no step at index");
-  const data: EventData = {
-    type: overrides.type,
-    action: overrides.action ?? "update",
-    status: overrides.status ?? "running",
-    lifecycle: overrides.lifecycle ?? "tooltip",
-    index: overrides.index ?? stepIndex,
-    size: from.steps.length,
-    origin: overrides.origin ?? null,
-    controlled: true,
-    scrolling: false,
-    waiting: false,
-    error: null,
-    scroll: null,
-    step: overrides.step ?? {
-      ...step,
-      arrowBase: 32,
-      arrowColor: "#fff",
-      arrowSize: 16,
-      arrowSpacing: 12,
-      backgroundColor: "#fff",
-      beaconSize: 36,
-      beaconTrigger: "click",
-      beforeTimeout: 5000,
-      buttons: ["primary", "skip", "close"],
-      closeButtonAction: "close",
-      skipBeacon: true,
-      dismissKeyAction: "close",
-      disableFocusTrap: true,
-      hideOverlay: false,
-      skipScroll: false,
-      blockTargetInteraction: false,
-      isFixed: false,
-      loaderDelay: 300,
-      locale: {},
-      offset: 10,
-      overlayClickAction: false,
-      overlayColor: "#000",
-      placement: step.placement ?? "bottom",
-      primaryColor: "#000",
-      scrollDuration: 300,
-      scrollOffset: 20,
-      showProgress: false,
-      spotlightRadius: 8,
-      targetWaitTimeout: 8000,
-      textColor: "#000",
-      zIndex: 45,
-      spotlightPadding: { top: 8, right: 8, bottom: 8, left: 8 },
-      styles: {
-        arrow: {},
-        beacon: {},
-        beaconInner: {},
-        beaconOuter: {},
-        beaconWrapper: {},
-        buttonBack: {},
-        buttonClose: {},
-        buttonPrimary: {},
-        buttonSkip: {},
-        floater: {},
-        loader: {},
-        overlay: {},
-        spotlight: {},
-        tooltip: {},
-        tooltipContainer: {},
-        tooltipContent: {},
-        tooltipFooter: {},
-        tooltipFooterSpacer: {},
-        tooltipTitle: {},
-      },
-    },
-  };
-  act(() => {
-    from.onEvent?.(data, {
-      close: () => undefined,
-      go: () => undefined,
-      info: () => {
-        throw new Error("unused");
-      },
-      next: () => undefined,
-      open: () => undefined,
-      prev: () => undefined,
-      replay: () => undefined,
-      reset: () => undefined,
-      skip: () => undefined,
-      start: () => undefined,
-      stop: () => undefined,
-    });
-  });
-}
-
-/** A DOM change plus the microtask the MutationObserver delivers on. */
-async function mutate(change: () => void): Promise<void> {
-  await act(async () => {
-    change();
-    await Promise.resolve();
-  });
-}
-
-function next(): void {
-  emit({ type: "step:after", action: "next", origin: "button_primary" }, currentProps());
-}
-
-function present(): void {
-  emit({ type: "tooltip" }, currentProps());
-}
-
-// ── DOM fixtures ────────────────────────────────────────────────────────────
-
-function sized(element: HTMLElement): HTMLElement {
-  element.getBoundingClientRect = () => new DOMRect(10, 10, 120, 32);
-  return element;
-}
-
-interface Surface {
-  readonly root: HTMLElement;
-  readonly anchors: Readonly<Record<string, HTMLElement>>;
-  readonly remove: () => void;
-}
-
-function mountDraftSurface(
-  draftId: string,
-  anchors: ReadonlyArray<TourAnchor>,
-  visible: boolean,
-): Surface {
-  const surface = document.createElement("div");
-  surface.setAttribute("data-surface-ref", `draft:${draftId}`);
-  surface.setAttribute("data-visible", visible ? "true" : "false");
-  const root = sized(document.createElement("div"));
-  root.setAttribute("data-testid", "landing-draft-surface");
-  surface.append(root);
-  const made: Record<string, HTMLElement> = {};
-  for (const anchor of anchors) {
-    const node = sized(document.createElement("button"));
-    node.setAttribute("data-tour", anchor);
-    node.textContent = anchor;
-    root.append(node);
-    made[anchor] = node;
-  }
-  document.body.append(surface);
-  return {
-    root,
-    anchors: made,
-    remove: () => {
-      surface.remove();
-    },
-  };
-}
-
-function mountEpicSurface(tabId: string, collapsed: boolean): Surface {
-  const surface = document.createElement("div");
-  surface.setAttribute("data-surface-ref", `epic:${tabId}`);
-  surface.setAttribute("data-visible", "true");
-  const root = sized(document.createElement("div"));
-  root.setAttribute("data-epic-surface", tabId);
-  surface.append(root);
-  const column = sized(document.createElement("div"));
-  column.setAttribute("data-tour", "epic-sidebar-column");
-  const rail = sized(document.createElement("div"));
-  rail.setAttribute("data-tour", "epic-sidebar-rail");
-  if (collapsed) column.hidden = true;
-  root.append(column, rail);
-  document.body.append(surface);
-  return {
-    root,
-    anchors: { column, rail },
-    remove: () => {
-      surface.remove();
-    },
-  };
-}
-
-function focusDraftTab(draftId: string): void {
-  const ref = { kind: "draft" as const, id: draftId };
-  useTabsStore.setState({
-    items: [{ kind: "tab", id: tabItemId(ref), ref }],
-    activeItemId: tabItemId(ref),
-    systemTabs: { history: null, settings: null },
-    stripOrder: [ref],
-  });
-}
-
-function focusEpicTab(tabId: string, epicId: string): void {
-  const ref = { kind: "epic" as const, id: tabId };
-  useEpicCanvasStore.setState({
-    tabsById: { [tabId]: { tabId, epicId, name: "Epic" } },
-    openTabOrder: [tabId],
-    activeTabId: tabId,
-    mostRecentTabIdByEpicId: { [epicId]: tabId },
-  });
-  useTabsStore.setState({
-    items: [{ kind: "tab", id: tabItemId(ref), ref }],
-    activeItemId: tabItemId(ref),
-    systemTabs: { history: null, settings: null },
-    stripOrder: [ref],
-  });
-}
 
 function startChain(branch: "no-sessions" | "sessions"): void {
   act(() => {
