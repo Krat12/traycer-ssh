@@ -2238,7 +2238,13 @@ describe("officeArchivedByHost", () => {
     expect(onB).toBeGreaterThan(0);
     expect(onNull).toBe(1);
 
-    const tally = officeArchivedByHost(partition, statusById);
+    const revealed = new Set(agents.map((person) => person.id));
+    const tally = officeArchivedByHost({
+      partition,
+      agents,
+      visibleAgentIds: revealed,
+      cursorMs: null,
+    });
     expect(tally.get("host-a")).toBe(onA);
     expect(tally.get("host-b")).toBe(onB);
     expect(tally.get(null)).toBe(onNull);
@@ -2250,9 +2256,16 @@ describe("officeArchivedByHost", () => {
     if (drop === undefined) {
       throw new Error("expected an archived agent on host-a");
     }
-    const without = new Map(statusById);
-    without.delete(drop.id);
-    const after = officeArchivedByHost(partition, without);
+    // The reveal filter, which is what "no entry" used to stand in for: an
+    // agent the cursor has not reached is not in anybody's archive yet.
+    const hidden = new Set(revealed);
+    hidden.delete(drop.id);
+    const after = officeArchivedByHost({
+      partition,
+      agents,
+      visibleAgentIds: hidden,
+      cursorMs: null,
+    });
     expect(after.get("host-a")).toBe(onA - 1);
     expect(after.get("host-b")).toBe(onB);
     expect(after.get(null)).toBe(onNull);

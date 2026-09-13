@@ -23,7 +23,10 @@
  * must never move anybody's desk.
  */
 import { compareByCreation } from "@/lib/comm-graph/office/office-layout";
-import { isOfficeHotStatus } from "@/lib/comm-graph/office/office-status";
+import {
+  isOfficeHotStatus,
+  officeArchivedAsOf,
+} from "@/lib/comm-graph/office/office-status";
 import type {
   OfficeAgentInput,
   OfficeAgentStatus,
@@ -843,29 +846,61 @@ export function partitionOfficePopulation(
  * HOW MANY OF EACH BUILDING'S AGENTS HAVE BEEN ARCHIVED, as of the cursor.
  *
  * What the archive's sign counts (C5). It is asked of the PARTITION and the
- * statuses rather than of the scene's walk-outs, and that is the whole point:
- * a walk-out is a character that happened to leave while somebody was
+ * archive MOMENT rather than of the scene's walk-outs, and that is the whole
+ * point: a walk-out is a character that happened to leave while somebody was
  * watching, so a floor opened at a cursor where three hundred records were
  * already archived has seen none of them go. The partition knows which
- * building every record belongs to and the status map says which of them are
- * archived at this cursor, so the count is right on the first frame and at
- * every cursor - including one scrubbed back to before an archival, where the
- * agent is at its desk and must not be in the tally.
+ * building every record belongs to, so the count is right on the first frame
+ * and at every cursor - including one scrubbed back to before an archival,
+ * where the agent is at its desk and must not be in the tally.
+ *
+ * IT READS `archivedAt`, NOT THE RENDERED STATUS, and that distinction is the
+ * whole of this function. `officeAgentStatuses` ranks `failure`, `attention`,
+ * `awaiting` and `working` ABOVE `archived` on purpose - a ghosted desk is the
+ * less informative reading of a record that is visibly doing something - so
+ * `statusById.get(id) === "archived"` answers "how is this desk painted", not
+ * "has this record been archived". An archived agent carrying an unread
+ * failure reads `failure`; an archived sender whose request was never answered
+ * reads `awaiting` at EVERY cursor, because `awaiting` is derived from the
+ * event prefix and survives a historical one. Counting the paint would drop
+ * both from their host's tally, and would move the number when somebody
+ * cleared a notification or answered an old request - neither of which is an
+ * archival. {@link officeArchivedAsOf} is the same predicate the scene departs
+ * a character on, so the counter and the empty desk cannot disagree.
  *
  * Keyed by `hostId` with `null` a key of its own, because the unattributed
  * building is a building and its archive counts its own records.
  *
- * An agent with no entry in `statusById` does not exist at this cursor and is
- * not counted: `officeAgentStatuses` gives a status to exactly the agents the
- * cursor has reached, which is the same filter a board's roster applies.
+ * An agent the cursor has not revealed is not counted. That is the same filter
+ * `officeAgentStatuses` applies before it gives anybody a status, and it is
+ * asked for directly here rather than inferred from a status map's keys.
  */
-export function officeArchivedByHost(
-  partition: OfficePopulation,
-  statusById: ReadonlyMap<string, OfficeAgentStatus>,
-): ReadonlyMap<string | null, number> {
+export function officeArchivedByHost(args: {
+  readonly partition: OfficePopulation;
+  /**
+   * The records themselves, for the one field the partition does not carry:
+   * `OfficePopulationMember` is an id, a host, a class and a team.
+   */
+  readonly agents: ReadonlyArray<{
+    readonly id: string;
+    readonly archivedAt: number | null;
+  }>;
+  readonly visibleAgentIds: ReadonlySet<string>;
+  /** Where the transport bar is; `null` means live. */
+  readonly cursorMs: number | null;
+}): ReadonlyMap<string | null, number> {
+  const { agents, cursorMs, partition, visibleAgentIds } = args;
+  const archivedAtById = new Map<string, number | null>(
+    agents.map((agent) => [agent.id, agent.archivedAt]),
+  );
   const byHost = new Map<string | null, number>();
   for (const member of partition.members.values()) {
-    if (statusById.get(member.agentId) !== "archived") continue;
+    if (!visibleAgentIds.has(member.agentId)) continue;
+    // A member the agent list does not carry cannot be shown to have been
+    // archived, so it is not counted: `undefined` is "no record", not "null".
+    const archivedAt = archivedAtById.get(member.agentId);
+    if (archivedAt === undefined) continue;
+    if (!officeArchivedAsOf(archivedAt, cursorMs)) continue;
     byHost.set(member.hostId, (byHost.get(member.hostId) ?? 0) + 1);
   }
   return byHost;
