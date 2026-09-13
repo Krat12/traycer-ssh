@@ -1446,6 +1446,9 @@ const NO_IDS: ReadonlyArray<string> = [];
 /** What the engine's threshold reads when no crash is among the transitions. */
 const NO_CRASH_COUNTS: ReadonlyMap<string, number> = new Map();
 
+/** A summons that supersedes nothing, which is every one but the engine's. */
+const NO_VEHICLES: ReadonlyArray<OfficeVehicle> = [];
+
 /** Nobody spoken for, which is what a plan made from scratch is told. */
 const NO_OCCUPANCY: ReadonlyMap<string, string> = new Map();
 
@@ -3700,6 +3703,7 @@ export class OfficeScene {
         room: desk,
         kerbTile: desk.kerbTile,
         agentId,
+        replaces: NO_VEHICLES,
       });
       return;
     }
@@ -3725,6 +3729,7 @@ export class OfficeScene {
       room: ward,
       kerbTile: ward.kerbTile,
       agentId,
+      replaces: NO_VEHICLES,
     });
   }
 
@@ -3742,12 +3747,21 @@ export class OfficeScene {
     kerbTile: OfficeTilePos,
     agentId: string,
   ): void {
-    this.vehicles = this.vehicles.filter(
+    // NAMES what it supersedes and removes nothing itself. `summon` owns the
+    // order, because the order is the contract: the van comes off the road
+    // only once the trip replacing it is certain to happen.
+    const vans = this.vehicles.filter(
       (vehicle) =>
-        vehicle.kind !== "ambulance" ||
-        vehicle.civicRoomId !== room.civicRoomId,
+        vehicle.kind === "ambulance" &&
+        vehicle.civicRoomId === room.civicRoomId,
     );
-    this.summon({ kind: "fire-engine", room, kerbTile, agentId });
+    this.summon({
+      kind: "fire-engine",
+      room,
+      kerbTile,
+      agentId,
+      replaces: vans,
+    });
   }
 
   /**
@@ -3787,17 +3801,27 @@ export class OfficeScene {
     readonly room: OfficeCivicRoom;
     readonly kerbTile: OfficeTilePos;
     readonly agentId: string;
+    /**
+     * Trips this one SUPERSEDES: the engine's room's ambulance, and empty for
+     * everything else.
+     *
+     * Passed in rather than removed by the caller, because the order is the
+     * whole contract and a caller that destroys first cannot be given it.
+     * Every gate that can refuse this trip answers BEFORE anything comes off
+     * the road, and the riders of whatever is taken are inherited rather than
+     * dropped.
+     */
+    readonly replaces: ReadonlyArray<OfficeVehicle>;
   }): void {
-    const { agentId, kerbTile, kind, room } = args;
+    const { agentId, kerbTile, kind, replaces, room } = args;
     const standing = this.vehicles.find(
       (vehicle) =>
         vehicle.kind === kind && vehicle.civicRoomId === room.civicRoomId,
     );
     if (standing !== undefined) {
       // Joins the trip and extends its wait rather than queuing a second van.
-      if (!standing.forAgentIds.includes(agentId)) {
-        standing.forAgentIds.push(agentId);
-      }
+      // A join cannot be refused, so the superseded trips go here too.
+      this.absorb(standing, agentId, replaces);
       if (standing.phase === "wait") standing.elapsedMs = 0;
       return;
     }
@@ -3807,18 +3831,72 @@ export class OfficeScene {
     const floor = this.currentLayout.floors[room.floorIndex];
     if (floor.road === null) return;
     // Viewport-gated at dispatch, on the KERB: a trip nobody can see is a trip
-    // nobody needs. One already on the road finishes even if the camera leaves.
+    // nobody needs. One already on the road finishes even if the camera leaves
+    // - INCLUDING a van an escalation would otherwise have replaced. Refusing
+    // here after having already removed it is how a standing trip disappears
+    // with nothing sent in its place.
     if (!this.tileInLastViewRect(kerbTile)) return;
+    // NOTHING IS DESTROYED ABOVE THIS LINE. Every refusal is behind us, so
+    // what follows cannot leave the road emptier than it found it.
+    const inherited = this.clearReplaced(replaces);
+    // THE CAP IS TESTED AFTER THE REMOVAL, so an engine never loses its slot
+    // to the van it is superseding. Where there was a van to replace, a slot
+    // has just been freed on a road that holds at most two, so this cannot
+    // refuse. Where there was none, the ordinary cap applies and the trigger
+    // is dropped like any other - the room still receives its agents, and
+    // only the show is skipped.
     if (this.vehicles.length >= MAX_VEHICLES) return;
     this.vehicles.push({
       kind,
       floorIndex: room.floorIndex,
       civicRoomId: room.civicRoomId,
-      forAgentIds: [agentId],
+      forAgentIds: [agentId, ...inherited.filter((id) => id !== agentId)],
       phase: "arrive",
       elapsedMs: 0,
       facing: this.roadFacingAt(floor.road, 0, 1),
     });
+  }
+
+  /**
+   * Adds a rider to a standing trip, along with everyone the trips it
+   * supersedes were already coming for.
+   */
+  private absorb(
+    vehicle: OfficeVehicle,
+    agentId: string,
+    replaces: ReadonlyArray<OfficeVehicle>,
+  ): void {
+    for (const riderId of [agentId, ...this.clearReplaced(replaces)]) {
+      if (vehicle.forAgentIds.includes(riderId)) continue;
+      vehicle.forAgentIds.push(riderId);
+    }
+  }
+
+  /**
+   * Takes the superseded trips off the road and answers who they were for.
+   *
+   * Their riders are still walking to the room - an agent halfway to a bed
+   * does not stop being owed a wait because the van that came for it was
+   * replaced by an engine - so the caller hands them to whatever takes its
+   * place. Dropping them was worth a finding: the engine counted only the
+   * agent that tripped the threshold, found it settled, and left after the
+   * four second minimum while the inherited riders were still crossing.
+   */
+  private clearReplaced(
+    replaces: ReadonlyArray<OfficeVehicle>,
+  ): ReadonlyArray<string> {
+    if (replaces.length === 0) return NO_IDS;
+    const inherited: string[] = [];
+    for (const superseded of replaces) {
+      for (const riderId of superseded.forAgentIds) {
+        if (inherited.includes(riderId)) continue;
+        inherited.push(riderId);
+      }
+    }
+    this.vehicles = this.vehicles.filter(
+      (vehicle) => !replaces.includes(vehicle),
+    );
+    return inherited;
   }
 
   /**
