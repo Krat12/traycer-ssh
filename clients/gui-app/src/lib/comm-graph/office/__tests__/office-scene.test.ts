@@ -5951,6 +5951,156 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     expect(arrived, `${sitter.id} never got home from the bench`).toBe(true);
   });
 
+  /** Whether this rectangle covers this point, half-open as the scene reads it. */
+  function inRect(rect: OfficeRect, point: OfficePoint): boolean {
+    return (
+      point.x >= rect.x &&
+      point.x < rect.x + rect.width &&
+      point.y >= rect.y &&
+      point.y < rect.y + rect.height
+    );
+  }
+
+  /** The rectangle a civic seat covers on screen, however its view draws it. */
+  function civicBoxOf(scene: OfficeScene, seat: OfficeSeat): OfficeRect {
+    if (seat.hitBox !== null) return seat.hitBox;
+    const projector = view.painter.projector(layoutOf(scene));
+    const corner = projector.project(seat.chairTile.col, seat.chairTile.row);
+    const far = projector.project(
+      seat.chairTile.col + seat.hitTiles.width,
+      seat.chairTile.row + seat.hitTiles.height,
+    );
+    return {
+      x: corner.x,
+      y: corner.y,
+      width: far.x - corner.x,
+      height: far.y - corner.y,
+    };
+  }
+
+  /** A corner of the furniture that the occupant's own body does not cover. */
+  function furniturePointOutside(
+    box: OfficeRect,
+    body: OfficeRect,
+  ): OfficePoint | null {
+    const right = box.x + box.width - 1;
+    const bottom = box.y + box.height - 1;
+    const corners: ReadonlyArray<OfficePoint> = [
+      { x: box.x, y: bottom },
+      { x: right, y: bottom },
+      { x: box.x, y: box.y },
+      { x: right, y: box.y },
+    ];
+    return corners.find((point) => !inRect(body, point)) ?? null;
+  }
+
+  /** Whether anything painted in this frame covers this point. */
+  function paintedOver(frame: OfficeFrame, point: OfficePoint): boolean {
+    const drawn = [
+      ...frame.floor,
+      ...frame.props,
+      ...(frame.world ?? []).map((entry) => entry.drawable),
+    ];
+    return drawn.some((drawable) => {
+      if (drawable.kind !== "sprite") return false;
+      const size = officeSpriteSize(drawable.sprite);
+      return inRect({ x: drawable.x, y: drawable.y, ...size }, point);
+    });
+  }
+
+  /**
+   * READ X'S X1: A PATIENT'S BED ANSWERS A CLICK WHEREVER THE CAMERA IS.
+   *
+   * `seatProps` returns nothing for a civic seat in the isometric painter - a bed
+   * is furniture the plan stands up, and O1 stopped a workstation being built on
+   * top of a patient - so the scene's world hit regions had no depth to place the
+   * occupant's box at and skipped it. What hid that is the whole-world frame: with
+   * every desk on screen the seat borrowed its owner's DESK depth, so a region
+   * existed and looked right. Frame a window that leaves the patient's own
+   * building out - which is every camera actually pointed at a ward - and the bed
+   * had no region at all: no hover card, no "where" line, no camera target, while
+   * the patient is plainly drawn lying in it. `hitTest` took the same path and so
+   * did not need a camera to fail.
+   *
+   * THE POINT IS ON THE FURNITURE AND NOT ON THE BODY, which is what makes this
+   * about the seat rather than the character: a bed is two tiles wide and the
+   * body standing on it is one, so its far corner is bed and nothing else.
+   *
+   * WHAT EACH VIEW ANSWERS is deliberately not asserted per name. The Floor and
+   * Mission control paint in layers and hit in draw order, so depth never came
+   * into it; the storeyed pair paint their own civic seats and carry their own
+   * depth; the two isometric views are the exposed ones. The promise is the same
+   * for all six and the case is written once.
+   */
+  it("hits a patient on its bed with the home desk out of frame", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const only = agent({ id: "root-only", createdAt: 1 });
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: [only],
+        visibleAgentIds: new Set([only.id]),
+        statusById: new Map<string, OfficeAgentStatus>([[only.id, "failure"]]),
+        // Reduced motion: the bed is taken outright, so there is a patient IN it
+        // rather than one walking to it.
+        reducedMotion: true,
+      }),
+    );
+    const book = bookOf(scene);
+    expect(book.civicClaimOf(only.id), `${only.id} never took a bed`).toBe(
+      "bed",
+    );
+    const bed = book.effectiveSeat(only.id);
+    const desk = book.assignedSeat(only.id);
+    if (bed === null || desk === null) {
+      throw new Error("a bedded agent owes both a bed and a desk");
+    }
+    expect(bed.civicRoomId).not.toBeNull();
+
+    const wide = frameOf(scene);
+    const body = characterRect(wide, only.id);
+    const point = furniturePointOutside(civicBoxOf(scene, bed), body);
+    expect(
+      point,
+      `no ${bed.kind} pixel outside ${only.id}'s body`,
+    ).not.toBeNull();
+    if (point === null) return;
+
+    // THE WINDOW: two tiles of ward, and the patient's own desk outside it.
+    const near: OfficeRect = {
+      x: point.x - OFFICE_TILE,
+      y: point.y - OFFICE_TILE,
+      width: OFFICE_TILE * 2,
+      height: OFFICE_TILE * 2,
+    };
+    const home = view.painter
+      .projector(layoutOf(scene))
+      .project(desk.chairTile.col, desk.chairTile.row);
+    expect(inRect(near, home), "the window still holds the home desk").toBe(
+      false,
+    );
+
+    // THE BED IS DRAWN THERE, so a region for it is a region over something the
+    // reader can see - which is the whole reason the depth check exists.
+    const framed = scene.frame(2, near);
+    expect(paintedOver(framed, point), "nothing is painted at that point").toBe(
+      true,
+    );
+
+    // AND IT RESOLVES TO THE PATIENT, through the frame's own regions and
+    // through the pointer path, which build their depths separately.
+    const hit = framed.hitRegions.find((region) => inRect(region.rect, point));
+    expect(hit?.agentId, "the frame's regions do not reach the bed").toBe(
+      only.id,
+    );
+    expect(scene.hitTest(point), "hitTest does not reach the bed").toBe(
+      only.id,
+    );
+  });
+
   /** The four host-b agents, plus the host-a arrival that renumbered them. */
   const HOST_B_WARD: ReadonlyArray<OfficeAgentInput> = [
     agent({ id: "root-b", hostId: "host-b", createdAt: 1 }),
