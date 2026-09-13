@@ -110,6 +110,41 @@ const SOLO_CHUNK_RESERVE = 4;
 /** `H` is never shorter than the tallest tree in the district's own park. */
 const MIN_STACK_HEIGHT = 24;
 
+/**
+ * THE DISTRICT'S FOOT, three rows deep where its sides keep one.
+ *
+ * The host plate hangs on the last row of the district (`isoHostSign`), and a
+ * plate's backing is a fixed fourteen screen pixels tall however far out the
+ * camera is. Two plates `d` apart in `col + row` clear each other by
+ * `(d * 8 + overhang(lower) - overhang(upper)) * zoom` pixels; the host plate
+ * hangs off two-tile art with no overhang and a lot's plate off one-tile art
+ * with eight, so the pair clears by `(d * 8 - 8) * zoom` and needs 14. That is
+ * `d >= 4` at office zoom and `d >= 3` at close-up, so FOUR is the number, and
+ * plate widths never enter it.
+ *
+ * With a one-row foot the last lot row ends one row above the plate, and a
+ * two-row lot puts its own plate exactly two rows above it: `d = 2`, which
+ * overprints by 8.4 px at 0.7 and 1.2 px at 1.6. Measured across populations
+ * 8-140 plus eight larger ones, that happens at TWENTY-TWO of them - 15-17,
+ * 50-52, 85-91, 99-105, 112, 160 - every one with the same signature, a lot
+ * plate two rows above the host plate in its own column. Three rows here makes
+ * the smallest `d` four, and the sweep finds nothing at any population.
+ *
+ * THREE RATHER THAN FOUR because the lot's own body pays for one row: a two-row
+ * lot ending at the last content row has its plate one row above that, so a
+ * three-row foot puts four rows between the two plates. A one-row lot would need
+ * four, and City has none - the smallest lot is a two-row door pair.
+ *
+ * IT IS CITY'S OWN, NOT `ISO_DISTRICT_RING`. Raising the shared ring to 3 was
+ * measured and fails three ways: it does not fix City at all, because the ring
+ * grows on every side and content and plate shift down together leaving `d` at
+ * 2 and all 22 populations still overprinting; it breaks Campus, whose walk to
+ * its civic seats and kerbs reds at 12 and 309 agents; and it costs four rows
+ * and four columns in both views instead of two rows in one. This costs +2 rows
+ * and no columns: 18x16 -> 18x18, 44x48 -> 44x50, 70x81 -> 70x83.
+ */
+const CITY_FOOT_RING_ROWS = 3;
+
 const PARK_BLOCK: IsoBlockSpec = {
   blockId: "park",
   cols: ISO_COURTYARD_COLS,
@@ -739,7 +774,7 @@ function raiseSkyline(
       cols,
       district.frozen.col + district.frozen.widthBudget + ISO_DISTRICT_RING * 2,
     );
-    rows = Math.max(rows, bottom + ISO_DISTRICT_RING);
+    rows = Math.max(rows, bottom + CITY_FOOT_RING_ROWS);
   }
   return { storeysBySeatId, spireSeatIds, cols, rows, stackHeight };
 }
@@ -888,7 +923,7 @@ function buildDistrict(
     col: district.frozen.col,
     row: 0,
     cols: district.frozen.widthBudget + ISO_DISTRICT_RING * 2,
-    rows: bottom + ISO_DISTRICT_RING,
+    rows: bottom + CITY_FOOT_RING_ROWS,
   };
   const build: IsoDistrictBuild = {
     hostId: district.frozen.hostId,
