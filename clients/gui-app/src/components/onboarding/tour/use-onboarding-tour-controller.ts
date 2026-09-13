@@ -243,9 +243,7 @@ function refKey(ref: TabRef | null): string | null {
 }
 
 /** The epic header tab for a focused epic ref, for its epic id and host. */
-function epicTabFor(
-  ref: TabRef,
-): {
+function epicTabFor(ref: TabRef): {
   readonly epicId: string;
   readonly tabId: string;
   readonly hostId: string | null;

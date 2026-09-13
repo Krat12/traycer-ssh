@@ -322,7 +322,10 @@ export function JoyrideSpike(): React.ReactElement {
   // keydown listener) in the microtask checkpoint between listeners, and the
   // same keydown then bubbles to body. Deferring the resume by one macrotask
   // is enough; the driver measures both arms.
-  const modalsClear = useDeferredResume(presentedModalCount > 0, resumeDeferred);
+  const modalsClear = useDeferredResume(
+    presentedModalCount > 0,
+    resumeDeferred,
+  );
   const run =
     runRequested &&
     tourStatus === "active" &&
