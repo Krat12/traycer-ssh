@@ -3,6 +3,7 @@
  * Update that file whenever this settings surface changes.
  */
 import { useId, useState, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { ImportLoginsDialog } from "@/components/settings/import-logins-dialog";
 import { SettingsGroup } from "@/components/settings/settings-group";
 import { SettingsPanelShell } from "@/components/settings/settings-panel-shell";
@@ -32,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { useSettingsDensity } from "@/providers/settings-density-context";
 import { useRunnerHostOrNull } from "@/providers/use-runner-host";
 import {
+  selectOnboardingFlowData,
   useOnboardingFlowStore,
   type OnboardingFlowData,
 } from "@/stores/onboarding/onboarding-flow-store";
@@ -114,7 +116,11 @@ function closeSettingsOverlay(): void {
 }
 
 function OnboardingLessons(): ReactNode {
-  const flow = useOnboardingFlowStore();
+  const flow = useOnboardingFlowStore(useShallow(selectOnboardingFlowData));
+  const replayTour = useOnboardingFlowStore((state) => state.replayTour);
+  const showWelcomeModalAgain = useOnboardingFlowStore(
+    (state) => state.showWelcomeModalAgain,
+  );
   const modalApiPublished = useSystemTabModalApiPublished();
   const [expandedDemo, setExpandedDemo] = useState<LessonDioramaScene | null>(
     null,
@@ -123,7 +129,7 @@ function OnboardingLessons(): ReactNode {
   const replay = (tourId: TourId): void => {
     trackLessonOpened(tourId);
     closeSettingsOverlay();
-    flow.replayTour(tourId);
+    replayTour(tourId);
   };
 
   return (
@@ -133,7 +139,7 @@ function OnboardingLessons(): ReactNode {
         canAct={modalApiPublished}
         onShowWelcomeAgain={() => {
           closeSettingsOverlay();
-          flow.showWelcomeModalAgain();
+          showWelcomeModalAgain();
         }}
       />
 
@@ -349,18 +355,32 @@ function DemoLessonCard(props: {
  * to land on something honest. The dialog mounts only after an enabled
  * click, so rendering the page never starts a scan.
  */
+/** Why the import cannot run here, or `undefined` for the row's own copy. */
+function loginImportExplanation(input: {
+  readonly available: boolean;
+  readonly hasBridge: boolean;
+  readonly saveLoginsEnabled: boolean | null;
+}): string | undefined {
+  if (input.available) return undefined;
+  if (!input.hasBridge) {
+    return "Available in the desktop app, where the browser can keep logins.";
+  }
+  if (input.saveLoginsEnabled === false) {
+    return "Turn on Saved logins under Settings ▸ General ▸ Browser first - the import writes the logins the browser keeps.";
+  }
+  return "Saved logins can't be read right now, so the import can't start.";
+}
+
 function LoginImportLessonCard(): ReactNode {
   const browserView = useRunnerHostOrNull()?.browserView ?? null;
   const saveLoginsEnabled = useBrowserSaveLoginsEnabled(browserView);
   const available = useLoginImportAvailable() && !isMobileApp();
   const [importOpen, setImportOpen] = useState(false);
-  const explanation = available
-    ? undefined
-    : browserView === null || isMobileApp()
-      ? "Available in the desktop app, where the browser can keep logins."
-      : saveLoginsEnabled === false
-        ? "Turn on Saved logins under Settings ▸ General ▸ Browser first - the import writes the logins the browser keeps."
-        : "Saved logins can't be read right now, so the import can't start.";
+  const explanation = loginImportExplanation({
+    available,
+    hasBridge: browserView !== null && !isMobileApp(),
+    saveLoginsEnabled,
+  });
   return (
     <>
       <LessonCard

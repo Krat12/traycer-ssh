@@ -51,7 +51,7 @@ function activeTabText(): string {
   const active = screen
     .getAllByTestId("lesson-diorama-task-tab")
     .find((tab) => tab.hasAttribute("data-active"));
-  return active === undefined ? "" : (active.textContent ?? "");
+  return active === undefined ? "" : active.textContent;
 }
 
 function splitPaneHarnesses(): ReadonlyArray<string> {

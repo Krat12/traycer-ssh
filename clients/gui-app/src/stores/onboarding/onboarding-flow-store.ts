@@ -485,6 +485,17 @@ if (typeof localStorage !== "undefined") {
 
 // ── Store ───────────────────────────────────────────────────────────────────
 
+/**
+ * The data fields alone - what persists, and what a surface that reads the
+ * whole flow (Settings ▸ Onboarding) selects with `useShallow`, so it
+ * re-renders on a field changing rather than on every store write.
+ */
+export function selectOnboardingFlowData(
+  state: OnboardingFlowState,
+): OnboardingFlowData {
+  return dataOf(state);
+}
+
 function dataOf(state: OnboardingFlowState): OnboardingFlowData {
   return {
     modal: state.modal,
