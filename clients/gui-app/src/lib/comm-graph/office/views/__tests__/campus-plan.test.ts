@@ -2138,6 +2138,13 @@ describe("campus civic rooms, painted", () => {
     const ward = layout.floors
       .flatMap((floor) => floor.civic)
       .find((room) => room.kind === "infirmary");
+    // THE HUT TOO, because the filter exists for TWO openings and this case
+    // used to witness one. The ward's aisle is the first; the records hut's own
+    // way out, on the last row of its first column, is the second.
+    const hut = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "archive");
+    if (hut === undefined) throw new Error("no records hut");
     if (ward === undefined) throw new Error("no ward");
 
     // The whole district, so the window cannot be the reason a wall is missing.
@@ -2199,6 +2206,37 @@ describe("campus civic rooms, painted", () => {
         leftWalls.has(cornerKey(ward.bounds.col, row)),
         `ward aisle row ${String(row)} was walled shut`,
       ).toBe(false);
+    }
+
+    // THE HUT'S BACK WALL IS A WALL, so the negative below is not passing
+    // because the hut is unwalled altogether.
+    for (
+      let col = hut.bounds.col;
+      col < hut.bounds.col + hut.bounds.cols;
+      col += 1
+    ) {
+      expect(
+        rightWalls.has(cornerKey(col, hut.bounds.row)),
+        `hut top row col ${String(col)} has no wall`,
+      ).toBe(true);
+    }
+    // AND ITS WAY OUT IS OPEN: the last row of its first column, which the plan
+    // leaves walkable while walling the rows between the corners. This is the
+    // second opening the walkability filter exists for, and the one this case
+    // did not witness before.
+    const hutExitRow = hut.bounds.row + hut.bounds.rows - 1;
+    expect(layout.walkable[hutExitRow]?.[hut.bounds.col]).toBe(true);
+    expect(
+      leftWalls.has(cornerKey(hut.bounds.col, hutExitRow)),
+      "the hut's way out was walled shut",
+    ).toBe(false);
+    // The rows between the corners ARE walled, which is what makes the line
+    // above an opening rather than a hut with no left wall at all.
+    for (let row = hut.bounds.row + 1; row < hutExitRow; row += 1) {
+      expect(
+        leftWalls.has(cornerKey(hut.bounds.col, row)),
+        `hut left wall missing at row ${String(row)}`,
+      ).toBe(true);
     }
   });
 
@@ -2264,10 +2302,30 @@ describe("campus civic rooms, painted", () => {
         for (let col = desk.bounds.col; col < desk.bounds.col + 2; col += 1) {
           counterTiles.add(`${String(col)},${String(desk.bounds.row)}`);
         }
-        const counterArt = layout.props.filter((prop) =>
-          counterTiles.has(`${String(prop.tile.col)},${String(prop.tile.row)}`),
+        // DRAWN, not merely planned. `layout.props` says the plan asked for a
+        // counter; only the painter's own output says one is on screen, and
+        // "the desk is still there" is the claim this line has to make.
+        //
+        // Its anchor is the counter tile's projected corner less half a tile
+        // each way - measured, and stated so a sprite drawn at some other
+        // counter cannot satisfy it. Exactly one, at both close ranges.
+        const counterCorner = ISO_PAINTER.projector(layout).project(
+          desk.bounds.col,
+          desk.bounds.row,
         );
-        expect(counterArt.length).toBeGreaterThan(0);
+        const wantAt = `${String(counterCorner.x - ISO_HALF_WIDTH)},${String(counterCorner.y - ISO_HALF_HEIGHT)}`;
+        for (const lod of [1, 2] as const) {
+          const drawnAt = ISO_PAINTER.floor(
+            layout,
+            { col: 0, row: 0, cols: layout.cols, rows: layout.rows },
+            lod,
+          ).flatMap((drawable) =>
+            drawable.kind === "sprite" && drawable.sprite.name === "reception"
+              ? [`${String(drawable.x)},${String(drawable.y)}`]
+              : [],
+          );
+          expect(drawnAt, `reception at lod ${String(lod)}`).toEqual([wantAt]);
+        }
         // AND ITS TILES ARE BLOCKED, which is the premise that made the defect
         // possible: a painter reading tiles sees exactly what a wall looks like.
         for (const tile of counterTiles) {

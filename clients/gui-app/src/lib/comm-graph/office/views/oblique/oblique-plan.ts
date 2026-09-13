@@ -1186,9 +1186,11 @@ function buildPlazaCivic(
       hostScope: "host",
       // OPEN, like everything else on a plaza. The bay is an AREA of the plaza
       // floor, not a building on it: measured at 309 agents its top row is 1 of
-      // 17 blocked, and the blocked tiles down its left are beds rather than a
-      // wall. Nothing here shells its civic rooms, which is why all four say
-      // the same thing.
+      // 17 blocked. What IS blocked down its left is the run of GLASS
+      // PARTITIONS laid above - a screen, stopping short of the door row - and
+      // the beds start a column further in, on tiles that stay walkable because
+      // a bed is lain on. Nothing here shells its civic rooms, which is why all
+      // four say the same thing.
       enclosure: "open",
       kerbTile: kerbBelow(road, wardDoor.col),
     },

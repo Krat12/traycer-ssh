@@ -906,8 +906,11 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
       hostId,
       hostScope: "host",
       // WALLED: the records hut is a building, four by three, with its door on
-      // its last row. Top row 4 of 4 blocked, first column blocked for two of
-      // three rows and open on the third - the door.
+      // its last row. Top row 4 of 4 blocked; its first column is blocked for
+      // the rows BETWEEN the corners and open at the last one, which is the
+      // hut's own corner tile and not its door - `recordsDoor` sits WALL_COLS
+      // in from that column, on the same row. The opening in the first column
+      // is what keeps the wall from running into the way out.
       enclosure: "walled",
       // Nothing drives to the archive (C6).
       kerbTile: null,
