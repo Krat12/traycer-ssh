@@ -592,7 +592,11 @@ export function useLandingComposerActions(
               );
           }
           if (settlement.kind === "current") {
-            placeCreatedDraftEpic({
+            // `false` is a create the host ACCEPTED that did not become the
+            // foreground epic (no draft tab to replace, or the draft lost
+            // the focused route meanwhile): no receipt, and the onboarding
+            // attempt is retired so a waiting lesson stops waiting.
+            const activated = placeCreatedDraftEpic({
               draftId: attempt.draftId,
               epicId,
               tabId,
@@ -631,6 +635,7 @@ export function useLandingComposerActions(
                 );
               },
             });
+            if (!activated) receipts.retire(attempt.id);
           } else {
             // A background settlement is a created epic the tour cannot
             // complete on (contract 5): retire the attempt.
@@ -1154,7 +1159,7 @@ function placeCreatedDraftEpic(input: {
   readonly editor: ComposerPromptEditorHandle;
   readonly placement: DraftSubmissionPlacement;
   readonly activate: () => void;
-}): void {
+}): boolean {
   const ownsIntentFocus = placementOwnedFocusedRoute(input.placement);
   const stillFocusedOwner = draftOwnsFocusedRoute(input.draftId);
   const replaced = tabCommandCoordinator.replaceDraftWithEpic({
@@ -1173,12 +1178,13 @@ function placeCreatedDraftEpic(input: {
       .getState()
       .openEpicTabInBackground(input.epicId, input.epicTitle);
     toast.info("Epic created in the background.");
-    return;
+    return false;
   }
 
   input.editor.clear();
-  if (!ownsIntentFocus || !stillFocusedOwner) return;
+  if (!ownsIntentFocus || !stillFocusedOwner) return false;
   input.activate();
+  return true;
 }
 
 function placeCreatedEpicInBackground(epicId: string, epicTitle: string): void {

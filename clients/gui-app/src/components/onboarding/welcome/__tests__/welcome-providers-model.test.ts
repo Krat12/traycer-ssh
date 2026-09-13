@@ -141,8 +141,23 @@ function tileFor(
 }
 
 describe("installStateFor", () => {
-  it("is pending for an unknown row, detected when any candidate is available, pending while a version is still being read, missing otherwise", () => {
+  it("is pending for an unknown row, detected when any candidate is available, pending while the host's availability probe or a version read is outstanding, missing otherwise", () => {
     expect(installStateFor(undefined)).toBe("pending");
+    // The shell-environment probe is still running: the (empty) candidates
+    // under-report, so this is not "missing" yet.
+    expect(
+      installStateFor({
+        ...providerState({
+          providerId: "claude-code",
+          enabled: true,
+          installed: false,
+          auth: UNKNOWN_AUTH,
+          authPending: false,
+          apiKeyConfigured: false,
+        }),
+        availabilityPending: true,
+      }),
+    ).toBe("pending");
     expect(installStateFor(detected("claude-code", true, UNKNOWN_AUTH))).toBe(
       "detected",
     );

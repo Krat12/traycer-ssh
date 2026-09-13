@@ -22,6 +22,10 @@ export function installStateFor(
   if (state.candidates.some((candidate) => candidate.available)) {
     return "detected";
   }
+  // The host raises `availabilityPending` while its shell-environment probe
+  // runs; the candidates under-report until it lands, so nothing is
+  // "missing" yet.
+  if (state.availabilityPending) return "pending";
   if (state.candidates.some((candidate) => candidate.versionPending)) {
     return "pending";
   }
