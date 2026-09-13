@@ -7028,9 +7028,22 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     }
     // This fixture's forty-agent walk can exceed the observation budget; in
     // that case the contract's 12s ceiling is the applicable rider bound.
+    //
+    // TWO QUANTITIES THAT READ ALIKE AND ARE NOT. `minimumDwell` is DERIVED -
+    // clamped off the rider bound and the ceiling, in contract time. The dwell
+    // below is MEASURED, and a measurement of a phase change lands one tick
+    // after the phase, because the source resets elapsed while the vehicle is
+    // still drawn where it was. Comparing them is only sound with that tick
+    // accounted for, which is what the bound below does.
     const riderBound = settledTick ?? kerbTick + 120;
     const minimumDwell = Math.max(40, Math.min(riderBound - kerbTick, 120));
-    expect(minimumDwell).toBeGreaterThan(40);
+    // ABOVE THE OBSERVABLE FLOOR, not merely above the floor. A trip that
+    // dropped its riders leaves on the four-second floor and is OBSERVED at
+    // 41 - so a derived bound of 41 would admit exactly the implementation
+    // this case exists to reject, on `41 >= 41`. Clearing 40 is not enough;
+    // the bound has to clear the OBSERVATION, not the contract value it came
+    // from. Today's bounds are 120/66/83, so this costs the case nothing.
+    expect(minimumDwell).toBeGreaterThan(41);
     expect(leftKerbTick - kerbTick).toBeGreaterThanOrEqual(minimumDwell);
   });
 
@@ -7575,7 +7588,14 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // still drawn at the kerb at elapsed zero. With 100ms ticks, a forced-
     // ceiling fixture may therefore see its first off-kerb frame at tick 121;
     // this two-agent fixture is not required to reach that boundary.
-    expect(leftKerbTick - kerbTick).toBeLessThanOrEqual(120);
+    //
+    // SO THE BOUND IS ON THE OBSERVATION, AT 121, not on the phase at 120.
+    // `leftKerbTick` is a position sighting, and bounding a sighting by the
+    // contract value it reports would fail a trip that held to the ceiling
+    // CORRECTLY - the one behaviour this line exists to permit. The phase
+    // bound is still 120; the two numbers differ by the tick above, and
+    // conflating them is how a right answer gets called wrong.
+    expect(leftKerbTick - kerbTick).toBeLessThanOrEqual(121);
     // AND THAT THE RIDER IS WHAT SET IT. Without this the floor alone could
     // satisfy the bound above, and a vehicle that ignored its rider entirely
     // and left at four seconds would pass every assertion in this case. It
@@ -7944,6 +7964,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
         waitForVehicleAtKerb(scene, kerb, "police-car"),
         "could not observe the waiting police car at its kerb",
       ).toBe(true);
+      // THREE SECONDS OF THE WAIT SPENT BEFORE ANY JOIN, common to all three
+      // arms. So everything returned below is a REMAINDER measured from this
+      // point, not a total dwell at the kerb: the arms are comparable to each
+      // other and to nothing else. It is also why the control reads 37 rather
+      // than something at or above the forty-tick floor - most of that floor
+      // is already behind it here.
       for (let tick = 0; tick < 30; tick += 1) scene.tick(100);
       if (join === "offscreen") {
         // Mutant under test: viewport gate moved below `standingFor`.
@@ -8368,6 +8394,14 @@ describe("OfficeScene vehicle facing on a road with a vertical leg", () => {
       }
       scene.tick(100);
     }
+    // WHAT THIS GUARD DOES AND DOES NOT DO. It proves the loop ran on the leg
+    // at all, so a fixture whose van never got there cannot satisfy the
+    // `expect` inside the loop by never reaching it. It is NOT what supplies
+    // the red: `verticalPoints` is `slice(2, -1)`, a POSITIONAL slice rather
+    // than a direction-filtered one, so a straight-road fallback puts the van
+    // on those points too and sets this flag. Forcing that fallback fails the
+    // case on the in-loop `facing` assertion instead - 'right' where 'left'
+    // was required - which is the real falsifier here.
     expect(verticalSeen).toBe(true);
     expect(waitingFacingLeft).toBe(true);
   });
