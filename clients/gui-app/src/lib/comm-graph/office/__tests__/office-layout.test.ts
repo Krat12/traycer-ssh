@@ -1327,6 +1327,32 @@ describe("layoutOffice floors", () => {
       col: infirmary.doorTile.col,
       row: doorRow + 1,
     });
+
+    // THE HELP DESK'S DOOR AND KERB, the same pairing on the room that owns no
+    // column. GEOMETRY, RE-MEASURED: its door was the tile above the counter's
+    // LEFT end while its kerb sits past the RIGHT end - the bell end, where
+    // the queue forms - which measured Manhattan 3 apart. A civic room's door
+    // and kerb are a pair at distance 1 (K2's shared adjacency case asserts
+    // exactly that), so the DOOR moved to the bell end and the kerb stayed
+    // put. Measured 3 -> 1, unchanged at 1, 2, 6, 12, 40, 309 and 1,000
+    // agents. The counter, `receptionTile`, the queue tiles and `queueFacing`
+    // are untouched.
+    const helpDesk = floor.civic.find((room) => room.kind === "help-desk");
+    if (helpDesk === undefined) throw new Error("no help desk");
+    const helpKerb = helpDesk.kerbTile;
+    if (helpKerb === null) throw new Error("no help-desk kerb");
+    expect(helpDesk.doorTile.row).toBe(floor.receptionTile.row - 1);
+    // Directly beneath the door, which is what makes the distance 1.
+    expect(helpKerb.col).toBe(helpDesk.doorTile.col);
+    expect(
+      Math.abs(helpKerb.col - helpDesk.doorTile.col) +
+        Math.abs(helpKerb.row - helpDesk.doorTile.row),
+    ).toBe(1);
+    // The bell end is one tile PAST the counter's right edge, so the door is
+    // not standing on the counter it serves.
+    expect(helpDesk.doorTile.col).toBe(
+      helpDesk.bounds.col + helpDesk.bounds.cols,
+    );
   });
 
   it("opens a second room column when the storey runs out of rows", () => {
