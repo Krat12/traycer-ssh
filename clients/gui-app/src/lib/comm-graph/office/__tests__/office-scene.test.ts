@@ -5407,6 +5407,109 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
   });
 
+  /** Whoever is drawn standing on this seat's own tile in THIS frame. */
+  function onSeatIn(
+    scene: OfficeScene,
+    frame: OfficeFrame,
+    seat: OfficeSeat,
+  ): string | null {
+    const want = footRect(layoutOf(scene), seat.chairTile);
+    for (const region of frame.hitRegions) {
+      if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
+      if (region.rect.x === want.x && region.rect.y === want.y) {
+        return region.agentId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * THIS AGENT'S OWN character sprite at this seat's foot, and its pose.
+   *
+   * Keyed on `ownerAgentId` rather than on position alone, which is the whole
+   * point of the helper. `hitRegions` reverses same-depth order and the world
+   * stream keeps it, so with a seated body and a walker at one foot a witness
+   * that took the id from one and the pose from the other could report that THIS
+   * agent is sitting when the sit pose belonged to the other body. The two facts
+   * have to come from one entry, and from one captured frame.
+   */
+  function seatedPoseOf(
+    scene: OfficeScene,
+    frame: OfficeFrame,
+    agentId: string,
+    seat: OfficeSeat,
+  ): string | null {
+    const want = footRect(layoutOf(scene), seat.chairTile);
+    for (const entry of frame.world ?? []) {
+      if (entry.ownerAgentId !== agentId) continue;
+      const drawable = entry.drawable;
+      if (drawable.kind !== "sprite") continue;
+      if (drawable.sprite.name !== "character") continue;
+      if (drawable.x !== want.x || drawable.y !== want.y) continue;
+      return drawable.sprite.pose ?? null;
+    }
+    return null;
+  }
+
+  /** Every lounge chair on the plan, as seats. */
+  function benchSeatsOf(layout: OfficeLayout): ReadonlyArray<OfficeSeat> {
+    const lounge = layout.floors
+      .flatMap((floor) => floor.civic)
+      .find((room) => room.kind === "waiting-room");
+    if (lounge === undefined) throw new Error("no waiting room");
+    return lounge.seatIds.map((seatId) => {
+      const seat = layout.seats.get(seatId);
+      if (seat === undefined) throw new Error(`no seat ${seatId}`);
+      return seat;
+    });
+  }
+
+  /**
+   * A BENCH WITH A SEATED STROLLER ON IT, found by ticking with motion on.
+   *
+   * Its own function for three cases and for the complexity ceiling both: a
+   * search that ticks, scans every bench and stops on the first hit is all
+   * branches, and inlining it puts a case over on its own.
+   */
+  function findSeatedStroller(
+    scene: OfficeScene,
+    benchSeats: ReadonlyArray<OfficeSeat>,
+  ): { id: string; seat: OfficeSeat } | null {
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      // ONE FRAME for both readings below, so the id and the pose cannot come
+      // from different moments either.
+      const frame = frameOf(scene);
+      const book = bookOf(scene);
+      for (const seat of benchSeats) {
+        const who = onSeatIn(scene, frame, seat);
+        if (who === null || book.civicClaimOf(who) !== null) continue;
+        // SEATED, not merely standing on the tile. A bench row sits on walkable
+        // lawn that other walkers cross, so a body at these coordinates is not
+        // yet a body ON the bench - and "a stroller is already on it" is the
+        // premise these cases rest on.
+        if (seatedPoseOf(scene, frame, who, seat) !== "sit") continue;
+        return { id: who, seat };
+      }
+    }
+    return null;
+  }
+
+  /** Painted character positions in this frame, by position, to their agents. */
+  function charactersByPlace(
+    frame: OfficeFrame,
+  ): ReadonlyMap<string, ReadonlyArray<string>> {
+    const byPlace = new Map<string, string[]>();
+    for (const region of frame.hitRegions) {
+      if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
+      const key = `${String(region.rect.x)},${String(region.rect.y)}`;
+      const bucket = byPlace.get(key);
+      if (bucket === undefined) byPlace.set(key, [region.agentId]);
+      else bucket.push(region.agentId);
+    }
+    return byPlace;
+  }
+
   /**
    * READ O'S FINDING 3: the bench, from the other side.
    *
@@ -5452,56 +5555,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       return;
     }
 
-    const lounge = layout.floors
-      .flatMap((floor) => floor.civic)
-      .find((room) => room.kind === "waiting-room");
-    if (lounge === undefined) throw new Error("no waiting room");
-    const benchSeats = lounge.seatIds.map((seatId) => {
-      const seat = layout.seats.get(seatId);
-      if (seat === undefined) throw new Error(`no seat ${seatId}`);
-      return seat;
-    });
+    const benchSeats = benchSeatsOf(layout);
     expect(benchSeats.length).toBeGreaterThan(1);
 
-    /** Whoever is drawn standing on this seat's own tile, or `null`. */
-    const onSeat = (seat: OfficeSeat): string | null => {
-      const want = footRect(layoutOf(scene), seat.chairTile);
-      for (const region of frameOf(scene).hitRegions) {
-        if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
-        if (region.rect.x === want.x && region.rect.y === want.y) {
-          return region.agentId;
-        }
-      }
-      return null;
-    };
-
-    // A STROLLER ON A BENCH: no civic claim, sitting on a bench's own tile.
-    // Its own function to stay inside the complexity ceiling, as `watchEngine`
-    // above is: a search that ticks, scans every bench and stops on the first
-    // hit is all branches, and inlining it puts the case over on its own.
-    const findSitter = (): { id: string; seat: OfficeSeat } | null => {
-      for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
-        scene.tick(100);
-        const book = bookOf(scene);
-        for (const seat of benchSeats) {
-          const who = onSeat(seat);
-          if (who === null || book.civicClaimOf(who) !== null) continue;
-          // SEATED, not merely standing on the tile. A bench row sits on
-          // walkable lawn that other walkers cross, so a body at these
-          // coordinates is not yet a body ON the bench - and "a stroller is
-          // already on it" is the premise this whole case rests on. The pose is
-          // what the frame says about that, so the pose is what is asked.
-          const sprite = characterSpriteAt(
-            frameOf(scene),
-            footRect(layoutOf(scene), seat.chairTile),
-          );
-          if (sprite?.pose !== "sit") continue;
-          return { id: who, seat };
-        }
-      }
-      return null;
-    };
-    const sitter = findSitter();
+    const sitter = findSeatedStroller(scene, benchSeats);
     if (sitter === null) {
       throw new Error("no idle agent ever strolled to a bench");
     }
@@ -5531,15 +5588,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // NO TWO CHARACTERS AT ONE PLACE, which is the defect stated as the frame
     // would show it. Under reduced motion nobody is mid-step, so two equal
     // painted positions mean two people on one tile and nothing else.
-    const byPlace = new Map<string, string[]>();
-    for (const region of frameOf(scene).hitRegions) {
-      if (region.rect.height !== OFFICE_CHARACTER_HEIGHT) continue;
-      const key = `${String(region.rect.x)},${String(region.rect.y)}`;
-      const bucket = byPlace.get(key);
-      if (bucket === undefined) byPlace.set(key, [region.agentId]);
-      else bucket.push(region.agentId);
-    }
-    for (const [place, ids] of byPlace) {
+    for (const [place, ids] of charactersByPlace(frameOf(scene))) {
       expect(ids.length, `${ids.join(" and ")} are both at ${place}`).toBe(1);
     }
 
@@ -5547,11 +5596,205 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // the tile holds exactly one character and that character is holding a
     // civic claim. Without this the case would pass on a scene that refused to
     // seat the waiter anywhere at all.
-    const occupant = onSeat(strollerSeat);
+    const occupant = onSeatIn(scene, frameOf(scene), strollerSeat);
     expect(occupant).not.toBeNull();
     if (occupant === null) return;
     expect(bookOf(scene).civicClaimOf(occupant)).toBe("lounge");
     expect(occupant).not.toBe(strollerId);
+  });
+
+  /**
+   * READ S'S S2: the same bench, through a claim the CLAIMING PASS never makes.
+   *
+   * A sync rebuilds claims before the civic pass runs - `recomputeClaims`, then
+   * rehome seats their holders - and the pass then SKIPS an agent whose claim
+   * already matches what it wants. So a bench claimed that way never reached an
+   * eviction keyed on the pass's own return value, and the duplicate stood at
+   * zero ticks exactly as before.
+   *
+   * The lever is FEED SETTLEMENT, which is what makes this sync rebuild rather
+   * than extend: the first sync leaves `feedSettled` at its default false and
+   * the second turns it on, with the same roster and the same reduced motion.
+   *
+   * TWO PREMISES ARE ASSERTED, not assumed, because the case is worthless if
+   * settlement moved the furniture instead: the bench keeps its `seatId` AND its
+   * chair tile across the flip, and the stroller's own effective assignment is
+   * unchanged. Ordinary fixed-roster Campus planning is what makes that true -
+   * the flags do not change desk geometry and the book's adoption skips equal
+   * chair coordinates - and if it ever stops being true these two lines say so
+   * rather than the case quietly testing nothing.
+   */
+  it("yields a bench to a claim the sync rebuilt, not only one it made", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 60, 9);
+    const idle = idleStatusById(epic);
+    const visible = existingIdsOf(epic);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const before = layoutOf(scene);
+    if (
+      before.floors
+        .flatMap((floor) => floor.errandSpots)
+        .every((spot) => spot.seatId === null)
+    ) {
+      context.skip(`${viewId} has no fixture that is also a seat`);
+      return;
+    }
+    const benchSeats = benchSeatsOf(before);
+    const sitter = findSeatedStroller(scene, benchSeats);
+    if (sitter === null) {
+      throw new Error("no idle agent ever strolled to a bench");
+    }
+    const assignedBefore = bookOf(scene).assignedSeat(sitter.id);
+    expect(assignedBefore).not.toBeNull();
+
+    const waiters = epic.agents
+      .filter((agent) => !agent.archived && agent.id !== sitter.id)
+      .map((agent) => agent.id)
+      .slice(0, benchSeats.length);
+    expect(waiters.length).toBe(benchSeats.length);
+    const waiting = new Map(idle);
+    for (const id of waiters) waiting.set(id, "awaiting");
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: waiting,
+        reducedMotion: true,
+        // THE FIRST SETTLED FEED, which is what sends this sync down the
+        // rebuild-and-rehome path instead of the claiming pass's own.
+        feedSettled: true,
+      }),
+    );
+
+    // PREMISE ONE: the same bench, by id and by tile.
+    const after = layoutOf(scene);
+    const benchAfter = after.seats.get(sitter.seat.seatId);
+    expect(benchAfter).toBeDefined();
+    expect(benchAfter?.chairTile).toEqual(sitter.seat.chairTile);
+    // PREMISE TWO: settlement did not move the stroller's own desk out from
+    // under it, which would end its errand for an unrelated reason.
+    const assignedAfter = bookOf(scene).assignedSeat(sitter.id);
+    expect(assignedAfter?.seatId).toBe(assignedBefore?.seatId);
+    expect(assignedAfter?.chairTile).toEqual(assignedBefore?.chairTile);
+
+    for (const [place, ids] of charactersByPlace(frameOf(scene))) {
+      expect(ids.length, `${ids.join(" and ")} are both at ${place}`).toBe(1);
+    }
+    const occupant = onSeatIn(scene, frameOf(scene), sitter.seat);
+    expect(occupant).not.toBeNull();
+    if (occupant === null) return;
+    expect(bookOf(scene).civicClaimOf(occupant)).toBe("lounge");
+    expect(occupant).not.toBe(sitter.id);
+  });
+
+  /**
+   * READ S'S S3: the eviction must not steal an ARCHIVE ROUTE.
+   *
+   * An archived agent walks to the archive door and disappears. If it was on a
+   * bench when the news arrived, `startLeaving` sent it to the door while
+   * leaving its errand target in place - the only route starter here that did -
+   * so an eviction reading targets found this LEAVING character and called
+   * `returnToDesk` on it. Its walk to the door became a walk to its chair, it
+   * was seated instead of departing, and with no further sync the archived body
+   * stayed in the office.
+   *
+   * NO SECOND SYNC after the archival, deliberately: a sync would re-run the
+   * archival pass and start the walk again, hiding exactly the loss this case is
+   * about. Ticks only.
+   *
+   * Confined to the ARCHIVAL route, and that is measured rather than assumed: of
+   * the six route starters in this class, `returnToDesk`, both queue branches and
+   * the civic walk all clear the target, so a reception route was never at risk.
+   * Leaving was the one that did not.
+   */
+  it("lets an archived stroller leave, even as its bench is claimed", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 60, 9);
+    const idle = idleStatusById(epic);
+    const visible = existingIdsOf(epic);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const layout = layoutOf(scene);
+    if (
+      layout.floors
+        .flatMap((floor) => floor.errandSpots)
+        .every((spot) => spot.seatId === null)
+    ) {
+      context.skip(`${viewId} has no fixture that is also a seat`);
+      return;
+    }
+    const benchSeats = benchSeatsOf(layout);
+    const sitter = findSeatedStroller(scene, benchSeats);
+    if (sitter === null) {
+      throw new Error("no idle agent ever strolled to a bench");
+    }
+
+    // ARCHIVED ON THE SAME SYNC the lounge fills, and still in the visible set:
+    // its record exists, so the scene owes it a walk out rather than a deletion.
+    const waiters = epic.agents
+      .filter((agent) => !agent.archived && agent.id !== sitter.id)
+      .map((agent) => agent.id)
+      .slice(0, benchSeats.length);
+    const next = new Map(idle);
+    for (const id of waiters) next.set(id, "awaiting");
+    next.set(sitter.id, "archived");
+    // ARCHIVED IN THE RECORD, which is where `isArchivedAsOf` reads it; a status
+    // of "archived" alone starts no walk. The fixture's own `ARCHIVED_AT_MS`,
+    // since with a live cursor any archival time reads as already past.
+    const withArchival = epic.agents.map((person) =>
+      person.id === sitter.id ? { ...person, archivedAt: 1_000_000 } : person,
+    );
+    scene.sync(
+      sceneInput({
+        agents: withArchival,
+        visibleAgentIds: visible,
+        statusById: next,
+        // MOTION LEFT ON deliberately: a reduced-motion sync deletes the
+        // character outright and there would be no walk for anything to steal.
+      }),
+    );
+
+    // IT LEAVES. Ticked out with no further sync: the body reaches the door and
+    // stops being drawn. A scene that turned its departure into a trip back to
+    // its own chair never gets here.
+    let gone = false;
+    for (let step = 0; step < CIVIC_WALK_TICKS * 2; step += 1) {
+      scene.tick(100);
+      // `hasCharacter`, not "has any hit region": an archived agent keeps a
+      // ghosted DESK and its region, so the latter would never come true.
+      if (!hasCharacter(frameOf(scene), sitter.id)) {
+        gone = true;
+        break;
+      }
+    }
+    expect(gone, `${sitter.id} never left after being archived`).toBe(true);
+
+    // AND THE BENCH STILL WENT TO A WAITER, so this is not passing because the
+    // claim quietly failed along with the departure.
+    const occupant = onSeatIn(scene, frameOf(scene), sitter.seat);
+    expect(occupant).not.toBe(sitter.id);
+    if (occupant !== null) {
+      expect(bookOf(scene).civicClaimOf(occupant)).toBe("lounge");
+    }
   });
 
   it("leaves outbreak overflow at its desk with its glyph when the ward is full", (context) => {

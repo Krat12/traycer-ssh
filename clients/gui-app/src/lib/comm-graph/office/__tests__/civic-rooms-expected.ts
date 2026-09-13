@@ -107,9 +107,14 @@ export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
  * whether or not a vehicle claims to be carrying it. So with the floor
  * governing, the correct engine and the rider-dropping one both leave at 41.
  *
- * WHAT CAMPUS'S BRANCH ACTUALLY PINS, then: the shared wait gate. A vehicle
- * that has bound a rider waits the four-second floor and leaves at 41, and the
- * patient really is in bed before the engine arrives. RIDER TRANSFER is
+ * WHAT CAMPUS'S BRANCH ACTUALLY PINS, then: the FLOOR-DOMINATED REGIME. Its
+ * premise is that the rider bound comes in under the floor - `riderBound -
+ * kerbTick < 40`, which is also what the sibling case asserts - and its
+ * conclusion is the floor as OBSERVED, 41 ticks at the kerb. That the patient is
+ * in bed before the engine arrives is reported history from the measurement that
+ * chose this row, not something either line checks: `< 40` is satisfied by a
+ * rider that settles three ticks AFTER the kerb tick, which is exactly what the
+ * sibling fixture does. RIDER TRANSFER is
  * witnessed only by the `true` views, on `minimumDwell > 41` - the dwell IS
  * their instrument, and Campus asserts that same 41 as its expected value, so
  * the instrument cannot exist there. The limit is the whole Campus case for

@@ -554,8 +554,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
             // is whatever the multiplication left behind.
             //
             // WHAT WAS SAMPLED, stated as a sample. Every PAIR - not each
-            // combination's minimum - in the 36 combinations this suite runs
-            // (6 views x 3 populations x 2 zooms), taking only those under 5 px:
+            // combination's minimum - in 36 combinations of 6 views x 3
+            // populations x 2 zooms, taking only those under 5 px. This case
+            // RUNS five of those views: City returns at the enrolment gate
+            // above, so the City figures below came from the same box
+            // construction with that gate lifted, and they are the two that
+            // matter here:
             //
             //   3 pairs at exactly 0
             //   2 at -5.6843e-14, 1 at -1.1369e-13, 1 at +1.1369e-13
