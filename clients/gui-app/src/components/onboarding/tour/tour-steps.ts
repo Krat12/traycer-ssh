@@ -1,11 +1,16 @@
 import type { Placement, Step } from "react-joyride";
-import type { TourId } from "@/stores/onboarding/onboarding-tour-catalog";
+import {
+  TOUR_COPY,
+  type TourId,
+} from "@/stores/onboarding/onboarding-tour-catalog";
 import type { TourAnchor } from "@/components/onboarding/tour/tour-targets";
 
 /**
- * The five lessons as Joyride sees them: copy, placement and which anchor.
- * Progress, order and ids come from the shared catalogue
- * (`onboarding-tour-catalog.ts`); nothing here is a second copy of those.
+ * The five lessons as Joyride sees them: the instruction on the card, its
+ * placement and which anchor. Titles, progress, order and ids come from the
+ * shared catalogue (`onboarding-tour-catalog.ts` - `TOUR_COPY` names each
+ * tour once, for the card and Settings alike); nothing here is a second
+ * copy of those.
  */
 
 /** Spotlight geometry, in pixels (Joyride takes numbers, not tokens). */
@@ -18,7 +23,7 @@ export const TOUR_TARGET_WAIT_TIMEOUT_MS = 8000;
 export const TOUR_SCROLL_DURATION_MS = 300;
 
 export interface TourLesson {
-  readonly title: string;
+  /** What the card asks the user to do (the catalogue owns the title). */
   readonly body: string;
   readonly placement: Placement;
   readonly anchor: TourAnchor;
@@ -26,36 +31,35 @@ export interface TourLesson {
 
 export const TOUR_LESSONS: Readonly<Record<TourId, TourLesson>> = {
   "add-folder": {
-    title: "Add a project folder",
     body: "Choose a folder so your agent can work with your code.",
     placement: "bottom",
     anchor: "landing-folder-add",
   },
   "terminal-mode": {
-    title: "Try a terminal agent",
     body: "Switch to Terminal to work with your coding agent in a terminal.",
     placement: "top",
     anchor: "landing-terminal-switch",
   },
   "submit-prompt": {
-    title: "Start your first task",
     body: "Switch back to Chat, describe what you want to build, and send it.",
     placement: "top",
     anchor: "landing-send",
   },
   "task-panels": {
-    title: "Your task, in one place",
     body: "Use these panels to move between agents, files, and tools.",
     placement: "right",
     anchor: "epic-sidebar-column",
   },
   history: {
-    title: "Pick up where you left off",
     body: "Your imported sessions are here. Open a task to keep going.",
     placement: "top",
     anchor: "landing-history",
   },
 };
+
+export function tourLessonTitle(tourId: TourId): string {
+  return TOUR_COPY[tourId].title;
+}
 
 /**
  * How the active lesson is being shown. `anchored` spotlights a resolved
@@ -91,7 +95,7 @@ export function buildTourSteps(
     const lesson = TOUR_LESSONS[tourId];
     const base = {
       id: tourId,
-      title: lesson.title,
+      title: tourLessonTitle(tourId),
       content: lesson.body,
     };
     if (tourId !== activeTourId || presentation.kind === "unanchored") {

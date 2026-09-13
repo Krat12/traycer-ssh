@@ -112,7 +112,7 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     expect(card.getAttribute("role")).toBe("dialog");
     expect(card.getAttribute("aria-modal")).toBe("false");
     expect(document.getElementById(card.getAttribute("aria-labelledby") ?? "")?.textContent).toBe(
-      "Add a project folder",
+      "Add a workspace folder",
     );
     expect(document.getElementById(card.getAttribute("aria-describedby") ?? "")).not.toBeNull();
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();

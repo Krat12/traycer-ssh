@@ -23,6 +23,7 @@ import {
 import {
   buildTourSteps,
   TOUR_LESSONS,
+  tourLessonTitle,
   type StepPresentation,
 } from "@/components/onboarding/tour/tour-steps";
 import {
@@ -562,7 +563,7 @@ export function useOnboardingTourController(): OnboardingTourController {
         case EVENTS.TOOLTIP: {
           tracker.markPresented();
           setAnnouncement(
-            `Step ${data.index + 1} of ${data.size}: ${TOUR_LESSONS[active.tourId].title}`,
+            `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
           );
           return;
         }
