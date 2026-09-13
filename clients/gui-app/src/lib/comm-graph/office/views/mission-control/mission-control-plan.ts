@@ -6,7 +6,11 @@
  * team is a contiguous run; its lead sits at the aisle end. Growth appends a
  * tier at the bottom and never moves a seat that already exists.
  */
-import { compareByCreation } from "@/lib/comm-graph/office/office-layout";
+import {
+  ARCHIVE_SIGN_WIDTH_TILES,
+  civicCapacityFor,
+  compareByCreation,
+} from "@/lib/comm-graph/office/office-layout";
 import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type { OfficePopulation } from "@/lib/comm-graph/office/office-population";
 import type { OfficePlanInput } from "@/lib/comm-graph/office/views/office-view";
@@ -14,6 +18,8 @@ import type {
   OfficeAgentInput,
   OfficeAmenity,
   OfficeAreaSign,
+  OfficeCivicKind,
+  OfficeCivicRoom,
   OfficeDesk,
   OfficeErrandSpot,
   OfficeFacing,
@@ -51,6 +57,22 @@ const PODIUM_ROW = 6;
 const WALKWAY_ROW = 7;
 export const TIERS_ORIGIN_ROW = 8;
 const FOOT_ROWS = 2;
+
+// ---- The amphitheatre's civic rooms ----------------------------------- //
+//
+// The hall is ONE storey for ONE host set, so its four rooms are the hall's:
+// a medbay band under the last tier, a gallery block in the side aisle the
+// tiers never reach, the front desk that was already standing in the lounge,
+// and a records door at the back. THE HALL HAS NO STREET AND NEVER WILL (C6) -
+// nothing drives into an amphitheatre - so every one of the four names a null
+// kerb, and the medbay is marked by a siren light rather than by an ambulance.
+
+/** A row of beds and the walk in front of them. */
+const MEDBAY_ROWS = 2;
+const MEDBAY_BED_WIDTH_TILES = 2;
+/** The two columns every tier leaves clear, by `originColFor`'s own floor. */
+const GALLERY_COLS = MIN_SIDE_TILES;
+const CIVIC_SIGN_WIDTH_TILES = 2;
 
 const QUEUE_FACING: OfficeFacing = "down";
 const CONSOLE_FACING: OfficeFacing = "up";
@@ -332,8 +354,19 @@ function colsFor(tierCounts: ReadonlyArray<number>, centerCol: number): number {
   return Math.max(right + 1, 16);
 }
 
+/**
+ * The row the medbay's beds stand on: straight under the last tier.
+ *
+ * `ROWS_PER_TIER` is three and a tier uses two of them, so the row above this
+ * one is already the last tier's clear row - the band needs no gap of its own to
+ * be walked into.
+ */
+function medbayRowOf(tierCount: number): number {
+  return TIERS_ORIGIN_ROW + tierCount * ROWS_PER_TIER;
+}
+
 function rowsFor(tierCount: number): number {
-  return TIERS_ORIGIN_ROW + tierCount * ROWS_PER_TIER + FOOT_ROWS;
+  return medbayRowOf(tierCount) + MEDBAY_ROWS + FOOT_ROWS;
 }
 
 function buildSlots(
@@ -1967,6 +2000,234 @@ function podByTileOf(
   return out;
 }
 
+function civicRoomIdOf(kind: OfficeCivicKind): string {
+  return [SEAT_ID_NONE, FLOOR_INDEX, "civic", kind].join("/");
+}
+
+interface CivicSeatRun {
+  readonly civicRoomId: string;
+  readonly kind: "bed" | "lounge";
+  readonly tiles: ReadonlyArray<OfficeTilePos>;
+}
+
+/**
+ * One seat per bed or gallery chair, numbered as it was laid.
+ *
+ * `roomId` is the HALL, unlike every other view's civic seats. There is exactly
+ * one room here and every seat in the amphitheatre resolves to it; a `null`
+ * would be a seat in no room at all, which this view has never had.
+ */
+function civicSeatRun(run: CivicSeatRun): ReadonlyArray<OfficeSeat> {
+  return run.tiles.map((tile, index) => ({
+    seatId: `${run.civicRoomId}/${index}`,
+    kind: run.kind,
+    // A bed is LAIN ON and a gallery seat is SAT IN: the occupant's tile is the
+    // furniture's own, so there is no chair beside it to walk to.
+    deskTile: tile,
+    chairTile: tile,
+    // Everything in this hall faces the board, the beds included.
+    facing: CONSOLE_FACING,
+    hitTiles: {
+      width: run.kind === "bed" ? MEDBAY_BED_WIDTH_TILES : 1,
+      height: 1,
+    },
+    // Laid out on the tile grid it is drawn on; the tiles box already fits.
+    hitBox: null,
+    floorIndex: FLOOR_INDEX,
+    roomId: ROOM_ID,
+    hostId: null,
+    manager: false,
+    civicRoomId: run.civicRoomId,
+  }));
+}
+
+interface HallCivic {
+  readonly rooms: ReadonlyArray<OfficeCivicRoom>;
+  readonly seats: ReadonlyArray<OfficeSeat>;
+  readonly props: ReadonlyArray<OfficeProp>;
+  readonly signs: ReadonlyArray<OfficeSign>;
+}
+
+/**
+ * The hall's four civic rooms, their furniture and their plates.
+ *
+ * The two that were already standing take their record and nothing else: the
+ * front desk IS the lounge's reception counter (C7), and the archive is a door
+ * at the back of the hall. The medbay and the gallery are new furniture, and
+ * both are laid where the amphitheatre has room by construction rather than by
+ * luck - the band under the last tier, and the two columns `originColFor`'s
+ * `MIN_SIDE_TILES` floor keeps every tier out of.
+ */
+function buildHallCivic(packing: Packing, agents: number): HallCivic {
+  const capacity = civicCapacityFor(agents);
+  const bedRow = medbayRowOf(packing.tierCounts.length);
+  const walkRow = bedRow + 1;
+  const lounge = packing.loungeOriginCol;
+
+  // ---- The medbay ----------------------------------------------------- //
+  const bedRoom = Math.floor(
+    (packing.cols - 2 * MIN_SIDE_TILES) / MEDBAY_BED_WIDTH_TILES,
+  );
+  const bedCount = Math.min(capacity.beds, Math.max(0, bedRoom));
+  const bedTiles = Array.from({ length: bedCount }, (_unused, i) => ({
+    col: MIN_SIDE_TILES + i * MEDBAY_BED_WIDTH_TILES,
+    row: bedRow,
+  }));
+  const medbayId = civicRoomIdOf("infirmary");
+  const beds = civicSeatRun({
+    civicRoomId: medbayId,
+    kind: "bed",
+    tiles: bedTiles,
+  });
+  // Its way in is the walk in front of the beds, which is where the light hangs
+  // too: nothing drives here, so what marks a medbay is a lamp, not a kerb.
+  const medbayDoor: OfficeTilePos = { col: MIN_SIDE_TILES, row: walkRow };
+
+  // ---- The gallery ---------------------------------------------------- //
+  // Down the side aisle in two columns, filling a row at a time from the first
+  // tier, so a hall with one tier still seats the formula's four.
+  const galleryId = civicRoomIdOf("waiting-room");
+  const galleryRows = Math.ceil(capacity.chairs / GALLERY_COLS);
+  const chairTiles: OfficeTilePos[] = [];
+  for (let row = 0; row < galleryRows; row += 1) {
+    for (let col = 0; col < GALLERY_COLS; col += 1) {
+      if (chairTiles.length >= capacity.chairs) break;
+      const tile = { col, row: TIERS_ORIGIN_ROW + row };
+      if (tile.row >= bedRow) break;
+      chairTiles.push(tile);
+    }
+  }
+  const chairs = civicSeatRun({
+    civicRoomId: galleryId,
+    kind: "lounge",
+    tiles: chairTiles,
+  });
+
+  // ---- The front desk and the archive --------------------------------- //
+  const receptionTile: OfficeTilePos = { col: lounge + 3, row: 1 };
+  // The tile in front of the counter's left end, inside the queue's own standing
+  // room. Row 2 carries the lounge's coffee, cooler and plant from `lounge + 10`
+  // on, so these two columns of it are clear - checked, because on the plaza the
+  // row in front of a counter turned out to be where amenities are used from.
+  const deskDoor: OfficeTilePos = { col: receptionTile.col, row: 2 };
+  // At the back, on the first of the foot rows and away from the medbay's end of
+  // the band: the way out of the hall and the way to the archive are never the
+  // same walk.
+  const archiveDoor: OfficeTilePos = {
+    col: Math.max(0, packing.cols - 1 - MIN_SIDE_TILES),
+    row: packing.rows - FOOT_ROWS,
+  };
+
+  const rooms: ReadonlyArray<OfficeCivicRoom> = [
+    {
+      civicRoomId: medbayId,
+      kind: "infirmary",
+      bounds: {
+        col: MIN_SIDE_TILES,
+        row: bedRow,
+        cols: bedCount * MEDBAY_BED_WIDTH_TILES,
+        rows: MEDBAY_ROWS,
+      },
+      doorTile: medbayDoor,
+      signTile: { col: MIN_SIDE_TILES, row: bedRow },
+      name: "Medbay",
+      seatIds: beds.map((seat) => seat.seatId),
+      floorIndex: FLOOR_INDEX,
+      hostId: null,
+      // NOTHING DRIVES INTO AN AMPHITHEATRE (C6). The hall plans no road, so
+      // there is no tile a kerb could name.
+      kerbTile: null,
+    },
+    {
+      civicRoomId: galleryId,
+      kind: "waiting-room",
+      bounds: {
+        col: 0,
+        row: TIERS_ORIGIN_ROW,
+        cols: GALLERY_COLS,
+        rows: galleryRows,
+      },
+      doorTile: { col: 0, row: TIERS_ORIGIN_ROW },
+      signTile: { col: 0, row: TIERS_ORIGIN_ROW },
+      name: "Gallery",
+      seatIds: chairs.map((seat) => seat.seatId),
+      floorIndex: FLOOR_INDEX,
+      hostId: null,
+      kerbTile: null,
+    },
+    {
+      civicRoomId: civicRoomIdOf("help-desk"),
+      kind: "help-desk",
+      bounds: {
+        col: receptionTile.col,
+        row: receptionTile.row,
+        cols: 2,
+        rows: 2,
+      },
+      doorTile: deskDoor,
+      signTile: receptionTile,
+      name: "Front desk",
+      // Standing at a counter is not sitting down.
+      seatIds: [],
+      floorIndex: FLOOR_INDEX,
+      hostId: null,
+      kerbTile: null,
+    },
+    {
+      civicRoomId: civicRoomIdOf("archive"),
+      kind: "archive",
+      bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
+      doorTile: archiveDoor,
+      // ENDING AT THE DOOR, running LEFTWARDS to get there. The plate is four
+      // tiles wide because C5's archive is a door and one tile holds no word, and
+      // this door is in the back-RIGHT corner of the hall - three columns from
+      // the wall - so four tiles rightwards would run off the plan. The oblique
+      // views hang the same plate the other way round for the same reason: their
+      // door is at the left edge. A plate reads into its door either way.
+      signTile: {
+        col: Math.max(0, archiveDoor.col - ARCHIVE_SIGN_WIDTH_TILES + 1),
+        row: archiveDoor.row,
+      },
+      name: "Records",
+      seatIds: [],
+      floorIndex: FLOOR_INDEX,
+      hostId: null,
+      kerbTile: null,
+    },
+  ];
+
+  return {
+    rooms,
+    seats: [...beds, ...chairs],
+    props: [
+      // FRAME 0 - the unlit lens - and only that. K4's sign pass owns the
+      // alternation, because it is the one that already reads occupancy and
+      // paints with a clock in hand; an empty ward is a dark beacon, which is
+      // what frame 0 is for.
+      { sprite: { name: "siren-light" }, tile: medbayDoor },
+      { sprite: { name: "records-door" }, tile: archiveDoor },
+    ],
+    // A civic plate names its ROOM rather than an agent, so it is always drawn,
+    // and it carries the room's id so a counter can be read off the room under
+    // the cursor instead of being baked into the text at plan time.
+    signs: rooms.map((room) => ({
+      kind: "civic",
+      tile: room.signTile,
+      // THE ARCHIVE'S PLATE IS WIDER THAN THE ARCHIVE, because C5 makes it a
+      // door and one tile holds no word. Every other room here is a room.
+      widthTiles:
+        room.kind === "archive"
+          ? ARCHIVE_SIGN_WIDTH_TILES
+          : CIVIC_SIGN_WIDTH_TILES,
+      text: room.name,
+      ownerAgentId: null,
+      hostId: null,
+      agentIds: [],
+      civicRoomId: room.civicRoomId,
+    })),
+  };
+}
+
 export function planMissionControl(input: OfficePlanInput): OfficeLayout {
   const packing = pack(input);
   const byId = agentsById(input.agents);
@@ -1998,11 +2259,33 @@ export function planMissionControl(input: OfficePlanInput): OfficeLayout {
     tileKey(lobbyTile),
     ...receptionQueueTiles.map(tileKey),
   ]);
+  // The four rooms are reserved BEFORE the errand spots and the stroll tiles are
+  // chosen, so nobody queues for coffee inside the medbay and nobody strolls
+  // through the gallery. The gallery's own columns sit on tier aisle rows, which
+  // is where `corridorTilesOf` would otherwise look.
+  const civic = buildHallCivic(packing, input.agents.length);
+  for (const room of civic.rooms) {
+    for (
+      let row = room.bounds.row;
+      row < room.bounds.row + room.bounds.rows;
+      row += 1
+    )
+      for (
+        let col = room.bounds.col;
+        col < room.bounds.col + room.bounds.cols;
+        col += 1
+      )
+        reserved.add(tileKey({ col, row }));
+  }
   const errandSpots = buildSpots(packing, walkable, reserved);
   for (const spot of errandSpots) reserved.add(tileKey(spot.approachTile));
   const corridorTiles = corridorTilesOf(packing, walkable, reserved);
-  const { desks, seats } = buildDesks(packing, byId);
-  const signs = buildSigns(packing, input, byId);
+  const { desks, seats: consoles } = buildDesks(packing, byId);
+  const seats = new Map([
+    ...consoles,
+    ...civic.seats.map((seat) => [seat.seatId, seat] as const),
+  ]);
+  const signs = [...buildSigns(packing, input, byId), ...civic.signs];
   const visitTile = visitTileOf(packing, walkable);
   const hq = packing.hqId === null ? null : byId.get(packing.hqId);
   const room: OfficeRoom = {
@@ -2043,10 +2326,10 @@ export function planMissionControl(input: OfficePlanInput): OfficeLayout {
     gameRoom: null,
     areaSigns,
     amenities,
-    // K2 gives the amphitheatre its medbay, gallery and records door. The
-    // hall has no street and never will (C6): its medbay sign gets a siren
-    // light instead of an ambulance.
-    civic: [],
+    civic: civic.rooms,
+    // THE HALL HAS NO STREET AND NEVER WILL (C6): nothing drives into an
+    // amphitheatre, so the medbay is marked by a siren light rather than by an
+    // ambulance and all four rooms name a null kerb.
     road: null,
   };
   const hostBands = hostBandsOf(packing);
@@ -2069,7 +2352,7 @@ export function planMissionControl(input: OfficePlanInput): OfficeLayout {
     floors: [floor],
     doorTile,
     lobbyTile,
-    props: buildProps(packing),
+    props: [...buildProps(packing), ...civic.props],
     walkable,
     frozen,
     shiftFromPrevious: null,

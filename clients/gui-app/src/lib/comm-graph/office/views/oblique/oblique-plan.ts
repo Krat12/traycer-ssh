@@ -3,7 +3,10 @@ import type {
   OfficeHostPopulation,
   OfficePopulationMember,
 } from "@/lib/comm-graph/office/office-population";
-import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
+import {
+  ARCHIVE_SIGN_WIDTH_TILES,
+  civicCapacityFor,
+} from "@/lib/comm-graph/office/office-layout";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { OFFICE_TILE } from "@/lib/comm-graph/office/office-types";
 import type {
@@ -751,12 +754,18 @@ function sign(geometry: Geometry, value: ObliqueSign): void {
  * its own width, which is what keeps the four off each other on the one storey
  * they share: the ward's is the only plate on the plaza's top row, and the
  * other three sit on the front walk, columns apart.
+ *
+ * THE ARCHIVE IS THE EXCEPTION, because it is a door and not a room: its span is
+ * one tile, which holds no word. It takes `ARCHIVE_SIGN_WIDTH_TILES` and runs
+ * RIGHTWARDS from the door along the wall row - rightwards because the door is in
+ * the near outer wall at `building.col` and there is no wall to the left of it.
  */
 function civicSign(geometry: Geometry, room: OfficeCivicRoom): void {
   geometry.signs.push({
     kind: "civic",
     tile: room.signTile,
-    widthTiles: room.bounds.cols,
+    widthTiles:
+      room.kind === "archive" ? ARCHIVE_SIGN_WIDTH_TILES : room.bounds.cols,
     text: room.name,
     ownerAgentId: null,
     hostId: room.hostId,
@@ -1206,7 +1215,14 @@ function buildPlazaCivic(
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,
-      signTile: archiveDoor,
+      // ABOVE THE DOOR, not on its row, and this is what `signTile` being its
+      // own field is for. The plate is four tiles wide because one tile holds no
+      // word, and the door stands at the plaza's left edge with the front desk's
+      // own plate three columns to its right - so four tiles along the walk row
+      // would print "Records" straight through "Front desk". The row above it
+      // carries no lettering at any size, and a sign over a records door is
+      // where a records door is labelled anyway.
+      signTile: { col: archiveDoor.col, row: archiveDoor.row - 1 },
       name: "Records",
       seatIds: [],
       floorIndex,

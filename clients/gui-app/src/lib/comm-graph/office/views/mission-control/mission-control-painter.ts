@@ -233,6 +233,22 @@ function blockMap(
       fill: "storey",
     });
   }
+  // After the tiers, so a room that shares rows with one is the block a reader
+  // sees. Walked from the floors' own `civic` rather than from `layout.rooms`,
+  // which at this zoom is the whole hall and tells a reader nothing.
+  for (const floor of layout.floors) {
+    for (const room of floor.civic) {
+      if (!tileRectsOverlap(room.bounds, tiles)) continue;
+      blocks.push({
+        kind: "block",
+        x: room.bounds.col * OFFICE_TILE,
+        y: room.bounds.row * OFFICE_TILE,
+        width: room.bounds.cols * OFFICE_TILE,
+        height: room.bounds.rows * OFFICE_TILE,
+        fill: "civic",
+      });
+    }
+  }
   return blocks;
 }
 
@@ -352,6 +368,27 @@ function paintSeat(
   const depth = deskY + OFFICE_TILE;
   const owner = state.agentId;
   const out: OfficeWorldDrawable[] = [];
+  // A CIVIC SEAT IS FURNITURE LIKE ANY OTHER SEAT, drawn here from
+  // `layout.seats` so that the per-seat drawable budget `office-plan-perf`
+  // measures can count it. A trolley for the medbay and a seat for the gallery,
+  // and nothing layered over an occupied one: this hall says a bed is taken with
+  // its siren light and with the character lying on it, not with a turned-down
+  // sheet - the Floor's `bed-occupied` is cut for the Floor's own bed.
+  if (seat.kind === "bed" || seat.kind === "lounge") {
+    out.push(
+      worldOf(
+        {
+          kind: "sprite",
+          sprite: { name: seat.kind === "bed" ? "medbay-bed" : "gallery-seat" },
+          x: deskX,
+          y: deskY,
+        },
+        depth,
+        owner,
+      ),
+    );
+    return out;
+  }
   if (seat.kind === "console") {
     const stepY = seat.chairTile.row * OFFICE_TILE;
     const stepDepth = stepY - 1;
