@@ -17,6 +17,11 @@ import {
   type SurfaceReadiness,
 } from "@/components/layout/host-readiness-controller-context";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import {
+  INITIAL_FLOW,
+  useOnboardingFlowStore,
+} from "@/stores/onboarding/onboarding-flow-store";
+import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useBrowserFocusStore } from "@/stores/settings/browser-focus-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
 import { setSystemTabModalApi } from "@/stores/tabs/system-tab-modal-bridge";
@@ -114,6 +119,12 @@ function renderWithReadiness(
 
 function resetStores(): void {
   useAuthStore.setState({ status: "signed-in" });
+  useOnboardingFlowStore.setState({
+    ...INITIAL_FLOW,
+    modal: "done",
+    chain: "completed",
+  });
+  useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
   useBrowserFocusStore.setState({ openImportLogins: false });
   useFeatureAnnouncementsStore.setState({ consumed: {} });
   window.localStorage.clear();
@@ -186,6 +197,97 @@ describe("<LoginImportAnnouncementController />", () => {
     render(<LoginImportAnnouncementController />);
 
     expect(toastMock).not.toHaveBeenCalled();
+  });
+
+  it("holds while the welcome modal is still pending", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({ modal: "pending", chain: "pending" });
+    });
+    render(<LoginImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["login-import"],
+    ).toBeUndefined();
+  });
+
+  it("holds while the tour chain is paused, then shows once it completes", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({
+        chain: "paused",
+        activeTourId: "add-folder",
+        tours: {
+          ...INITIAL_FLOW.tours,
+          "add-folder": {
+            status: "active",
+            stepId: "add-folder",
+            completedAt: null,
+          },
+        },
+      });
+    });
+    render(<LoginImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+
+    act(() => {
+      useOnboardingFlowStore.getState().completeChain();
+    });
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["login-import"],
+    ).toEqual(expect.any(Number));
+  });
+
+  it("shows for a legacy-migrated user", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({
+        legacyCompleted: true,
+        modal: "done",
+        chain: "skipped",
+        chainScope: "single",
+      });
+    });
+    render(<LoginImportAnnouncementController />);
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds while the flow has the screen, and takes an up toast down when it does", () => {
+    render(<LoginImportAnnouncementController />);
+    expect(toastMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(true);
+    });
+    expect(toastMock.dismiss).toHaveBeenCalledWith(
+      "traycer-login-import-announcement",
+    );
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(false);
+    });
+    // Already claimed - a released hold does not re-show it.
+    expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the toast while the welcome modal is open, then shows once it closes", () => {
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(true);
+    });
+    render(<LoginImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["login-import"],
+    ).toBeUndefined();
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(false);
+    });
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
   });
 
   it("holds behind the window narrator, then shows on release", async () => {

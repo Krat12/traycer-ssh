@@ -17,6 +17,11 @@ import {
   type SurfaceReadiness,
 } from "@/components/layout/host-readiness-controller-context";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import {
+  INITIAL_FLOW,
+  useOnboardingFlowStore,
+} from "@/stores/onboarding/onboarding-flow-store";
+import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
 import { persistKey, STORE_KEYS } from "@/lib/persist";
 
@@ -124,6 +129,12 @@ function renderWithReadiness(
 
 function resetStores(): void {
   useAuthStore.setState({ status: "signed-in" });
+  useOnboardingFlowStore.setState({
+    ...INITIAL_FLOW,
+    modal: "done",
+    chain: "completed",
+  });
+  useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
   useFeatureAnnouncementsStore.setState({ consumed: {} });
   window.localStorage.clear();
 }
@@ -173,17 +184,22 @@ describe("<SessionImportAnnouncementController />", () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("shows for any signed-in capable user", () => {
+  it("shows for a fresh user whose welcome modal skipped the sessions page", () => {
     // The whole point of the toast: an older install has no
-    // `session-import` record, since the id did not exist.
-    // TODO(onboarding-revamp T3): a fresh user is held behind the welcome
-    // modal's sessions page again once that exists.
+    // `session-import` record, since the id did not exist. The sessions
+    // page consumes on mount like the Settings wizard, so a skipper still
+    // gets the toast and a page-2 viewer never does (see below).
+    act(() => {
+      useOnboardingFlowStore.setState({ modal: "skipped", chain: "completed" });
+    });
     render(<SessionImportAnnouncementController />);
 
     expect(toastMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not show once the wizard has been met on another surface", () => {
+    // The welcome modal's sessions page and the Settings wizard both
+    // consume the id on mount, so either one is enough.
     useFeatureAnnouncementsStore.getState().consume("session-import");
     render(<SessionImportAnnouncementController />);
 
@@ -195,6 +211,97 @@ describe("<SessionImportAnnouncementController />", () => {
     render(<SessionImportAnnouncementController />);
 
     expect(toastMock).not.toHaveBeenCalled();
+  });
+
+  it("holds while the welcome modal is still pending", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({ modal: "pending", chain: "pending" });
+    });
+    render(<SessionImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["session-import"],
+    ).toBeUndefined();
+  });
+
+  it("holds while the tour chain is paused, then shows once it completes", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({
+        chain: "paused",
+        activeTourId: "add-folder",
+        tours: {
+          ...INITIAL_FLOW.tours,
+          "add-folder": {
+            status: "active",
+            stepId: "add-folder",
+            completedAt: null,
+          },
+        },
+      });
+    });
+    render(<SessionImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+
+    act(() => {
+      useOnboardingFlowStore.getState().completeChain();
+    });
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["session-import"],
+    ).toEqual(expect.any(Number));
+  });
+
+  it("shows for a legacy-migrated user", () => {
+    act(() => {
+      useOnboardingFlowStore.setState({
+        legacyCompleted: true,
+        modal: "done",
+        chain: "skipped",
+        chainScope: "single",
+      });
+    });
+    render(<SessionImportAnnouncementController />);
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds while the flow has the screen, and takes an up toast down when it does", () => {
+    render(<SessionImportAnnouncementController />);
+    expect(toastMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(true);
+    });
+    expect(toastMock.dismiss).toHaveBeenCalledWith(
+      "traycer-session-import-announcement",
+    );
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setTourBusy(false);
+    });
+    // Already claimed - a released hold does not re-show it.
+    expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the toast while the welcome modal is open, then shows once it closes", () => {
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(true);
+    });
+    render(<SessionImportAnnouncementController />);
+
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(
+      useFeatureAnnouncementsStore.getState().consumed["session-import"],
+    ).toBeUndefined();
+
+    act(() => {
+      useOnboardingPresenceStore.getState().setModalOpen(false);
+    });
+
+    expect(toastMock).toHaveBeenCalledTimes(1);
   });
 
   it("holds behind the window narrator, then shows on release", async () => {
