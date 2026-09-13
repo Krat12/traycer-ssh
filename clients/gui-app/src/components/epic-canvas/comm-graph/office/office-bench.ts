@@ -93,8 +93,18 @@ const BENCH_SCRIPTS = ["outbreak", "waiting"] as const;
 
 export type OfficeBenchScript = (typeof BENCH_SCRIPTS)[number];
 
-/** How many agents `outbreak` crashes when the URL does not say. */
-export const OFFICE_BENCH_OUTBREAK_DEFAULT = 3;
+/**
+ * How many agents `outbreak` crashes when the URL does not say.
+ *
+ * TWO, because that is the ambulance row. K3's dispatch rule sends an ENGINE
+ * rather than a van once three or more agents enter `failure` on the same sync
+ * with the ward's count at three or above, so a default of three would hand a
+ * bare `&officeBenchScript=outbreak` the wrong vehicle for the row it exists to
+ * drive. Two crashers, two beds, one coalesced van, the counter reading
+ * `2 of n`. It was 3 until the resting map stopped arriving full of crashes,
+ * at which point the count started meaning what it says.
+ */
+export const OFFICE_BENCH_OUTBREAK_DEFAULT = 2;
 
 /**
  * HOW MANY MORE AGENTS WAIT THAN THE LOUNGE CAN SEAT.
@@ -197,6 +207,18 @@ function benchKeyOf(request: OfficeBenchRequest): string {
 /** One bench, built once: the agents the tile draws and the statuses they wear. */
 interface BuiltBench {
   readonly agents: ReadonlyArray<CommGraphAgentNode>;
+  /**
+   * The statuses the office OPENS in, which is `steps[0]` and not the
+   * fixture's own roll.
+   *
+   * The two were the same map until the scripts started resting their civic
+   * statuses, and the difference is not cosmetic: a scripted bench's fixture
+   * roll says eighteen agents are already crashed while the office it draws
+   * opens with none. Deriving this from `steps` rather than assigning the
+   * fixture's map beside it means the two CANNOT drift - the shape this
+   * module already guards for agents and statuses, applied to the statuses
+   * and the script.
+   */
   readonly statusById: ReadonlyMap<string, OfficeAgentStatus>;
   /**
    * The statuses the office wears in turn, RESTING STATE FIRST.
@@ -229,6 +251,51 @@ let built: BuiltBench = {
 };
 
 /**
+ * THE STATUSES THAT WANT A CIVIC ROOM, which a script's resting state must not
+ * already be carrying.
+ *
+ * One per room: `failure` asks for a bed, `awaiting` for a lounge chair,
+ * `attention` for a place in the help desk's queue.
+ */
+const CIVIC_WANTING_STATUSES: ReadonlySet<OfficeAgentStatus> = new Set([
+  "failure",
+  "awaiting",
+  "attention",
+]);
+
+/**
+ * The fixture's statuses with every civic-wanting one stood down to `idle`.
+ *
+ * WITHOUT THIS A SCRIPT HAS NOWHERE TO PUT ANYBODY. `makeTestEpic` cycles its
+ * hot statuses over about a tenth of the population, so at `many-roots/1000`
+ * some eighteen agents are already `failure` and eighteen already `awaiting`
+ * before a script does anything - and a floor has eight beds and sixteen
+ * chairs. Every seat is claimed at rest, the named crashers cannot walk to a
+ * bed, the counter opens full, and `waiting`'s cleared chair can go to
+ * somebody who was never in the queue. The sitting would then be judging a
+ * room that was full when it arrived rather than the transition the row names.
+ *
+ * ON EVERY HOST, not just the one the script acts on: the rows are judged over
+ * the whole view, and at `two-hosts/400` the second building is in frame in
+ * Towers, in Building and in the Floor's stacked storeys. A ward already full
+ * with its van already spent contradicts the picture even when the subject's
+ * own building is clean.
+ *
+ * `working` and `background` are LEFT ALONE, and `archived` with them. None of
+ * them wants a room, and they are what keeps the frame-cadence rows honest -
+ * an office standing perfectly still is the wrong subject for a p95.
+ */
+function civicRestingStatuses(
+  statusById: ReadonlyMap<string, OfficeAgentStatus>,
+): ReadonlyMap<string, OfficeAgentStatus> {
+  const rested = new Map<string, OfficeAgentStatus>();
+  for (const [agentId, status] of statusById) {
+    rested.set(agentId, CIVIC_WANTING_STATUSES.has(status) ? "idle" : status);
+  }
+  return rested;
+}
+
+/**
  * The sequence this request plays, resting state first.
  *
  * The scripts are the scene suite's own (`office-test-epic.ts`), so the live
@@ -236,21 +303,27 @@ let built: BuiltBench = {
  * the capacity formula rather than from the URL: the row it exists for is the
  * OVERFLOW, and a count a dev happened to type could silently be one the
  * lounge has chairs for.
+ *
+ * The scripts are built FROM the rested map rather than from the fixture's, so
+ * a step adds only what the script says; building them from the hot map and
+ * merely showing a clean frame first would put every claim back on step one.
  */
 function benchSteps(
   request: OfficeBenchRequest,
   epic: OfficeTestEpic,
 ): ReadonlyArray<ReadonlyMap<string, OfficeAgentStatus>> {
   if (request.script === null) return [epic.statusById];
+  const resting = civicRestingStatuses(epic.statusById);
+  const rested: OfficeTestEpic = { ...epic, statusById: resting };
   const script: OfficeStatusScript =
     request.script === "outbreak"
-      ? outbreakScript(epic, request.outbreak)
+      ? outbreakScript(rested, request.outbreak)
       : waitingScript(
-          epic,
+          rested,
           civicCapacityFor(request.agents).chairs +
             OFFICE_BENCH_WAITING_OVERFLOW,
         );
-  return [epic.statusById, ...script];
+  return [resting, ...script];
 }
 
 /**
@@ -262,6 +335,9 @@ export function officeBench(request: OfficeBenchRequest): BuiltBench {
   const key = benchKeyOf(request);
   if (builtKey === key) return built;
   const epic = makeTestEpic(request.shape, request.agents, OFFICE_BENCH_SEED);
+  // `benchSteps` never returns an empty list - a scriptless bench is its one
+  // resting map - so the opening map below is always a real entry.
+  const steps = benchSteps(request, epic);
   built = {
     agents: epic.agents.map<CommGraphAgentNode>((agent) => ({
       id: agent.id,
@@ -275,8 +351,8 @@ export function officeBench(request: OfficeBenchRequest): BuiltBench {
       archivedAt: agent.archivedAt,
       createdAt: agent.createdAt,
     })),
-    statusById: epic.statusById,
-    steps: benchSteps(request, epic),
+    statusById: steps[0],
+    steps,
   };
   builtKey = key;
   return built;
