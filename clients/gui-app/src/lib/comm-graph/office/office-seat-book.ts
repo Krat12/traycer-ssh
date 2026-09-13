@@ -334,26 +334,37 @@ export class OfficeSeatBook {
       // `startCivicWalk` settled it back into it - so it never reached the
       // lounge, and every later sync did it again. A wake desk answered the
       // first request for a bed the same way.
-      if (wantOfSeat(existingSeat) === preference.wants) {
-        // An agent that goes hot again before it has finished walking home
-        // takes ITS OWN seat back rather than shopping for another one.
-        // Picking a second seat here would abandon a reservation that only
-        // `vacated` may end, and the seat the agent is still standing in would
-        // go to somebody else while it is in it.
-        if (existing.state === "releasing") {
-          this.claims.set(agentId, { ...existing, state: "held" });
-          this.claimShortfall.delete(agentId);
-          this.refresh();
-        }
-        return existingSeat;
+      // A CLAIM OF THE WRONG KIND IS NOT REPLACED EITHER - it is refused, and
+      // the agent waits a sync. ONE CLAIM PER AGENT is the whole reason: the
+      // record is the reservation, so overwriting it here would drop the bed
+      // out of `occupancy()` while the body is still lying in it, and the next
+      // crasher on the same sync would be handed an occupied bed. A later
+      // `vacated` cannot undo that - it is a no-op against a `held` claim, so
+      // the reservation would simply have been lost.
+      //
+      // Refusing costs one sync and nothing else. The walk home finishes,
+      // `settleInChair` calls `vacated`, the bed frees, and the NEXT civic
+      // pass makes the lounge claim - so the agent walks bed -> desk -> lounge,
+      // which is what "the character walks home when its claim ends" already
+      // describes. It keeps its place in `civicOrder` while it walks, because
+      // the served loop's `continue` only skips the claim, never the queue.
+      //
+      // Under reduced motion, playback and a paused cursor nothing changes:
+      // `returnToDesk` -> `settleInChair` -> `vacated` all run synchronously
+      // inside the release loop, so by the time this is reached there is no
+      // claim left to refuse and the new one is made on the same sync.
+      if (wantOfSeat(existingSeat) !== preference.wants) return null;
+      // An agent that goes hot again before it has finished walking home takes
+      // ITS OWN seat back rather than shopping for another one. Picking a
+      // second seat here would abandon a reservation that only `vacated` may
+      // end, and the seat the agent is still standing in would go to somebody
+      // else while it is in it.
+      if (existing.state === "releasing") {
+        this.claims.set(agentId, { ...existing, state: "held" });
+        this.claimShortfall.delete(agentId);
+        this.refresh();
       }
-      // Falling through allocates fresh and OVERWRITES the stale claim, which
-      // is what frees the bed for the next crasher on this same sync rather
-      // than the next - the release pass above says exactly that. It does not
-      // strand the `endClaim` -> `vacated` ordering: a later `vacated` for the
-      // old seat is a no-op against a `held` claim, and if nothing of the new
-      // kind is free the stale claim is left releasing and the agent simply
-      // walks home, which is the honest outcome.
+      return existingSeat;
     }
     const seat = this.firstFreeSeat(layout, agentId, preference);
     if (seat === null) {
@@ -371,6 +382,32 @@ export class OfficeSeatBook {
     this.claimShortfall.delete(agentId);
     this.refresh();
     return seat;
+  }
+
+  /**
+   * What the claim this agent is HOLDING would satisfy, or `null` where it
+   * holds none - the same question as `civicClaimOf` asked of ANY claim
+   * rather than only a civic one.
+   *
+   * The civic pass needs this and `civicClaimOf` cannot answer it. A cubby
+   * agent seated on a wake reserve that then crashes holds a DESK claim of the
+   * wrong kind, and a release loop that reads only civic claims never ends it -
+   * so nothing frees the reserve, and with `claim` refusing every mismatch the
+   * agent would sit on a desk wanting a bed forever. Answering for any claim is
+   * what lets the release protocol run on this one too.
+   *
+   * `held` only, for the same reason `civicClaimOf` is: a releasing claim is an
+   * agent already walking out of its seat, and the caller is asking what it is
+   * in right now.
+   */
+  heldClaimWant(agentId: string): OfficeSeatWant | null {
+    const layout = this.layout;
+    if (layout === null) return null;
+    const claim = this.claims.get(agentId);
+    if (claim === undefined || claim.state !== "held") return null;
+    const seat = layout.seats.get(claim.seatId);
+    if (seat === undefined) return null;
+    return wantOfSeat(seat);
   }
 
   /**
@@ -450,7 +487,15 @@ export class OfficeSeatBook {
       if (status !== "failure" && status !== "awaiting") continue;
       const seat = this.assignedSeat(agentId);
       if (seat === null) continue;
-      const claimed = this.claim(agentId, {
+      // WANTED, not GOT. This used to record only the agents a bed or a chair
+      // was actually found for, so an agent the ward had no room for fell
+      // through to the wake loop below and took a reserve desk - and with
+      // every reserve taken, a desk shortfall, and the next sync re-planning
+      // the storey. C2 says the ward's size IS the answer: an agent that finds
+      // it full keeps the seat it has. `shortfall: "none"` says so for the
+      // claim; this says so for what happens next.
+      civic.add(agentId);
+      this.claim(agentId, {
         roomId: null,
         floorIndex: seat.floorIndex,
         wants,
@@ -459,7 +504,6 @@ export class OfficeSeatBook {
         // `needsCapacity` asking for a bigger one.
         shortfall: "none",
       });
-      if (claimed !== null) civic.add(agentId);
     }
     for (const agentId of order) {
       if (civic.has(agentId)) continue;
