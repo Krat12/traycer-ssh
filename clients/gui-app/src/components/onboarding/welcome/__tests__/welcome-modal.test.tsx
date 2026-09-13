@@ -68,43 +68,53 @@ vi.mock(
   }),
 );
 
+/**
+ * A REAL `providers.list` query under the roster's key with a controllable
+ * request: seeded with `providers` at mount when `resolved`, and every
+ * fetch parks on `deferred` for the test to answer. The Continue gate
+ * (`useWelcomeRoster`) is fed by the query cache, so a stub returning
+ * result objects would leave it silent.
+ */
 const providersFixture = vi.hoisted(() => ({
   providers: [] as ProviderCliState[],
   /** `false` = the list query has not answered yet. */
   resolved: true,
-  /** A refresh of an already-resolved list is in flight. */
-  refreshing: false,
-  /** The last read of an already-resolved list failed (data is kept). */
-  errored: false,
-  refetch: vi.fn(),
+  deferred: null as {
+    readonly resolve: (value: { providers: ProviderCliState[] }) => void;
+    readonly reject: (error: Error) => void;
+  } | null,
+  fetches: 0,
 }));
 
 vi.mock("@/hooks/host/use-addressable-host-id", () => ({
   useAddressableHostId: () => "host-a",
 }));
 
-vi.mock("@/hooks/providers/use-providers-list-query", () => ({
-  useProvidersList: () =>
-    providersFixture.resolved
-      ? {
-          data: { providers: providersFixture.providers },
-          isPending: false,
-          isError: providersFixture.errored,
-          isFetching: providersFixture.refreshing,
-          fetchStatus: providersFixture.refreshing ? "fetching" : "idle",
-          status: providersFixture.errored ? "error" : "success",
-          refetch: providersFixture.refetch,
-        }
-      : {
-          data: undefined,
-          isPending: true,
-          isError: false,
-          isFetching: true,
-          fetchStatus: "fetching",
-          status: "pending",
-          refetch: providersFixture.refetch,
+vi.mock("@/hooks/providers/use-providers-list-query", async () => {
+  const { useQuery } = await import("@tanstack/react-query");
+  const { welcomeRosterQueryKey } =
+    await import("@/stores/onboarding/welcome-roster-freshness-store");
+  return {
+    useProvidersList: () =>
+      useQuery({
+        queryKey: welcomeRosterQueryKey("host-a"),
+        queryFn: () => {
+          providersFixture.fetches += 1;
+          return new Promise<{ providers: ProviderCliState[] }>(
+            (resolve, reject) => {
+              providersFixture.deferred = { resolve, reject };
+            },
+          );
         },
-}));
+        initialData: providersFixture.resolved
+          ? { providers: providersFixture.providers }
+          : undefined,
+        staleTime: Infinity,
+        gcTime: Infinity,
+        retry: false,
+      }),
+  };
+});
 
 /**
  * A REAL mutation under the hook's own key with a controllable request: the
@@ -118,23 +128,54 @@ const setEnabled = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
-  const { useMutation } = await import("@tanstack/react-query");
+  const { useMutation, useQueryClient } = await import("@tanstack/react-query");
   const { providersMutationKeys } = await import("@/lib/query-keys");
+  const { welcomeRosterQueryKey } =
+    await import("@/stores/onboarding/welcome-roster-freshness-store");
   return {
-    useProvidersSetEnabled: () =>
-      useMutation({
+    useProvidersSetEnabled: () => {
+      const queryClient = useQueryClient();
+      return useMutation({
         mutationKey: providersMutationKeys.setEnabled(),
-        // The shape `useHostScopedMutation` captures at `onMutate`.
+        // The shape `useHostScopedMutation` captures at `onMutate` ...
         onMutate: () => ({ hostId: "host-a", captured: undefined }),
+        // ... and the invalidation it fires inside `onSuccess`, un-awaited,
+        // BEFORE the mutation's status flips to success.
+        onSuccess: () => {
+          void queryClient.invalidateQueries({
+            queryKey: welcomeRosterQueryKey("host-a"),
+          });
+        },
         mutationFn: (variables: unknown) => {
           setEnabled.requests.push(variables);
           return new Promise<void>((resolve) => {
             setEnabled.resolve = resolve;
           });
         },
-      }),
+      });
+    },
   };
 });
+
+/** Wait for the n-th list fetch to have asked, then answer it. */
+async function answerFetch(
+  ordinal: number,
+  outcome:
+    { readonly providers: ProviderCliState[] } | { readonly error: string },
+): Promise<void> {
+  await waitFor(() => {
+    expect(providersFixture.fetches).toBeGreaterThanOrEqual(ordinal);
+    expect(providersFixture.deferred).not.toBeNull();
+  });
+  const deferred = providersFixture.deferred;
+  if (deferred === null) throw new Error("no fetch in flight");
+  providersFixture.deferred = null;
+  await act(async () => {
+    if ("error" in outcome) deferred.reject(new Error(outcome.error));
+    else deferred.resolve({ providers: outcome.providers });
+    await Promise.resolve();
+  });
+}
 
 interface StreamHarness {
   client: object;
@@ -218,7 +259,6 @@ import {
   useOnboardingFlowStore,
 } from "@/stores/onboarding/onboarding-flow-store";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
-import { useWelcomeRosterFreshnessStore } from "@/stores/onboarding/welcome-roster-freshness-store";
 
 function providerState(
   providerId: ProviderId,
@@ -322,10 +362,8 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       providerState("cursor", false),
     ];
     providersFixture.resolved = true;
-    providersFixture.refreshing = false;
-    providersFixture.errored = false;
-    useWelcomeRosterFreshnessStore.getState().reset();
-    providersFixture.refetch.mockReset();
+    providersFixture.deferred = null;
+    providersFixture.fetches = 0;
     setEnabled.requests.length = 0;
     setEnabled.resolve = null;
     stream.hostId = "host-a";
@@ -484,12 +522,10 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   });
 
   describe("Continue from page 1", () => {
-    it("is withheld until providers.list resolves, so an unread roster cannot finish the modal", () => {
+    it("is withheld until providers.list resolves, so an unread roster cannot finish the modal", async () => {
       providersFixture.resolved = false;
       signIn();
-      const view = render(<OnboardingFlowHost />, {
-        wrapper: WithTestQueryClient,
-      });
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       const continueButton = screen.getByRole("button", { name: "Continue" });
       expect(continueButton.hasAttribute("disabled")).toBe(true);
       fireEvent.click(continueButton);
@@ -497,13 +533,14 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(flow().modalPage).toBe(1);
       expect(scanClient.constructed).toBe(0);
 
-      providersFixture.resolved = true;
-      view.rerender(<OnboardingFlowHost />);
-      expect(
-        screen
-          .getByRole("button", { name: "Continue" })
-          .hasAttribute("disabled"),
-      ).toBe(false);
+      await answerFetch(1, { providers: providersFixture.providers });
+      await waitFor(() => {
+        expect(
+          screen
+            .getByRole("button", { name: "Continue" })
+            .hasAttribute("disabled"),
+        ).toBe(false);
+      });
       // The roster arrived, and the scan it names started.
       expect(scanClient.providers).toEqual(["claude"]);
     });
@@ -553,52 +590,56 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
         expect(continueButton().hasAttribute("disabled")).toBe(true);
       });
 
-      // The refetch the success invalidates into starts before the mutation
-      // reports success, so it is stamped with the old generation.
-      providersFixture.refreshing = true;
-      view.rerender(<OnboardingFlowHost />);
+      // The host accepts. The refetch the success invalidates into starts
+      // before the mutation reports success, so it is stamped with the old
+      // generation.
       const resolve = setEnabled.resolve;
       if (resolve === null) throw new Error("no toggle in flight");
       await act(async () => {
         resolve();
         await Promise.resolve();
       });
-      view.rerender(<OnboardingFlowHost />);
+      await waitFor(() => {
+        expect(providersFixture.fetches).toBe(1);
+      });
       expect(continueButton().hasAttribute("disabled")).toBe(true);
       fireEvent.click(continueButton());
       expect(flow().modal).toBe("in-progress");
       expect(flow().modalPage).toBe(1);
 
-      // It lands, but is no receipt: the hook asks for one more fetch.
-      providersFixture.refreshing = false;
-      view.rerender(<OnboardingFlowHost />);
-      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      // It lands with the pre-toggle roster, and is no receipt: the tracker
+      // asks for one more fetch and Continue stays withheld.
+      await answerFetch(1, { providers: providersFixture.providers });
       await waitFor(() => {
-        expect(providersFixture.refetch).toHaveBeenCalledTimes(1);
+        expect(providersFixture.fetches).toBe(2);
       });
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      expect(scanClient.constructed).toBe(0);
 
       // That fetch FAILS and leaves the pre-toggle roster: still withheld,
       // and the retry is on offer even though data is cached.
-      providersFixture.refreshing = true;
-      view.rerender(<OnboardingFlowHost />);
-      providersFixture.refreshing = false;
-      providersFixture.errored = true;
-      view.rerender(<OnboardingFlowHost />);
+      await answerFetch(2, { error: "host went away" });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: "Try again" }),
+        ).not.toBeNull();
+      });
       expect(continueButton().hasAttribute("disabled")).toBe(true);
-      expect(screen.getByRole("button", { name: "Try again" })).not.toBeNull();
-      expect(providersFixture.refetch).toHaveBeenCalledTimes(1);
+      view.rerender(<OnboardingFlowHost />);
+      expect(providersFixture.fetches).toBe(2);
 
       // The retry lands the refreshed roster: Claude is on, and the scan
       // for it starts.
-      providersFixture.errored = false;
-      providersFixture.refreshing = true;
-      view.rerender(<OnboardingFlowHost />);
-      providersFixture.refreshing = false;
-      providersFixture.providers = [
-        providerState("cursor", true),
-        providerState("claude-code", true),
-      ];
-      view.rerender(<OnboardingFlowHost />);
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      await answerFetch(3, {
+        providers: [
+          providerState("cursor", true),
+          providerState("claude-code", true),
+        ],
+      });
+      await waitFor(() => {
+        expect(continueButton().hasAttribute("disabled")).toBe(false);
+      });
       expect(scanClient.providers).toEqual(["claude"]);
       act(() => {
         callbacks().onStarted(["claude"]);
