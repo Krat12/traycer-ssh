@@ -90,6 +90,7 @@ export type AnalyticsSettingsSection =
   | "appearance"
   | "devices"
   | "diagnostics"
+  | "fallback"
   | "general"
   | "host"
   | "keybindings"
@@ -430,6 +431,8 @@ export enum AnalyticsEvent {
   // Externally" - the metric that decides whether the cap needs a
   // per-type raise or range streaming (PDF preview design, Q6).
   PdfPreviewTooLarge = "pdf_preview_too_large",
+  // The Word-document counterpart, recorded on the same failure path.
+  DocxPreviewTooLarge = "docx_preview_too_large",
   WorktreeCreated = "worktree_created",
   WorktreeImported = "worktree_imported",
   WorktreeSelected = "worktree_selected",
@@ -733,6 +736,9 @@ export interface AnalyticsEventProperties {
   readonly [AnalyticsEvent.WorkspaceFileOpened]: SourceProperties;
   readonly [AnalyticsEvent.PdfPreviewTooLarge]: {
     /** Which asset-stream surface the over-cap PDF was requested from. */
+    readonly surface: "workspace" | "git-old" | "git-new";
+  };
+  readonly [AnalyticsEvent.DocxPreviewTooLarge]: {
     readonly surface: "workspace" | "git-old" | "git-new";
   };
   readonly [AnalyticsEvent.WorkspaceOpenedInEditor]: SourceProperties & {
@@ -1175,6 +1181,7 @@ const ANALYTICS_SETTINGS_SECTIONS = new Set<string>(
     appearance: true,
     devices: true,
     diagnostics: true,
+    fallback: true,
     general: true,
     host: true,
     keybindings: true,
@@ -1439,7 +1446,10 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
     [AnalyticsEvent.TaskCreationFailed],
     ["source", "blocker", "mode"],
   ),
-  ...eventKeyEntries([AnalyticsEvent.PdfPreviewTooLarge], ["surface"]),
+  ...eventKeyEntries(
+    [AnalyticsEvent.PdfPreviewTooLarge, AnalyticsEvent.DocxPreviewTooLarge],
+    ["surface"],
+  ),
   ...eventKeyEntries(
     [AnalyticsEvent.HostSetupStarted, AnalyticsEvent.HostSetupSucceeded],
     ["reason"],
