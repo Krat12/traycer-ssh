@@ -4,11 +4,14 @@
  * The other half - that a benched tile actually draws an office - is in
  * `comm-graph-tile.test.tsx`, where there is a tile to draw one.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { CommGraphAgentNode } from "@/lib/comm-graph/comm-graph-model";
+import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
+import type { OfficeAgentStatus } from "@/lib/comm-graph/office/office-types";
 import {
   officeBench,
+  officeBenchStatuses,
   parseOfficeBenchSearch,
   OFFICE_BENCH_MAX_AGENTS,
   OFFICE_BENCH_OUTBREAK_DEFAULT,
@@ -75,17 +78,71 @@ describe("parseOfficeBenchSearch", () => {
       parseOfficeBenchSearch("?focusedAt=3&officeBench=309&focusPaneId=pane-1"),
     ).toEqual({ shape: "triage", agents: 309, ...STILL_OFFICE });
   });
+
+  it("reads officeBenchScript=outbreak and officeBenchOutbreak=12", () => {
+    expect(
+      parseOfficeBenchSearch(
+        "?officeBench=400&officeBenchScript=outbreak&officeBenchOutbreak=12",
+      ),
+    ).toEqual({
+      shape: "triage",
+      agents: 400,
+      script: "outbreak",
+      outbreak: 12,
+    });
+  });
+
+  it("defaults outbreak when the param is absent or unreadable", () => {
+    // 3 is the ticket's stated default. Comparing to the constant
+    // alone moves both sides together, and is `undefined === undefined`
+    // against a tree that has no field at all.
+    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(3);
+    expect(parseOfficeBenchSearch("?officeBench=20")?.outbreak).toBe(3);
+    expect(
+      parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=nope")
+        ?.outbreak,
+    ).toBe(3);
+  });
+
+  it("falls a zero or negative outbreak back to the default, and caps a count at the population", () => {
+    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(3);
+    expect(
+      parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=0")?.outbreak,
+    ).toBe(3);
+    expect(
+      parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=-2")
+        ?.outbreak,
+    ).toBe(3);
+    expect(
+      parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=100")
+        ?.outbreak,
+    ).toBe(20);
+  });
+
+  it("ignores an unknown script rather than defaulting one", () => {
+    // A typo must not put an outbreak on a floor a dev asked to leave
+    // still. The shape falls back to triage; the script does not.
+    expect(
+      parseOfficeBenchSearch("?officeBench=20&officeBenchScript=plague"),
+    ).toEqual({
+      shape: "triage",
+      agents: 20,
+      script: null,
+      outbreak: OFFICE_BENCH_OUTBREAK_DEFAULT,
+    });
+  });
 });
 
 describe("officeBench", () => {
+  const originalHref = window.location.href;
+  afterEach(() => {
+    window.history.replaceState({}, "", originalHref);
+  });
+
   it("projects the fixture as the comm-graph's own nodes", () => {
     const fixture = makeTestEpic("triage", 12, OFFICE_BENCH_SEED);
 
-    const nodes = benchAgents({
-      shape: "triage",
-      agents: 12,
-      ...STILL_OFFICE,
-    });
+    const nodes = benchAgents({ shape: "triage", agents: 12, ...STILL_OFFICE });
 
     expect(nodes).toHaveLength(12);
     // The same agents, in the same order, carrying every field the tile's own
@@ -220,5 +277,114 @@ describe("officeBench", () => {
     for (const agentId of bench.statusById.keys()) {
       expect(ids.has(agentId)).toBe(true);
     }
+  });
+
+  function statusCount(
+    map: ReadonlyMap<string, OfficeAgentStatus>,
+    want: OfficeAgentStatus,
+  ): number {
+    let n = 0;
+    for (const status of map.values()) {
+      if (status === want) n += 1;
+    }
+    return n;
+  }
+
+  function failureIds(
+    map: ReadonlyMap<string, OfficeAgentStatus>,
+  ): ReadonlyArray<string> {
+    const ids: string[] = [];
+    for (const [id, status] of map) {
+      if (status === "failure") ids.push(id);
+    }
+    return ids;
+  }
+
+  it("plays outbreak as a transition off the resting map, three more failures on one host", () => {
+    const request: OfficeBenchRequest = {
+      shape: "two-hosts",
+      agents: 80,
+      script: "outbreak",
+      outbreak: 3,
+    };
+    const fixture = makeTestEpic(
+      request.shape,
+      request.agents,
+      OFFICE_BENCH_SEED,
+    );
+    const bench = officeBench(request);
+    expect(bench.steps.length).toBeGreaterThan(1);
+    expect(bench.steps[0]).toBe(bench.statusById);
+    expect(bench.steps[0]).toEqual(fixture.statusById);
+
+    const resting = failureIds(bench.steps[0]);
+    const next = failureIds(bench.steps[1]);
+    const extra = next.filter((id) => !resting.includes(id));
+    expect(extra).toHaveLength(3);
+    expect(statusCount(bench.steps[1], "failure")).toBe(
+      statusCount(bench.steps[0], "failure") + 3,
+    );
+    const hosts = new Set(
+      extra.map((id) => {
+        const node = bench.agents.find((agent) => agent.id === id);
+        if (node === undefined) throw new Error(`missing ${id}`);
+        return node.hostId;
+      }),
+    );
+    expect(hosts.size).toBe(1);
+  });
+
+  it("plays waiting so more agents await than the lounge has chairs", () => {
+    const request: OfficeBenchRequest = {
+      shape: "triage",
+      agents: 60,
+      script: "waiting",
+      outbreak: OFFICE_BENCH_OUTBREAK_DEFAULT,
+    };
+    const bench = officeBench(request);
+    expect(bench.steps.length).toBeGreaterThan(1);
+    expect(bench.steps[0]).toBe(bench.statusById);
+    const chairs = civicCapacityFor(request.agents).chairs;
+    expect(chairs).toBeGreaterThan(0);
+    expect(statusCount(bench.steps[1], "awaiting")).toBeGreaterThan(chairs);
+  });
+
+  it("has exactly one step with no script, and clamps a step index into that range", () => {
+    window.history.replaceState({}, "", "?officeBench=12");
+    expect(window.location.search).toBe("?officeBench=12");
+    const still = officeBench({
+      shape: "triage",
+      agents: 12,
+      ...STILL_OFFICE,
+    });
+    expect(still.steps).toHaveLength(1);
+    expect(still.steps[0]).toBe(still.statusById);
+    expect(officeBenchStatuses(0)).toBe(still.steps[0]);
+    expect(officeBenchStatuses(1)).toBe(still.steps[0]);
+    expect(officeBenchStatuses(-1)).toBe(still.steps[0]);
+    expect(officeBenchStatuses(99)).toBe(still.steps[0]);
+
+    window.history.replaceState(
+      {},
+      "",
+      "?officeBench=40&officeBenchScript=outbreak&officeBenchOutbreak=3",
+    );
+    expect(window.location.search).toBe(
+      "?officeBench=40&officeBenchScript=outbreak&officeBenchOutbreak=3",
+    );
+    const moving = officeBench({
+      shape: "triage",
+      agents: 40,
+      script: "outbreak",
+      outbreak: 3,
+    });
+    expect(moving.steps.length).toBeGreaterThan(1);
+    const last = moving.steps[moving.steps.length - 1];
+    // Clamp, not wrap: 999 and -4 are the ticket's indices, and
+    // `steps.length` is the wrap-killer (a wrap lands on the resting
+    // map; a clamp stays on the last step).
+    expect(officeBenchStatuses(999)).toBe(last);
+    expect(officeBenchStatuses(-4)).toBe(moving.steps[0]);
+    expect(officeBenchStatuses(moving.steps.length)).toBe(last);
   });
 });
