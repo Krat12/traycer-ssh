@@ -32,6 +32,7 @@ import {
   type OfficeRect,
   type OfficeSeat,
   type OfficeSpriteName,
+  type OfficeSpriteRef,
   type OfficeTilePos,
   type OfficeTileRect,
   type OfficeWorldDrawable,
@@ -290,7 +291,6 @@ function pushRoomWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
       }
     }
   }
-  pushCivicWalls(scan, out);
 }
 
 /**
@@ -311,8 +311,14 @@ function pushRoomWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
  * either - a `waiting-room` is a walled room on the Floor and a bench row on
  * Campus's lawn, measured.
  *
- * Campus only, like the room walls above: a City block IS its own wall, and its
- * civic rooms are blocks.
+ * EVERY ISOMETRIC VIEW, which is where this differs from the team-room walls
+ * above. Those are Campus's alone because a City block raises its own walls out
+ * of the building sprites its lots carry. A CIVIC room carries no lots: measured
+ * with City's four rooms planned and this call still inside `pushRoomWalls`, the
+ * whole world at lod 1 held zero `wall-iso-*`, and the hospital's wall row -
+ * blocked, walkable by nothing - drew only the crosses standing on it. So the
+ * wall art is not decoration here, it is the only thing that makes a walled
+ * civic room a building in a view whose buildings come from seats.
  */
 function pushCivicWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
   const { tiles, layout } = scan;
@@ -556,6 +562,11 @@ function paintFloor(
     }
   }
   pushRoomWalls(scan, standing);
+  // BOTH DISTRICTED VIEWS, unlike the team-room walls above. A City block is its
+  // own wall because a block is a stack of building sprites; a civic room has no
+  // seats to raise one, so with nothing drawn here its hospital's blocked wall
+  // row was art-free - a barrier you cannot walk through and cannot see.
+  pushCivicWalls(scan, standing);
   pushDoors(scan, standing);
   pushProps(scan, standing);
   // A dial is detail: at office zoom the hands alone read as a clock, and the
@@ -623,6 +634,29 @@ export function isoCampusSeatBox(corner: OfficePoint): OfficeRect {
     width: DESK_ISO_WIDTH,
     height: corner.y + ISO_HALF_HEIGHT - top,
   };
+}
+
+/**
+ * A piece of civic FURNITURE: the sprite's own rect, exactly where `pushProps`
+ * draws it.
+ *
+ * A bed or a shelter chair is not a seat the painter draws - `paintSeat` returns
+ * nothing for a civic seat - it is a PROP, and a prop is one sprite at
+ * `isoPropOrigin`. So the union over its states is the sprite, and computing it
+ * any other way would be inventing a second answer to a question `pushProps`
+ * has already settled.
+ *
+ * Campus does not use this: its beds ride `isoCampusSeatBox`, which is 32 x 40
+ * of desk union around a 32 x 24 bed - wider than needed in the sky above it,
+ * never short of it. Both cover what they name; this one is simply tight.
+ */
+export function isoFurnitureBox(
+  corner: OfficePoint,
+  sprite: OfficeSpriteRef,
+): OfficeRect {
+  const size = officeSpriteSize(sprite);
+  const origin = isoPropOrigin(corner, size.width, size.height);
+  return { x: origin.x, y: origin.y, width: size.width, height: size.height };
 }
 
 /**

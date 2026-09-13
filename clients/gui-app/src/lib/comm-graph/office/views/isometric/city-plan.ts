@@ -26,26 +26,38 @@
 import {
   OFFICE_CHARACTER_HEIGHT,
   type OfficeAgentInput,
+  type OfficeCivicRoom,
   type OfficeDesk,
   type OfficeFloor,
   type OfficeLayout,
   type OfficeProp,
+  type OfficeRect,
+  type OfficeRoad,
   type OfficeRoom,
   type OfficeSeat,
   type OfficeSign,
   type OfficeSize,
+  type OfficeSpriteName,
   type OfficeTilePos,
   type OfficeTileRect,
 } from "@/lib/comm-graph/office/office-types";
 import type { OfficeHostPopulation } from "@/lib/comm-graph/office/office-population";
 import {
+  ARCHIVE_SIGN_WIDTH_TILES,
+  civicCapacityFor,
+} from "@/lib/comm-graph/office/office-layout";
+import {
   isoCityBuildingBox,
+  isoFurnitureBox,
   ISO_PAINTER,
 } from "@/lib/comm-graph/office/views/isometric/iso-painter";
 import {
   buildIsoCafe,
   buildIsoCourtyard,
   buildIsoIndex,
+  civicRoomIdOf,
+  civicSeat,
+  districtLane,
   isoBlankGrid,
   isoFloorOf,
   isoHostKey,
@@ -60,6 +72,7 @@ import {
   ISO_COURTYARD_BENCHES,
   ISO_COURTYARD_COLS,
   ISO_COURTYARD_ROWS,
+  ISO_BLOCK_GAP,
   ISO_DISTRICT_GAP,
   ISO_DISTRICT_RING,
   ISO_SEAT_ID_NONE,
@@ -68,6 +81,7 @@ import {
   type CityFrozenBlock,
   type CityFrozenDistrict,
   type IsoBlockSpec,
+  type IsoCourtyardBuild,
   type IsoDistrictBuild,
   type IsoGrid,
   type IsoShelfCursor,
@@ -135,15 +149,204 @@ const MIN_STACK_HEIGHT = 24;
  * three-row foot puts four rows between the two plates. A one-row lot would need
  * four, and City has none - the smallest lot is a two-row door pair.
  *
+ * ITS OWN WITNESS, now that the civic quarter is planned. When this constant
+ * arrived, the 22 populations it was measured on were all outside the three the
+ * plate case runs, so nothing in the suite reddened when it was wrong - a gap
+ * stated plainly at the time. The quarter closes it: the WAREHOUSE band is the
+ * lowest thing in the district, so its plate is the one nearest the host's.
+ * Measured by putting this back to 1 with the quarter in place - the shared plate
+ * case reds at all three populations, `civic "WAREHOUSE" at 1,24 overlaps host
+ * "UNATTRIBUTED" at 1,26 by 2.8 px` and the same at 1,56 and 1,83.
+ *
  * IT IS CITY'S OWN, NOT `ISO_DISTRICT_RING`. Raising the shared ring to 3 was
  * measured and fails three ways: it does not fix City at all, because the ring
  * grows on every side and content and plate shift down together leaving `d` at
  * 2 and all 22 populations still overprinting; it breaks Campus, whose walk to
  * its civic seats and kerbs reds at 12 and 309 agents; and it costs four rows
  * and four columns in both views instead of two rows in one. This costs +2 rows
- * and no columns: 18x16 -> 18x18, 44x48 -> 44x50, 70x81 -> 70x83.
+ * and no columns: 18x16 -> 18x18, 44x48 -> 44x50, 70x81 -> 70x83. (Those figures
+ * are from before the civic quarter, which moved every City row count again; the
+ * +2 this constant is responsible for is unchanged.)
  */
 const CITY_FOOT_RING_ROWS = 3;
+
+/**
+ * THE CIVIC QUARTER'S OWN GEOMETRY, in City's words.
+ *
+ * `Hospital` is a BAND, not a packed block, for the reason the Mission-control
+ * medbay and Campus's sick bay are: its position is part of a promise. It has to
+ * stand at the district's first content column so its door faces the lane and
+ * its kerb is a lane tile one step away, and a shelf packer decides positions by
+ * size. So it is laid under everything the packer placed, at that column - a wall
+ * row with a cross on it, and a row of beds behind it.
+ *
+ * `Bus stop` and `Warehouse` are bands for a weaker reason than the hospital's -
+ * nothing is promised about either position - and one strong one, the plates.
+ *
+ * `Warehouse` IS A BAND TOO, and it started out packed. C5 makes it a door with
+ * a counter, nothing drives to it, and nothing about its position is promised -
+ * so the shelf looked like the right place for it, and the plan said so. What
+ * the shelf cannot promise is the ROW its plate hangs on. Measured at a thousand
+ * agents with the warehouse packed: its plate landed one row from the hospital's
+ * and the two overprinted by 8.4 px at office zoom, and a shelf placement is not
+ * something a population can be chosen to avoid - it is wherever that district's
+ * blocks happen to leave a gap. As a band its row is known, which is what makes
+ * the plate clearances below a construction rather than a hope. It is as wide as
+ * its own plate, which is what `ARCHIVE_SIGN_WIDTH_TILES` says.
+ *
+ * `Bus stop` is a shelter of its own at the lane - two tiles of shelter, and the
+ * seats on the pavement row in front of them, the same reading Campus's benches
+ * have: the shelter is furniture nobody stands on, and the tile a waiting agent
+ * sits on is a tile of pavement.
+ *
+ * IT IS AT THE STREET BUT CARRIES NO KERB. `kerbTile` is where a vehicle stops
+ * FOR THAT ROOM - the ambulance at the ward, the van at the counter - and no view
+ * gives its waiting room one (C6): nobody is collected from a waiting room. The
+ * band standing beside the lane is the plan's "road side", not a promise that
+ * something pulls up.
+ *
+ * `Police station` is the district's RECEPTION, re-signed (C7). Not a second
+ * counter beside it - the help desk is the counter that was already there.
+ */
+const HOSPITAL_ROWS = 2;
+const HOSPITAL_WALL_COLS = 1;
+const BED_WIDTH_TILES = 2;
+const WAREHOUSE_COLS = ARCHIVE_SIGN_WIDTH_TILES;
+const WAREHOUSE_ROWS = 2;
+/** The shelter itself; its seats stand on the row in front of it. */
+const SHELTER_ROWS = 2;
+/** Two tiles of shelter, which is what the `bus-shelter` sprite spans. */
+const SHELTER_COLS = 2;
+
+/** How many agents this district houses, which sets its civic capacity. */
+function cityDistrictAgents(work: CityDistrictWork): number {
+  let total = 0;
+  for (const need of work.needs) total += need.memberAgentIds.length;
+  return total;
+}
+
+/**
+ * TWO ROWS BETWEEN THE LAST LOT AND THE FIRST BAND, and the two is measured.
+ *
+ * A civic plate's backing must clear every other plate's by 14 screen px, and
+ * what separates two plates stacked in an isometric view is
+ * `(d * 8 + overhang(lower) - overhang(upper)) * zoom` where `d` is the
+ * difference in `col + row`. A civic plate's art is a 32x16 sign, overhang 0; a
+ * lot's is a `pod-plate`, overhang 8. So a lot plate ABOVE a civic one needs
+ * `(d * 8 - 8) * 0.7 >= 14`, which is `d >= 3.5`, which is `d >= 4`.
+ *
+ * A lot block's plate hangs on its own first row and the smallest block is the
+ * two-row door pair, so the nearest plate above the bands sits at
+ * `contentBottom - 2`. One gap row put the hospital's plate at `d = 3` and it
+ * overprinted: measured, `AGENT-ROOT` over `HOSPITAL` by 2.8 px at 12 agents and
+ * `TEAM-5-LEAD` over it by a whole 14 at 309. Two rows make `d = 4`, which
+ * clears at 16.8 px whatever the columns do.
+ *
+ * Between the bands themselves ONE gap is enough, because both plates are civic
+ * and the overhangs cancel: `d = 3` gives `24 * 0.7 = 16.8`.
+ */
+const CITY_CIVIC_CLEARANCE_ROWS = 2;
+
+/**
+ * THE THREE BANDS, and the rows a district owes them.
+ *
+ * All three stand at the first content column, because the first of them is
+ * promised to the lane - the hospital's kerb is a lane tile one step from its own
+ * door - and a column is the only line in a shelf-packed district whose position
+ * is known before the packing. The lane runs the district's whole height, so
+ * "beside the lane" costs a row band rather than a place in the shelf, and once
+ * one band is paid for the other two ride the same decision.
+ *
+ * Laid UNDER everything the packer placed, hospital first, then the bus stop,
+ * then the warehouse, each separated by the walkable gap two blocks keep.
+ */
+interface CityCivicBands {
+  readonly hospitalRow: number;
+  readonly shelterRow: number;
+  readonly shedRow: number;
+  /** Rows the district comes to, foot band included. */
+  readonly rows: number;
+}
+
+function cityCivicBands(contentBottom: number): CityCivicBands {
+  const hospitalRow = contentBottom + CITY_CIVIC_CLEARANCE_ROWS;
+  const shelterRow = hospitalRow + HOSPITAL_ROWS + ISO_BLOCK_GAP;
+  const shedRow = shelterRow + SHELTER_ROWS + ISO_BLOCK_GAP;
+  return {
+    hospitalRow,
+    shelterRow,
+    shedRow,
+    rows: shedRow + WAREHOUSE_ROWS + CITY_FOOT_RING_ROWS,
+  };
+}
+
+/** The row the packer's own blocks come down to, gaps and all. */
+function cityContentBottom(district: PlacedDistrict): number {
+  let bottom = 0;
+  for (const block of district.blocks) {
+    bottom = Math.max(bottom, block.rect.row + block.rect.rows);
+  }
+  return bottom;
+}
+
+/**
+ * ONE READING of a district's bands, for the two callers that need it.
+ *
+ * `raiseSkyline` sizes the world and `buildDistrict` lays the furniture out, and
+ * the second inside the first is the whole point: a world one row short of its
+ * own hospital would put a bed off the grid. Both read it here so neither can
+ * drift - the defect that shape invites is not a wrong formula, it is two right
+ * ones that stop agreeing.
+ */
+function cityCivicBandsOf(district: PlacedDistrict): CityCivicBands {
+  return cityCivicBands(cityContentBottom(district));
+}
+
+/** What this district's population is owed, from the shared rates. */
+function cityCivicCapacity(district: PlacedDistrict): {
+  readonly beds: number;
+  readonly chairs: number;
+} {
+  return civicCapacityFor(cityDistrictAgents(district.work));
+}
+
+/**
+ * EVERY CIVIC PLATE IN CITY IS SIX TILES, and never the room's frontage.
+ *
+ * WHY NOT THE FRONTAGE. A plate is centred over the tiles it spans, so a plate as
+ * wide as an eight-bed ward hangs its lettering EIGHT TILES into the district -
+ * and the district is where the lot plates are. Measured with the ward plated by
+ * its own frontage, sweeping every population from 8 to 140 and then 160, 200,
+ * 250, 309, 400, 500, 700 and 1,000: 48 overprints, every one the same structural
+ * pair - a lot plate four columns right and six rows above the hospital's sign,
+ * `col + row` two apart, 1.2 to 8.4 px deep at office zoom. Campus takes none in
+ * the same sweep; its bench row widens its whole shelf, so its ward's plate
+ * centres over its own band rather than under someone else's lots.
+ *
+ * WHY SIX AND NOT FOUR. Four is the archive's width and would have been the
+ * tidier borrowing, but a plate's width is what the sign resolver measures its
+ * COUNTER against, and `OFFICE_TILE` is 16: four tiles are 102 px at close-up,
+ * and `Hospital · 8 of 8` measures 124. Four would therefore have cost this view
+ * a counter it can afford - the one rung the ladder gives up - on a room seventeen
+ * columns wide. Six tiles are 154 px against City's longest rung at 137
+ * (`Police station · 12`, `Bus stop · 16 of 16`), so every room here keeps its
+ * count, and the same sweep at six is still clean in both views.
+ *
+ * Anchored at the room's own first column, the lettering sits over the way in -
+ * the ward's aisle corner, the shelter, the shed's door - which is where a
+ * building's name belongs anyway.
+ */
+const CITY_CIVIC_PLATE_TILES = 6;
+
+/** The bus stop's width: the shelter, or its seat row if that is wider. */
+function shelterCols(chairs: number): number {
+  return Math.max(SHELTER_COLS, chairs);
+}
+
+/** How wide the hospital's band comes to at this bed count. */
+function hospitalCols(beds: number): number {
+  return HOSPITAL_WALL_COLS + beds * BED_WIDTH_TILES;
+}
 
 const PARK_BLOCK: IsoBlockSpec = {
   blockId: "park",
@@ -324,13 +527,40 @@ interface PlacedDistrict {
   readonly districtIndex: number;
 }
 
+/**
+ * THE WIDEST THE BANDS CAN EVER BE, which is what the budget has to clear.
+ *
+ * Read from `civicCapacityFor` at an impossible population rather than written
+ * down, because the cap is that function's to own: `office-layout` says two to
+ * eight beds and four to sixteen chairs, and a second copy of the eight here is
+ * a number that goes stale silently the first time the rates move.
+ *
+ * IT IS THE CAP AND NOT THIS DISTRICT'S COUNT, and that is the point. A width
+ * budget is FROZEN at the first plan, so a district sized for the twelve agents
+ * it opened with would have no room for the eight-bed ward it owes at three
+ * hundred - and its band would run out of its own column band into the district
+ * beside it. Paying the cap once, up front, is what makes the bands safe under
+ * append: the band's rows follow the population, its ceiling never does.
+ */
+const CITY_CIVIC_BAND_COLS = ((): number => {
+  const cap = civicCapacityFor(Number.MAX_SAFE_INTEGER);
+  return Math.max(
+    hospitalCols(cap.beds),
+    shelterCols(cap.chairs),
+    WAREHOUSE_COLS,
+  );
+})();
+
 function widthBudgetFor(work: CityDistrictWork): number {
   const loose = Number.MAX_SAFE_INTEGER;
-  return isoNearSquareWidth([
-    PARK_BLOCK,
-    CAFE_BLOCK,
-    ...work.needs.map((need) => specFor(need, loose)),
-  ]);
+  return Math.max(
+    CITY_CIVIC_BAND_COLS,
+    isoNearSquareWidth([
+      PARK_BLOCK,
+      CAFE_BLOCK,
+      ...work.needs.map((need) => specFor(need, loose)),
+    ]),
+  );
 }
 
 interface PendingBlock {
@@ -398,6 +628,22 @@ function placeDistrict(args: PlaceDistrictArgs): PlacedDistrict {
     );
   }
   pending.sort((left, right) => {
+    // THE PARK FIRST, whatever its size, and this is a promise rather than a
+    // preference. The district's entrance hangs on the courtyard's lobby tile,
+    // `districtLane` promises that entrance stands ON the lane, and the kerb
+    // contract asks for a road tile ONE STEP from the help desk's own door -
+    // which IS that lobby tile, because C7 makes the police station the
+    // reception that was already there.
+    //
+    // Measured before this line existed: the tallest-first order below put the
+    // park wherever its height fell, and at a thousand agents the lobby landed
+    // 59 columns from the lane, where `expectKerbPromise` wants 1. The comment
+    // at `addPending` above already said the park went first; the sort was
+    // quietly undoing it.
+    if (left.kind !== right.kind) {
+      if (left.kind === "park") return -1;
+      if (right.kind === "park") return 1;
+    }
     if (left.spec.rows !== right.spec.rows) {
       return right.spec.rows - left.spec.rows;
     }
@@ -751,9 +997,7 @@ function raiseSkyline(
   let rows = 1;
   let stackHeight = MIN_STACK_HEIGHT;
   for (const district of districts) {
-    let bottom = 0;
     for (const block of district.blocks) {
-      bottom = Math.max(bottom, block.rect.row + block.rect.rows);
       for (let index = 0; index < block.capacity; index += 1) {
         const seatId = seatIdOf(block, index);
         const agentId = ledger.ownerOf(seatId);
@@ -774,7 +1018,9 @@ function raiseSkyline(
       cols,
       district.frozen.col + district.frozen.widthBudget + ISO_DISTRICT_RING * 2,
     );
-    rows = Math.max(rows, bottom + CITY_FOOT_RING_ROWS);
+    // THE BANDS, not the packer's bottom: the civic quarter is laid under
+    // everything placed, so the world has to come down to IT.
+    rows = Math.max(rows, cityCivicBandsOf(district).rows);
   }
   return { storeysBySeatId, spireSeatIds, cols, rows, stackHeight };
 }
@@ -805,6 +1051,244 @@ interface CityBuild {
   readonly build: IsoDistrictBuild;
   readonly desks: ReadonlyArray<OfficeDesk>;
   readonly seats: ReadonlyArray<OfficeSeat>;
+}
+
+interface CityCivicArgs {
+  readonly hostId: string | null;
+  readonly floorIndex: number;
+  readonly origin: IsoOrigin;
+  readonly bounds: OfficeTileRect;
+  readonly bands: CityCivicBands;
+  readonly beds: number;
+  readonly chairs: number;
+  readonly courtyard: IsoCourtyardBuild;
+}
+
+interface CityCivic {
+  readonly rooms: ReadonlyArray<OfficeCivicRoom>;
+  readonly seats: ReadonlyArray<OfficeSeat>;
+  readonly props: ReadonlyArray<OfficeProp>;
+  readonly blocked: ReadonlyArray<OfficeTilePos>;
+  readonly signs: ReadonlyArray<OfficeSign>;
+  readonly road: OfficeRoad;
+}
+
+/**
+ * The district's four rooms, in the city's own words.
+ *
+ * `Hospital` is a ward with a cross over every bed, `Bus stop` a shelter with its
+ * seats on the pavement, `Warehouse` the archive's door, and `Police station` the
+ * reception that was already there - C7, which makes the help desk the counter
+ * rather than a second one beside it. The first three are bands at the district's
+ * foot, in that order; the fourth is up in the park. See the geometry block above
+ * for why each is where it is.
+ */
+function buildCityCivic(args: CityCivicArgs): CityCivic {
+  const { hostId, floorIndex, origin, bands } = args;
+  const firstCol = args.bounds.col + ISO_DISTRICT_RING;
+  const road = districtLane(args.bounds);
+  const blocked: OfficeTilePos[] = [];
+  const props: OfficeProp[] = [];
+  const seats: OfficeSeat[] = [];
+  const boxAt = (tile: OfficeTilePos, sprite: OfficeSpriteName): OfficeRect =>
+    isoFurnitureBox(isoProjectAt(origin, tile.col, tile.row), { name: sprite });
+
+  // ---- Hospital: a wall with a cross on it, beds behind, aisle open ----- //
+  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  const wardCols = hospitalCols(args.beds);
+  const wardRow = bands.hospitalRow;
+  for (let col = firstCol; col < firstCol + wardCols; col += 1) {
+    blocked.push({ col, row: wardRow });
+  }
+  // The aisle column stays OPEN below the corner, as Campus's does: the door is
+  // in it, and a wall there would leave whoever came through facing a bed with
+  // nowhere to step.
+  const wardDoor: OfficeTilePos = { col: firstCol, row: wardRow + 1 };
+  for (let index = 0; index < args.beds; index += 1) {
+    const tile: OfficeTilePos = {
+      col: firstCol + HOSPITAL_WALL_COLS + index * BED_WIDTH_TILES,
+      row: wardRow + 1,
+    };
+    // ONE CROSS PER BED, on the wall tile directly above it, and drawn OVER the
+    // wall piece there - both stand in `standing`, sorted by y, and a cross
+    // hangs sixteen px lower than a wall. So a ward reads as a wall with as many
+    // crosses on it as it has beds. Never on the aisle column: that corner is
+    // where the plate hangs, and a plate over a cross is two things in one
+    // fourteen-px band.
+    props.push({
+      sprite: { name: "hospital-roof-cross" },
+      tile: { col: tile.col, row: wardRow },
+    });
+    for (let offset = 0; offset < BED_WIDTH_TILES; offset += 1) {
+      blocked.push({ col: tile.col + offset, row: tile.row });
+    }
+    props.push({ sprite: { name: "bed-iso" }, tile });
+    seats.push(
+      civicSeat({
+        seatId: `${wardId}/${String(index)}`,
+        civicRoomId: wardId,
+        kind: "bed",
+        tile,
+        widthTiles: BED_WIDTH_TILES,
+        floorIndex,
+        hostId,
+        hitBox: boxAt(tile, "bed-iso"),
+      }),
+    );
+  }
+
+  // ---- Bus stop: a shelter at the lane, its seats in front of it ------- //
+  const stopId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const shelterRow = bands.shelterRow;
+  for (let col = firstCol; col < firstCol + SHELTER_COLS; col += 1) {
+    blocked.push({ col, row: shelterRow });
+  }
+  props.push({
+    sprite: { name: "bus-shelter" },
+    tile: { col: firstCol, row: shelterRow },
+  });
+  for (let index = 0; index < args.chairs; index += 1) {
+    // IN FRONT OF THE SHELTER, on the pavement: the shelter's own tiles are
+    // furniture nobody stands on, and a seat is somewhere a body goes.
+    const tile: OfficeTilePos = { col: firstCol + index, row: shelterRow + 1 };
+    props.push({ sprite: { name: "lounge-chair-iso" }, tile });
+    seats.push(
+      civicSeat({
+        seatId: `${stopId}/${String(index)}`,
+        civicRoomId: stopId,
+        kind: "lounge",
+        tile,
+        widthTiles: 1,
+        floorIndex,
+        hostId,
+        hitBox: boxAt(tile, "lounge-chair-iso"),
+      }),
+    );
+  }
+
+  // ---- Warehouse: the archive's door, at the quarter's foot ------------- //
+  const recordsId = civicRoomIdOf(hostId, floorIndex, "archive");
+  const shed: OfficeTileRect = {
+    col: firstCol,
+    row: bands.shedRow,
+    cols: WAREHOUSE_COLS,
+    rows: WAREHOUSE_ROWS,
+  };
+  for (let col = shed.col; col < shed.col + shed.cols; col += 1) {
+    blocked.push({ col, row: shed.row });
+  }
+  const recordsDoor: OfficeTilePos = {
+    col: shed.col,
+    row: shed.row + shed.rows - 1,
+  };
+  props.push({ sprite: { name: "warehouse-door-iso" }, tile: recordsDoor });
+
+  // ---- Police station: the reception, re-read as a civic room (C7) ------ //
+  const deskId = civicRoomIdOf(hostId, floorIndex, "help-desk");
+  const counter = args.courtyard.receptionTile;
+  // ONE STEP OFF THE ENTRANCE, the way Campus's is: the district's entrance
+  // stands ON the lane and no civic door may be a road tile, so the door is the
+  // lobby tile inside it and the entrance is the kerb.
+  const deskDoor = args.courtyard.lobbyTile;
+  const deskKerb: OfficeTilePos = { col: args.bounds.col, row: deskDoor.row };
+
+  const rooms: ReadonlyArray<OfficeCivicRoom> = [
+    {
+      civicRoomId: wardId,
+      kind: "infirmary",
+      bounds: {
+        col: firstCol,
+        row: wardRow,
+        cols: wardCols,
+        rows: HOSPITAL_ROWS,
+      },
+      doorTile: wardDoor,
+      signTile: { col: firstCol, row: wardRow },
+      name: "Hospital",
+      seatIds: seats
+        .filter((seat) => seat.civicRoomId === wardId)
+        .map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      // ONE DISTRICT PER HOST, as Campus's quarter is: a City district is one
+      // host's city, so its rooms count that host's things.
+      hostScope: "host",
+      enclosure: "walled",
+      // The lane tile beside the ward's own door, one step from it.
+      kerbTile: { col: args.bounds.col, row: wardDoor.row },
+    },
+    {
+      civicRoomId: stopId,
+      kind: "waiting-room",
+      bounds: {
+        col: firstCol,
+        row: shelterRow,
+        cols: shelterCols(args.chairs),
+        rows: SHELTER_ROWS,
+      },
+      // The pavement in front of the shelter, which is where a queue stands.
+      doorTile: { col: firstCol, row: shelterRow + 1 },
+      signTile: { col: firstCol, row: shelterRow },
+      name: "Bus stop",
+      seatIds: seats
+        .filter((seat) => seat.civicRoomId === stopId)
+        .map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      // OPEN: a shelter and a row of chairs on a pavement. Nothing here is a
+      // building, and the tiles the seats stand on are walkable street.
+      enclosure: "open",
+      // Nobody is collected from a bus stop (C6).
+      kerbTile: null,
+    },
+    {
+      civicRoomId: deskId,
+      kind: "help-desk",
+      bounds: { col: counter.col, row: counter.row, cols: 2, rows: 1 },
+      doorTile: deskDoor,
+      signTile: deskKerb,
+      name: "Police station",
+      // Standing at a counter is not sitting down, so it carries no seats.
+      seatIds: [],
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      // OPEN: these bounds ARE the reception counter, two tiles of furniture in
+      // the middle of an open park.
+      enclosure: "open",
+      kerbTile: deskKerb,
+    },
+    {
+      civicRoomId: recordsId,
+      kind: "archive",
+      bounds: shed,
+      doorTile: recordsDoor,
+      signTile: { col: shed.col, row: shed.row },
+      name: "Warehouse",
+      seatIds: [],
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      // WALLED: a shed is a building, and its bounds carry its own back wall.
+      enclosure: "walled",
+      // Nothing drives to the archive (C6).
+      kerbTile: null,
+    },
+  ];
+
+  const signs: ReadonlyArray<OfficeSign> = rooms.map((room) => ({
+    kind: "civic",
+    tile: room.signTile,
+    widthTiles: CITY_CIVIC_PLATE_TILES,
+    text: room.name,
+    ownerAgentId: null,
+    hostId,
+    agentIds: [],
+    civicRoomId: room.civicRoomId,
+  }));
+
+  return { rooms, seats, props, blocked, signs, road };
 }
 
 function buildDistrict(
@@ -845,9 +1329,7 @@ function buildDistrict(
   const seats: OfficeSeat[] = [];
   const blocked: OfficeTilePos[] = [];
   const signs: OfficeSign[] = [];
-  let bottom = 0;
   for (const block of district.blocks) {
-    bottom = Math.max(bottom, block.rect.row + block.rect.rows);
     if (block.capacity === 0) continue;
     let visitTile: OfficeTilePos | null = null;
     for (let index = 0; index < block.capacity; index += 1) {
@@ -919,29 +1401,38 @@ function buildDistrict(
     }
   }
 
+  const bands = cityCivicBandsOf(district);
   const bounds: OfficeTileRect = {
     col: district.frozen.col,
     row: 0,
     cols: district.frozen.widthBudget + ISO_DISTRICT_RING * 2,
-    rows: bottom + CITY_FOOT_RING_ROWS,
+    rows: bands.rows,
   };
+  const capacity = cityCivicCapacity(district);
+  const civic = buildCityCivic({
+    hostId: district.frozen.hostId,
+    floorIndex,
+    origin,
+    bounds,
+    bands,
+    beds: capacity.beds,
+    chairs: capacity.chairs,
+    courtyard,
+  });
   const build: IsoDistrictBuild = {
     hostId: district.frozen.hostId,
     bounds,
     courtyard,
     cafe,
     rooms,
-    props: [...courtyard.props, ...cafe.props],
-    blocked,
+    props: [...courtyard.props, ...cafe.props, ...civic.props],
+    blocked: [...blocked, ...civic.blocked],
     spots: [],
-    signs,
-    // NOT ENROLLED YET. `CIVIC_ROOMS_EXPECTED` and `CIVIC_ROADS_EXPECTED` say
-    // `false` for City, and these two empties are what that table asserts of it -
-    // a statement that the layer has not been entered, not an omission.
-    civic: [],
-    road: null,
+    signs: [...signs, ...civic.signs],
+    civic: civic.rooms,
+    road: civic.road,
   };
-  return { build, desks, seats };
+  return { build, desks, seats: [...seats, ...civic.seats] };
 }
 
 export function planCity(input: OfficePlanInput): OfficeLayout {

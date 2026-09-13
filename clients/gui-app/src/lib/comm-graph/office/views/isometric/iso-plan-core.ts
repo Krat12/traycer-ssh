@@ -27,13 +27,16 @@ import {
 import type {
   OfficeAmenity,
   OfficeAreaSign,
+  OfficeCivicKind,
   OfficeCivicRoom,
   OfficeErrandSpot,
   OfficeFloor,
   OfficeLayout,
   OfficeProp,
+  OfficeRect,
   OfficeRoad,
   OfficeRoom,
+  OfficeSeat,
   OfficeSign,
   OfficeSpotAudience,
   OfficeSpriteName,
@@ -683,6 +686,94 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
 }
 
 // ---- Districts -------------------------------------------------------- //
+
+/**
+ * `<host>/<floor>/civic/<kind>`, the id every seat in the room carries back.
+ *
+ * SHARED, because a civic room id is a promise across syncs and not a plan's
+ * private spelling: the seat book matches claims by it, so two isometric views
+ * spelling it two ways would be two views the book cannot compare. Lifted here
+ * from Campus when City needed the same ids.
+ */
+export function civicRoomIdOf(
+  hostId: string | null,
+  floorIndex: number,
+  kind: OfficeCivicKind,
+): string {
+  return [hostId ?? ISO_SEAT_ID_NONE, floorIndex, "civic", kind].join("/");
+}
+
+/**
+ * THE LANE: the district's left ring column, top to bottom.
+ *
+ * A column and not a row, and "lane" is satisfied by it - straight, and never
+ * reversing. Projected isometrically a column is one down-left run, `dy >= 0`
+ * with `dx` constant and negative, so a vehicle driving it faces one way for the
+ * whole trip.
+ *
+ * It has to be this column rather than a row because two kerbs are promises: the
+ * infirmary's and the help desk's have to be road tiles one step from their own
+ * doors, and the ring column is the only line in a shelf-packed district whose
+ * position is known before the packing. The district's own entrance already
+ * stands on it, which is the help desk's kerb.
+ *
+ * SHARED by both districted views, which is the whole reason it reads only
+ * `bounds`: a lane that needed a view's own packing could not be the same
+ * promise in two views.
+ */
+export function districtLane(bounds: OfficeTileRect): OfficeRoad {
+  const tiles: OfficeTilePos[] = [];
+  for (let row = bounds.row; row < bounds.row + bounds.rows; row += 1) {
+    tiles.push({ col: bounds.col, row });
+  }
+  return {
+    entryTile: tiles[0],
+    tiles,
+    exitTile: tiles[tiles.length - 1],
+  };
+}
+
+/**
+ * A bed or a bench: furniture the occupant's own tile IS.
+ *
+ * The HIT BOX is an argument rather than computed here, and that is the one thing
+ * this helper cannot share. A box is what the view's PAINTER draws, and the two
+ * views answer it differently: Campus boxes its beds in the union its desks are
+ * drawn in, City in the furniture sprite's own rect. Computing either here would
+ * mean this module importing the painter that imports it.
+ */
+export function civicSeat(args: {
+  readonly seatId: string;
+  readonly civicRoomId: string;
+  readonly kind: "bed" | "lounge";
+  readonly tile: OfficeTilePos;
+  readonly widthTiles: number;
+  readonly floorIndex: number;
+  readonly hostId: string | null;
+  readonly hitBox: OfficeRect;
+}): OfficeSeat {
+  return {
+    seatId: args.seatId,
+    kind: args.kind,
+    // LAIN ON, or SAT ON: the occupant's tile is the furniture's own, so there
+    // is no chair beside it to walk to - the same shape the hall's beds have.
+    deskTile: args.tile,
+    chairTile: args.tile,
+    // Everything in a district faces the same way its desks do.
+    facing: "up",
+    hitTiles: { width: args.widthTiles, height: 1 },
+    // A REAL BOX, not `null`. An isometric seat is a sprite stack hanging off
+    // its tile's corner, and a region derived from tiles alone misses it - which
+    // is the seam `hitBox` exists to close, so a bed answers clicks like a desk.
+    hitBox: args.hitBox,
+    floorIndex: args.floorIndex,
+    // A bed belongs to no TEAM, which is what `roomId` names.
+    roomId: null,
+    hostId: args.hostId,
+    manager: false,
+    civicRoomId: args.civicRoomId,
+  };
+}
 
 /**
  * One host's district, after its blocks are placed but before the grid exists.

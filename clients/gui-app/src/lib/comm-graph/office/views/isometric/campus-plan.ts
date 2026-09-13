@@ -40,7 +40,6 @@ import {
 import {
   OFFICE_CHARACTER_HEIGHT,
   type OfficeAgentInput,
-  type OfficeCivicKind,
   type OfficeCivicRoom,
   type OfficeDesk,
   type OfficeErrandSpot,
@@ -69,6 +68,9 @@ import {
   buildIsoCafe,
   buildIsoCourtyard,
   buildIsoIndex,
+  civicRoomIdOf,
+  civicSeat,
+  districtLane,
   isoBlankGrid,
   isoFixtureProps,
   isoFloorOf,
@@ -579,43 +581,14 @@ function buildRoom(args: RoomBuildArgs): RoomBuild {
 
 // ---- The civic quarter, built ------------------------------------------ //
 
-/** `<host>/<floor>/civic/<kind>`, the id every seat in the room carries back. */
-function civicRoomIdOf(
-  hostId: string | null,
-  floorIndex: number,
-  kind: OfficeCivicKind,
-): string {
-  return [hostId ?? ISO_SEAT_ID_NONE, floorIndex, "civic", kind].join("/");
-}
-
 /**
- * THE LANE: the district's left ring column, top to bottom.
+ * A bed or a bench, with CAMPUS'S OWN box.
  *
- * A column and not a row, and "lane" is satisfied by it - straight, and never
- * reversing. Projected isometrically a column is one down-left run, `dy >= 0`
- * with `dx` constant and negative, so a vehicle driving it faces one way for the
- * whole trip.
- *
- * It has to be this column rather than a row because two kerbs are promises: the
- * infirmary's and the help desk's have to be road tiles one step from their own
- * doors, and the ring column is the only line in a shelf-packed district whose
- * position is known before the packing. The district's own entrance already
- * stands on it, which is the help desk's kerb.
+ * The shared `civicSeat` builds everything a civic seat is except its hit box,
+ * which is a fact about how this view stacks sprites and not about seats. This
+ * is the one line Campus keeps.
  */
-function districtLane(bounds: OfficeTileRect): OfficeRoad {
-  const tiles: OfficeTilePos[] = [];
-  for (let row = bounds.row; row < bounds.row + bounds.rows; row += 1) {
-    tiles.push({ col: bounds.col, row });
-  }
-  return {
-    entryTile: tiles[0],
-    tiles,
-    exitTile: tiles[tiles.length - 1],
-  };
-}
-
-/** A bed or a bench: furniture the occupant's own tile IS. */
-function civicSeat(args: {
+function campusCivicSeat(args: {
   readonly seatId: string;
   readonly civicRoomId: string;
   readonly kind: "bed" | "lounge";
@@ -625,29 +598,13 @@ function civicSeat(args: {
   readonly hostId: string | null;
   readonly origin: IsoOrigin;
 }): OfficeSeat {
-  return {
-    seatId: args.seatId,
-    kind: args.kind,
-    // LAIN ON, or SAT ON: the occupant's tile is the furniture's own, so there
-    // is no chair beside it to walk to - the same shape the hall's beds have.
-    deskTile: args.tile,
-    chairTile: args.tile,
-    // Everything in a district faces the same way its desks do.
-    facing: "up",
-    hitTiles: { width: args.widthTiles, height: 1 },
-    // A REAL BOX, not `null`. An isometric seat is a sprite stack hanging off
-    // its tile's corner, and a region derived from tiles alone misses it - which
-    // is the seam `hitBox` exists to close, so a bed answers clicks like a desk.
+  const { origin, ...seat } = args;
+  return civicSeat({
+    ...seat,
     hitBox: isoCampusSeatBox(
-      isoProjectAt(args.origin, args.tile.col, args.tile.row),
+      isoProjectAt(origin, seat.tile.col, seat.tile.row),
     ),
-    floorIndex: args.floorIndex,
-    // A bed belongs to no TEAM, which is what `roomId` names.
-    roomId: null,
-    hostId: args.hostId,
-    manager: false,
-    civicRoomId: args.civicRoomId,
-  };
+  });
 }
 
 /**
@@ -737,7 +694,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
     }
     props.push({ sprite: { name: "bed-iso" }, tile });
     seats.push(
-      civicSeat({
+      campusCivicSeat({
         seatId: `${wardId}/${index}`,
         civicRoomId: wardId,
         kind: "bed",
@@ -783,7 +740,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
     // one up per garden fixture tile - and drawing a second seat on it would be
     // paying twice for the one thing the reuse is for.
     seats.push(
-      civicSeat({
+      campusCivicSeat({
         seatId: `${benchesId}/${index}`,
         civicRoomId: benchesId,
         kind: "lounge",
