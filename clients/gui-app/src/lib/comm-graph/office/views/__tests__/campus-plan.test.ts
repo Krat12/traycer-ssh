@@ -2260,6 +2260,22 @@ describe("campus civic rooms, painted", () => {
    * The reverse direction is deliberately not asserted anywhere: "open implies
    * an unblocked perimeter" is FALSE of the counter, and believing it is exactly
    * what went wrong.
+   *
+   * READ V'S E3, ATTRIBUTED: WHICH MUTANT ACTUALLY GAVE THE BENCH ROW ITS TEETH.
+   * The mutant recorded for that - "benches declared walled AND filter removed",
+   * 4 red - reds all three bench cases, but it reds them on the FIRST line of
+   * each, `enclosure` itself, because declaring the row walled changes the
+   * plan's own declaration and the wall scan below never runs. So those three
+   * reds established nothing about the scan, which is the half the paragraph
+   * above rests on.
+   *
+   * Measured on the PAINTER instead, which is where the bounds-reading shortcut
+   * would live: `pushCivicWalls` with its `enclosure` gate and BOTH blockedness
+   * gates removed. The declaration line stays green, the scan reds - `bench 2,4
+   * was walled: expected true to be false` - at 12, 309 and 1,000. Both gates
+   * have to go together: dropping the `enclosure` gate alone leaves the bench
+   * cases green, since an unblocked row gives that painter no tile to wall,
+   * which is the same asymmetry the table's first row already recorded.
    */
   describe("open civic rooms", () => {
     /** Every wall corner the painter emitted, by side, for one population. */
