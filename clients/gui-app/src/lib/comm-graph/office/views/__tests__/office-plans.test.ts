@@ -10,6 +10,15 @@
 import { describe, expect, it } from "vitest";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
+import {
+  OFFICE_SIGN_FONT_PX,
+  OFFICE_SIGN_LETTER_SPACING_EM,
+  OFFICE_SIGN_NARROW_PLATE_MAX_CHARS,
+  OFFICE_SIGN_PADDING_X,
+  OFFICE_SIGN_PLATE_MAX_CHARS,
+  officeSignCenterX,
+  officeSignsToDraw,
+} from "@/lib/comm-graph/office/office-signs";
 import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
 import {
@@ -20,6 +29,7 @@ import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import {
   OFFICE_CHARACTER_HEIGHT,
   OFFICE_CHARACTER_WIDTH,
+  OFFICE_TILE,
   type OfficeAgentInput,
   type OfficeAgentStatus,
   type OfficeErrandKind,
@@ -30,6 +40,7 @@ import {
   type OfficeCivicRoom,
   type OfficeRect,
   type OfficeSceneInput,
+  type OfficeSign,
   type OfficeSpriteName,
   type OfficeTilePos,
   type OfficeTileRect,
@@ -42,6 +53,25 @@ import {
   type OfficePlanInput,
   type OfficeProjector,
 } from "@/lib/comm-graph/office/views/office-view";
+
+/**
+ * WHICH ART A PLATE HANGS OFF, as the renderer's `signSpriteFor` answers it: a
+ * two-tile board for the signs that name an area or a room, a one-tile plate for
+ * a pod's, and nothing for a team board. It decides how far below the sign's own
+ * tile the lettering's baseline drops, so a screen-space comparison needs it.
+ */
+function plateArtFor(kind: OfficeSign["kind"]): OfficeSpriteName | null {
+  if (
+    kind === "room" ||
+    kind === "area" ||
+    kind === "host" ||
+    kind === "civic"
+  ) {
+    return "sign";
+  }
+  if (kind === "pod" || kind === "plate") return "pod-plate";
+  return null;
+}
 
 function isWalkable(layout: OfficeLayout, tile: OfficeTilePos): boolean {
   return layout.walkable[tile.row]?.[tile.col];
@@ -277,12 +307,22 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
           // and a one-tile plate holds no word. The constant is shared so that
           // every view's records door is labelled the same width.
           expect(plate.widthTiles).toBe(ARCHIVE_SIGN_WIDTH_TILES);
-          // Running RIGHTWARDS from the door, and still on the plan.
+          // Whichever way the view hangs it - rightwards from the door in the
+          // Floor and the plazas, leftwards to END at it in the hall, whose door
+          // is three columns from the back wall - the plate is on the plan.
           expect(plate.tile.col).toBeGreaterThanOrEqual(0);
           expect(plate.tile.col + plate.widthTiles).toBeLessThanOrEqual(
             layout.cols,
           );
         } else {
+          // A PLATE IS AS WIDE AS THE ROOM IT NAMES: from its own tile to the
+          // room's right edge. This is what decides how much of the reading
+          // survives - the resolver measures the room's word and its counter
+          // against the plate's own pixels - and `> 0` was the hole a ward
+          // spanning sixteen tiles and plated with two went through.
+          expect(plate.widthTiles).toBe(
+            room.bounds.col + room.bounds.cols - plate.tile.col,
+          );
           expect(plate.widthTiles).toBeGreaterThan(0);
         }
       }
@@ -302,6 +342,130 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
             clear,
             `${plate.kind} "${plate.text}" at ${plate.tile.col},${plate.tile.row} (${String(plate.widthTiles)} wide) overprints ${other.kind} "${other.text}" at ${other.tile.col}`,
           ).toBe(true);
+        }
+      }
+    });
+
+    /**
+     * NO CIVIC PLATE OVERLAPS ANOTHER PLATE ON SCREEN - which is a different
+     * claim from the tile check above, and a stronger one.
+     *
+     * A plate's backing is a FIXED fourteen pixels tall and as wide as its text
+     * measures, drawn at a fixed face however far out the camera is; a tile row
+     * is sixteen world pixels, 11.2 of them at office zoom. So two plates one
+     * row apart overlap by 2.8 pixels of backing with their tiles perfectly
+     * separate, and the tile check cannot see it - it compares different-row
+     * pairs not at all. That is exactly how the plazas shipped "Records" 2.8
+     * pixels inside "Front desk" and the Floor shipped "Archive" 9.8 inside it.
+     *
+     * THE OVERFLOW IS THE LADDER WORKING, not something to truncate away: the
+     * word is a civic plate's floor, so "Front desk" measures 76 pixels on the
+     * three tiles the Floor gives it and is drawn in full at every band.
+     * PLACEMENT is the half that has to give, which is why this case is about
+     * where a plate hangs and never about how long its name is.
+     *
+     * Scoped to pairs involving a CIVIC plate. The unrestricted claim - every
+     * pair of plates, whatever their kinds - is red today on pod plates against
+     * team boards in the oblique views at close-up (13 pairs in Towers at 309),
+     * a defect this layer did not introduce and does not fix; widening the
+     * filter is this case's own red-check for that one.
+     */
+    it("keeps every civic plate's backing clear of every other plate's, at office zoom and at close-up", () => {
+      if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
+      // The face the plate is actually set in, derived rather than guessed: the
+      // tracking counts towards `measureText` as well as towards the painted
+      // glyphs, so leaving it out under-reports every plate by eight percent -
+      // the difference between two plates that clear and two that do not.
+      const charPx =
+        OFFICE_SIGN_FONT_PX * (0.6 + OFFICE_SIGN_LETTER_SPACING_EM);
+      const measure = (text: string): number =>
+        text.length * charPx + OFFICE_SIGN_PADDING_X * 2;
+      // The renderer's own two numbers for the box it paints around a plate:
+      // the baseline it drops the lettering to below the sign's art, and the
+      // vertical padding of the backing. Mirrored here with the file they come
+      // from named, the way this suite's sibling mirrors the plate's advance -
+      // they live in a `.tsx` component the office modules do not import.
+      const SIGN_LABEL_BASELINE = 11;
+      const SIGN_PADDING_Y = 2;
+      const projector = view.painter.projector(layout);
+      const visibleAgentIds = new Set(epic.agents.map((agent) => agent.id));
+
+      for (const [zoom, lod] of [
+        [0.7, 1],
+        [1.6, 2],
+      ] as ReadonlyArray<readonly [number, 1 | 2]>) {
+        const drawn = officeSignsToDraw({
+          signs: layout.signs,
+          floors: layout.floors,
+          visibleAgentIds,
+          statusById: epic.statusById,
+          nameById: new Map(epic.agents.map((agent) => [agent.id, agent.name])),
+          hostNameById: new Map(),
+          roleClaims: {},
+          civicTally: {
+            occupiedByRoom: new Map<string, number>(),
+            archivedByHost: new Map<string | null, number>(),
+          },
+          projector,
+          lod,
+          zoom,
+          clock: { nowMs: 0, reducedMotion: false },
+          measure,
+        });
+        const boxes = drawn.map((entry) => {
+          const kind = entry.sign.kind;
+          // Which art the plate hangs off, and how far the lettering drops below
+          // the sign's own tile: the renderer's `signSpriteFor`, the two sprites
+          // it can answer, and nothing for a board.
+          const sprite = plateArtFor(kind);
+          const overhang =
+            sprite === null
+              ? 0
+              : OFFICE_TILE - officeSpriteSize({ name: sprite }).height;
+          // A SUMMARY is drawn as the resolver chose it and a NAME is cut to the
+          // renderer's character budget first, so the two are measured
+          // differently - the drawn string is what has a backing round it.
+          const summary =
+            kind === "board" || kind === "hq-board" || kind === "civic";
+          const budget =
+            entry.sign.widthTiles >= 2
+              ? OFFICE_SIGN_PLATE_MAX_CHARS
+              : OFFICE_SIGN_NARROW_PLATE_MAX_CHARS;
+          const text = (
+            summary || entry.text.length <= budget
+              ? entry.text
+              : `${entry.text.slice(0, budget - 1)}…`
+          ).toUpperCase();
+          const width = measure(text);
+          const centreX = officeSignCenterX(entry) * zoom;
+          const baseline =
+            (entry.anchor.y + overhang + SIGN_LABEL_BASELINE) * zoom;
+          return {
+            civic: kind === "civic",
+            label: `${kind} "${text}" at ${entry.sign.tile.col},${entry.sign.tile.row}`,
+            left: centreX - width / 2,
+            right: centreX + width / 2,
+            top: baseline - OFFICE_SIGN_FONT_PX - SIGN_PADDING_Y,
+            bottom: baseline + SIGN_PADDING_Y,
+          };
+        });
+        expect(boxes.some((box) => box.civic)).toBe(true);
+
+        for (let i = 0; i < boxes.length; i += 1) {
+          for (let j = i + 1; j < boxes.length; j += 1) {
+            const a = boxes[i];
+            const b = boxes[j];
+            if (!a.civic && !b.civic) continue;
+            const clear =
+              a.right <= b.left ||
+              b.right <= a.left ||
+              a.bottom <= b.top ||
+              b.bottom <= a.top;
+            expect(
+              clear,
+              `zoom ${String(zoom)}: ${a.label} overlaps ${b.label}`,
+            ).toBe(true);
+          }
         }
       }
     });
@@ -1280,3 +1444,111 @@ describe("floor civic sign width", () => {
     expect(widerThanTwo).toBeGreaterThan(0);
   });
 });
+
+/**
+ * THE GUARD ON THE FLOOR-FIRST POOL: a storey that belongs to one host isolates
+ * its rooms exactly as it always did.
+ *
+ * A civic want reads the agent's own STOREY before its building, so that Mission
+ * control's one hall - a single floor serving every host, whose seats therefore
+ * carry no host - can seat a host-bound agent at all. In the Floor, Towers and
+ * Building a storey belongs to exactly one host, so that clause admits nothing
+ * those views did not already admit: the seats on your floor are your host's
+ * seats by construction.
+ *
+ * ASSERTED RATHER THAN ASSUMED, because "nothing changed here" is the half of a
+ * reordering that is easy to get wrong, and the wrong fix for the hall - making
+ * `null` a wildcard, or the floor preference a free-for-all - passes every case
+ * about the hall and fails this one. The falsifier is a ward that is FULL on one
+ * host while another host's ward has beds going spare: the overflowing agent
+ * keeps its desk (C2 - capacity is the cap) and does not cross the building line
+ * to lie down.
+ */
+describe.each(["floor", "towers", "building"] as const)(
+  "%s: a civic claim never crosses to another host's storey",
+  (viewId) => {
+    it("leaves an agent at its desk when its own ward is full, beds free next door", () => {
+      const epic = makeTestEpic("two-hosts", 120, 7);
+      const partition = partitionOfficePopulation({
+        agents: epic.agents,
+        statusById: epic.statusById,
+        previous: null,
+      });
+      const view = OFFICE_VIEWS[viewId];
+      const layout = view.plan({
+        agents: epic.agents,
+        partition,
+        occupancy: new Map<string, string>(),
+        needsCapacity: [],
+        activityById: new Map<string, number>(),
+        viewport: { width: 1040, height: 700 },
+        previous: null,
+      });
+
+      const wards = layout.floors
+        .map((floor) => floor.civic.find((room) => room.kind === "infirmary"))
+        .filter((room): room is OfficeCivicRoom => room !== undefined);
+      // Two hosts, two wards, and each ward's seats attributed to its own
+      // storey's host - which is the premise the isolation rests on.
+      expect(wards.length).toBeGreaterThan(1);
+      const mine = wards[0];
+      const theirs = wards[1];
+      expect(mine.hostId).not.toBe(theirs.hostId);
+      expect(mine.hostScope).toBe("host");
+      expect(theirs.seatIds.length).toBeGreaterThan(0);
+
+      const mineHost = mine.hostId;
+      // EVERY ONE OF THIS HOST'S DESK AGENTS CRASHES, rather than one more than
+      // the ward holds: how many of them there are is a fact about the fixture
+      // and each view packs it differently, so taking a slice left one view with
+      // no real overflow at all and the case vacuous there.
+      //
+      // AT A DESK, NOT IN A CUBBY. A cold agent in the quiet stack has no
+      // character on the floor and the civic pass only serves agents that do, so
+      // a cubby agent here would be a patient that never asks - measured: with
+      // them in the set, three of four crashes reached the book and the fourth
+      // was never offered a bed by anything.
+      const patients = epic.agents
+        .filter((agent) => agent.hostId === mineHost)
+        .filter((agent) => {
+          const desk = layout.desks.get(agent.id);
+          return desk !== undefined && desk.kind !== "cubby";
+        });
+      expect(patients.length).toBeGreaterThan(mine.seatIds.length);
+
+      const scene = new OfficeScene(view, null);
+      const base = sceneInputFor({
+        agents: epic.agents,
+        statusById: new Map(
+          epic.agents.map((agent) => [agent.id, "working" as const]),
+        ),
+        partition,
+      });
+      scene.sync(base);
+      const statusById = new Map(base.statusById);
+      for (const patient of patients) statusById.set(patient.id, "failure");
+      scene.sync({ ...base, statusById });
+
+      // THE TALLY AND NOT THE WORD, because both storeys' wards are called the
+      // same thing in all three of these views - "Infirmary", "Dispensary" - so
+      // an agent that had crossed the building line would read as being in its
+      // own ward. The count is keyed by ROOM and cannot be confused that way.
+      const tally = scene.civicTally();
+      expect(tally.occupiedByRoom.get(mine.civicRoomId)).toBe(
+        mine.seatIds.length,
+      );
+      // THE WHOLE POINT: beds going spare one host over, and nobody in them.
+      expect(theirs.seatIds.length).toBeGreaterThan(0);
+      expect(tally.occupiedByRoom.get(theirs.civicRoomId) ?? 0).toBe(0);
+
+      // And the overflow kept its desk rather than being dropped somewhere: C2,
+      // capacity is the cap, and an agent that finds the ward full stays put
+      // with its glyph up.
+      const inWard = patients.filter(
+        (patient) => scene.whereabouts(patient.id) === mine.name,
+      );
+      expect(inWard.length).toBe(mine.seatIds.length);
+      expect(patients.length - inWard.length).toBeGreaterThan(0);
+    });
+  },
+);

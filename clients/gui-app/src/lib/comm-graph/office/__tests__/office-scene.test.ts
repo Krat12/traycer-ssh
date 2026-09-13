@@ -5640,13 +5640,19 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       }),
     );
     if (path === null) throw new Error("expected a path to the archive door");
+    const doorRect = footRect(layout, archive.doorTile);
+    const gapTo = (rect: OfficeRect): number =>
+      Math.hypot(rect.x - doorRect.x, rect.y - doorRect.y);
     let lastRect: OfficeRect | undefined;
     let sawArchiveLeg = false;
-    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+    let closest = Number.POSITIVE_INFINITY;
+    // Five times the budget, because each tick is a fifth as long.
+    for (let step = 0; step < CIVIC_WALK_TICKS * 5; step += 1) {
       if (!hasCharacter(frameOf(scene), "alpha")) break;
       lastRect = characterRect(frameOf(scene), "alpha");
       if (rectOnProjectedPath(layout, path, lastRect)) sawArchiveLeg = true;
-      scene.tick(100);
+      closest = Math.min(closest, gapTo(lastRect));
+      scene.tick(20);
     }
     expect(hasCharacter(frameOf(scene), "alpha")).toBe(false);
     if (lastRect === undefined)
@@ -5654,14 +5660,48 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // SEEN ON THE WALK TO THE ARCHIVE DOOR, which is what this case is named
     // for: C5 is a records door, and the pre-civic departure walked to the
     // lobby instead - a different path, which this would not match.
-    //
-    // Seen at some point rather than seen LAST, because the archive door is not
-    // every view's way out. The Floor punches it beside the entrance, so its
-    // last frame is still on this path; the oblique views put it in the near
-    // outer wall a row above the lane, so an agent reaches it and then walks the
-    // lane to the entrance, and the last frame is on that second leg. Both
-    // walked to the archive; only one of them ends there.
     expect(sawArchiveLeg).toBe(true);
+    // AND IT GOT THERE. Being seen somewhere on the route is not arrival: a
+    // route with its last tile removed still supplies frame after matching frame
+    // and then a disappearance, so the clause above passes on an agent that
+    // vanishes one tile outside the archive. The END of the walk is the claim,
+    // and the last frame it was ever drawn in is where it ended.
+    //
+    // ONE LEG, in every view. `departureDoorOf` returns the archive's door where
+    // the floor has one and `advanceWalk` departs the moment that path runs out,
+    // so there is no second walk to the entrance - the earlier reading of this
+    // case described one and the source has never had it.
+    //
+    // MEASURED AGAINST THE FINAL STEP rather than against a pixel budget, and
+    // observed every 20 ms rather than every 100: a character crosses 4.8 px in
+    // 100 ms, so the coarser tick cannot tell arrival from a step's worth of
+    // shortfall, and that was the whole gap this clause closes.
+    //
+    // WITHIN ONE TILE OF THE DOOR, EVERYWHERE - diagonals included, since a
+    // diagonally adjacent tile is √2 strides away and the oblique plazas' last
+    // frame is exactly that, plus the fraction of a step a 20 ms observation
+    // leaves. The pre-civic departure walked to the building's entrance instead,
+    // which is a storey away from here, so this is the bound that separates a
+    // records-door walk from that one whatever the view.
+    const approach = path.at(-2);
+    if (approach === undefined) throw new Error("the walk is a single tile");
+    const stride = gapTo(footRect(layout, approach));
+    expect(stride).toBeGreaterThan(0);
+    expect(closest).toBeLessThanOrEqual(stride * 1.5);
+    // AND ON THE DOOR ITSELF where the view draws a character standing in its
+    // doorway. Measured at 20 ms: the Floor lands a frame exactly on the door
+    // (0.0 px) and the hall within a third of a pixel, so in those two the
+    // arrival is witnessed at the tile and a one-tile-short route fails here.
+    //
+    // The oblique plazas draw no such frame - their last is the tile DIAGONALLY
+    // adjacent, 22.6 px away, because the records door is punched in the outer
+    // wall and the step into it is the same step the agent departs on. That is a
+    // question about those views' departure rather than about this case, and it
+    // is reported as one; asserting a frame this suite can prove does not exist
+    // would be pinning a wish.
+    if (viewId === "floor" || viewId === "mission-control") {
+      expect(closest).toBeLessThan(stride / 2);
+    }
   });
 
   /**

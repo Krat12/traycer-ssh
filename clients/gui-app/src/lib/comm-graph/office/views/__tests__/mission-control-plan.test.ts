@@ -2279,3 +2279,384 @@ describe("mission control plates: fixup 5 - plates fit their own arc segment and
     }
   });
 });
+
+/**
+ * COLD REVIEW, FINDINGS 1-3: ONE HALL FOR EVERY HOST, and three things that
+ * assumed otherwise.
+ *
+ * This view is the only one whose single storey serves the whole epic, and every
+ * seat and room on it carries `hostId: null` because no host owns them. Three
+ * separate pieces of code read that `null` as a host rather than as an absence:
+ *
+ * - the seat book's pool filtered every candidate on `seat.hostId !==
+ *   owner.hostId`, so an agent at an attributed console could never be given a
+ *   bed or a gallery chair - only unattributed agents could use the rooms, which
+ *   is why the triage fixtures never caught it;
+ * - the Records counter read `archivedByHost.get(room.hostId)`, which on a hall
+ *   is the UNATTRIBUTED host's count - not a miss but a plausible wrong number;
+ * - and the plates were a flat two tiles, so the ward's counter had 51 pixels of
+ *   a frontage that spans up to sixteen tiles.
+ *
+ * The fix for the first is the ORDER of the rule rather than the rule: a civic
+ * want reads its own storey before its building, so the hall's seats serve
+ * whoever is standing in the hall. The fix for the second is that scope is
+ * STATED (`hostScope`) and never inferred from `null`.
+ */
+describe("mission-control cold review: one hall for every host", () => {
+  const HOST_A = "host-a";
+  const HOST_B = "host-b";
+
+  /** Every agent bound to one host, which is what the triage epics never are. */
+  function boundTo(epic: OfficeTestEpic, hostId: string): OfficeTestEpic {
+    return {
+      ...epic,
+      agents: epic.agents.map((agent) => ({ ...agent, hostId })),
+    };
+  }
+
+  function crashing(
+    base: ReadonlyMap<string, OfficeAgentStatus>,
+    ids: ReadonlyArray<string>,
+  ): Map<string, OfficeAgentStatus> {
+    const next = new Map(base);
+    for (const id of ids) next.set(id, "failure");
+    return next;
+  }
+
+  it("gives a host-bound agent one of the hall's beds, and walks it there", () => {
+    const epic = boundTo(makeTestEpic("one-team", 40, 1), HOST_A);
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const ward = infirmaryOf(planned.layout);
+    const beds = bedsOf(planned.layout);
+    expect(beds.length).toBeGreaterThan(0);
+    // THE SEATS ARE THE HALL'S AND THE AGENT IS HOST-A'S, which is the whole
+    // finding: under a host filter these two never meet.
+    for (const bed of beds) expect(bed.hostId).toBeNull();
+    expect(ward.hostId).toBeNull();
+
+    const root = rootAgent(epic.agents);
+    const patients = epic.agents
+      .filter((agent) => agent.id !== root.id)
+      .slice(0, 2);
+    expect(patients.length).toBe(2);
+    for (const patient of patients) expect(patient.hostId).toBe(HOST_A);
+
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    const base = sceneInputFor(planned.input);
+    scene.sync(base);
+    const projector = MISSION_CONTROL_VIEW.painter.projector(planned.layout);
+    const desk = planned.layout.desks.get(patients[0].id);
+    if (desk === undefined) throw new Error("the patient has no console");
+    const deskRect = characterRect(scene.frame(2, WHOLE_WORLD), patients[0].id);
+    const deskPoint = projector.project(desk.chairTile.col, desk.chairTile.row);
+    const foot: OfficePoint = {
+      x: deskRect.x - deskPoint.x,
+      y: deskRect.y - deskPoint.y,
+    };
+    const rectAt = (tile: OfficeTilePos): OfficeRect => {
+      const point = projector.project(tile.col, tile.row);
+      return {
+        x: point.x + foot.x,
+        y: point.y + foot.y,
+        width: deskRect.width,
+        height: deskRect.height,
+      };
+    };
+
+    scene.sync({
+      ...base,
+      statusById: crashing(
+        base.statusById,
+        patients.map((agent) => agent.id),
+      ),
+    });
+
+    // A CLAIM AND AN ARRIVAL, not one or the other. The claim alone would pass
+    // on a book that hands out a seat nobody can reach, and the pose alone says
+    // nothing - an agent holding a bed is drawn `sit` while still in its own
+    // chair across the hall.
+    const landed = new Set<string>();
+    for (const patient of patients) {
+      // Mid-walk the whereabouts is the WALK's ("Walking to the Medbay"), which
+      // is already a claim in hand - but the room's own word is what arrival
+      // means, so it is read after the character is standing on the bed.
+      const arrival = tickOntoASeat({
+        scene,
+        agentId: patient.id,
+        seats: beds,
+        rectAt,
+      });
+      expect(scene.whereabouts(patient.id)).toBe(ward.name);
+      expect(characterPoseAt(scene.frame(2, WHOLE_WORLD), arrival.rect)).toBe(
+        "sit",
+      );
+      landed.add(arrival.seat.seatId);
+    }
+    // Two patients, two different beds: the pool is shared, not a single seat
+    // handed out twice.
+    expect(landed.size).toBe(2);
+  });
+
+  it("serves two hosts from the hall's one ward in arrival order", () => {
+    const epic = makeTestEpic("two-hosts", 60, 3);
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const beds = bedsOf(planned.layout);
+    expect(beds.length).toBeGreaterThan(1);
+    const onA = epic.agents.filter((agent) => agent.hostId === HOST_A);
+    const onB = epic.agents.filter((agent) => agent.hostId === HOST_B);
+    expect(onA.length).toBeGreaterThanOrEqual(beds.length);
+    expect(onB.length).toBeGreaterThanOrEqual(beds.length);
+
+    const first = onA.slice(0, beds.length).map((agent) => agent.id);
+    const second = onB.slice(0, beds.length).map((agent) => agent.id);
+
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    // REDUCED MOTION, on purpose: what this case is about is WHO HOLDS a bed
+    // across three syncs, and a claim is settled the moment it is granted here
+    // instead of after a walk. The walk is the case above's, which runs with
+    // motion on for exactly that reason.
+    const base = { ...sceneInputFor(planned.input), reducedMotion: true };
+    scene.sync(base);
+    // HOST A ASKS FIRST and fills the ward.
+    scene.sync({ ...base, statusById: crashing(base.statusById, first) });
+    const ward = infirmaryOf(planned.layout);
+    for (const id of first) expect(scene.whereabouts(id)).toBe(ward.name);
+
+    // HOST B ASKS SECOND, into a ward with nothing left. C2: capacity is the
+    // cap, and an agent that finds it full keeps its console.
+    scene.sync({
+      ...base,
+      statusById: crashing(base.statusById, [...first, ...second]),
+    });
+    for (const id of first) expect(scene.whereabouts(id)).toBe(ward.name);
+    for (const id of second) expect(scene.whereabouts(id)).not.toBe(ward.name);
+
+    // HOST A RECOVERS and host B inherits the beds it was queued for - which is
+    // the queue and the pool naming the same set. `civicOrderKey` is the
+    // FLOOR's host, so this hall keeps ONE order for every host on it, and that
+    // is the shape a shared pool needs: were it the agent's own host, two hosts
+    // would keep two orders and the interleaving between them would be lost.
+    scene.sync({ ...base, statusById: crashing(base.statusById, second) });
+    for (const id of second) expect(scene.whereabouts(id)).toBe(ward.name);
+    for (const id of first) expect(scene.whereabouts(id)).not.toBe(ward.name);
+  });
+
+  /**
+   * The plate face this suite already derives for the lead plates, reused: the
+   * tracking counts towards `measureText`, so leaving it out under-reports every
+   * plate by the exact margin that separates a counter that survives from one
+   * the ladder drops.
+   */
+  const CHAR_PX = OFFICE_SIGN_FONT_PX * (0.6 + OFFICE_SIGN_LETTER_SPACING_EM);
+  function plateMeasure(text: string): number {
+    return text.length * CHAR_PX + OFFICE_SIGN_PADDING_X * 2;
+  }
+
+  /** The number a civic plate ends in, or `null` if it is naming a room only. */
+  function counterOn(text: string): number | null {
+    const match = /(\d+)$/.exec(text);
+    return match === null ? null : Number(match[1]);
+  }
+
+  function drawnCivic(args: {
+    readonly layout: OfficeLayout;
+    readonly epic: OfficeTestEpic;
+    readonly tally: ReturnType<OfficeScene["civicTally"]>;
+    readonly zoom: number;
+    readonly widthOverride: number | null;
+  }): ReadonlyArray<OfficeSignToDraw> {
+    const signs = args.layout.signs
+      .filter((sign) => sign.kind === "civic")
+      .map((sign) =>
+        args.widthOverride === null
+          ? sign
+          : { ...sign, widthTiles: args.widthOverride },
+      );
+    expect(signs.length).toBeGreaterThan(0);
+    return officeSignsToDraw({
+      signs,
+      floors: args.layout.floors,
+      visibleAgentIds: new Set(args.epic.agents.map((agent) => agent.id)),
+      statusById: args.epic.statusById,
+      nameById: new Map(
+        args.epic.agents.map((agent) => [agent.id, agent.name]),
+      ),
+      hostNameById: new Map(),
+      roleClaims: {},
+      civicTally: args.tally,
+      projector: MISSION_CONTROL_VIEW.painter.projector(args.layout),
+      // The counter's own band. At lod 1 a civic plate is the room's word alone,
+      // so a counter case read there would pass on any arithmetic at all.
+      lod: 2,
+      zoom: args.zoom,
+      clock: STILL_SIGN_CLOCK,
+      measure: plateMeasure,
+    });
+  }
+
+  function textFor(
+    drawn: ReadonlyArray<OfficeSignToDraw>,
+    civicRoomId: string,
+  ): string {
+    const entry = drawn.find(
+      (candidate) => candidate.sign.civicRoomId === civicRoomId,
+    );
+    if (entry === undefined) throw new Error(`no plate for ${civicRoomId}`);
+    return entry.text;
+  }
+
+  it("sums every host's records on the hall's one Records door", () => {
+    const epic = makeTestEpic("two-hosts", 120, 5);
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    // THE EPIC'S OWN STATUSES, not this suite's all-`working` default: the
+    // archive counts agents whose status IS `"archived"`, so a sync that
+    // flattens every status reports an empty archive however many records the
+    // population holds.
+    scene.sync({
+      ...sceneInputFor(planned.input),
+      statusById: epic.statusById,
+    });
+    const tally = scene.civicTally();
+
+    // THE FIXTURE IS THE CASE. Records archived on BOTH hosts and the room
+    // itself unattributed: that is the shape where reading `room.hostId` gives
+    // a plausible wrong number rather than a miss, because `null` is a key in
+    // this map like any other host.
+    const onA = tally.archivedByHost.get("host-a") ?? 0;
+    const onB = tally.archivedByHost.get("host-b") ?? 0;
+    expect(onA).toBeGreaterThan(0);
+    expect(onB).toBeGreaterThan(0);
+    const total = onA + onB;
+    expect(total).toBeGreaterThan(Math.max(onA, onB));
+
+    const archive = planned.layout.floors[0].civic.find(
+      (room) => room.kind === "archive",
+    );
+    if (archive === undefined) throw new Error("the hall plans no archive");
+    expect(archive.hostId).toBeNull();
+    expect(archive.hostScope).toBe("every-host");
+
+    const drawn = drawnCivic({
+      layout: planned.layout,
+      epic,
+      tally,
+      // Wide enough for the counter rung on a four-tile plate; the word floor
+      // means a plate that cannot fit it says the room's name alone, and this
+      // case is about the number.
+      zoom: 1.6,
+      widthOverride: null,
+    });
+    expect(counterOn(textFor(drawn, archive.civicRoomId))).toBe(total);
+  });
+
+  it("counts an unattributed host's records as one more host, not as all of them", () => {
+    const fixture = makeTestEpic("two-hosts", 120, 5);
+    // A THIRD, UNATTRIBUTED HOST alongside the two named ones - records that
+    // predate host binding. `null` has to be summed WITH the others: read as
+    // "everybody" it would report this slice alone, and excluded it would lose
+    // it. Both readings are wrong by a different amount, which is why the case
+    // asserts the total rather than that it is nonzero.
+    const firstArchived = fixture.agents.find((agent) => agent.archived);
+    if (firstArchived === undefined) throw new Error("no archived agent");
+    const agents = fixture.agents.map((agent) =>
+      agent.id === firstArchived.id ? { ...agent, hostId: null } : agent,
+    );
+    const epic: OfficeTestEpic = { ...fixture, agents };
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    scene.sync({
+      ...sceneInputFor(planned.input),
+      statusById: epic.statusById,
+    });
+    const tally = scene.civicTally();
+    const unattributed = tally.archivedByHost.get(null) ?? 0;
+    let total = 0;
+    let named = 0;
+    for (const [hostId, count] of tally.archivedByHost) {
+      total += count;
+      if (hostId !== null) named += count;
+    }
+    // BOTH SLICES NON-EMPTY, which is what makes the two wrong readings
+    // distinguishable from the right one: reading `null` as "everybody" would
+    // report `unattributed`, dropping it would report `named`, and neither
+    // equals the total while both of these are positive.
+    expect(unattributed).toBeGreaterThan(0);
+    expect(named).toBeGreaterThan(0);
+    expect(total).toBe(unattributed + named);
+
+    const archive = planned.layout.floors[0].civic.find(
+      (room) => room.kind === "archive",
+    );
+    if (archive === undefined) throw new Error("the hall plans no archive");
+    const drawn = drawnCivic({
+      layout: planned.layout,
+      epic,
+      tally,
+      zoom: 1.6,
+      widthOverride: null,
+    });
+    expect(counterOn(textFor(drawn, archive.civicRoomId))).toBe(total);
+  });
+
+  it("plates the ward as wide as the ward, so its counter survives at close-up", () => {
+    const epic = boundTo(makeTestEpic("one-team", 309, 2), HOST_A);
+    const planned = planFresh(epic, VIEWPORT_WIDE);
+    const ward = infirmaryOf(planned.layout);
+    const plate = planned.layout.signs.find(
+      (sign) => sign.kind === "civic" && sign.civicRoomId === ward.civicRoomId,
+    );
+    if (plate === undefined) throw new Error("the ward has no plate");
+    // A PLATE IS AS WIDE AS THE ROOM IT NAMES. Asserted against the room's own
+    // frontage rather than a number, so a ward that grows carries a plate that
+    // grows with it.
+    expect(plate.widthTiles).toBe(ward.bounds.cols);
+    expect(ward.bounds.cols).toBeGreaterThan(2);
+
+    // AN OCCUPIED WARD, because `0 of 8` and `3 of 8` are the same length and a
+    // case that never fills a bed would not notice a counter that cannot count.
+    const scene = new OfficeScene(MISSION_CONTROL_VIEW, null);
+    const base = { ...sceneInputFor(planned.input), reducedMotion: true };
+    scene.sync(base);
+    const root = rootAgent(epic.agents);
+    const patient = epic.agents.find((agent) => agent.id !== root.id);
+    if (patient === undefined) throw new Error("no agent to crash");
+    scene.sync({
+      ...base,
+      statusById: crashing(base.statusById, [patient.id]),
+    });
+    const tally = scene.civicTally();
+    expect(tally.occupiedByRoom.get(ward.civicRoomId)).toBe(1);
+
+    const atFrontage = textFor(
+      drawnCivic({
+        layout: planned.layout,
+        epic,
+        tally,
+        zoom: 1.6,
+        widthOverride: null,
+      }),
+      ward.civicRoomId,
+    );
+    // The counter, whole: how many beds are taken AND how many there are.
+    expect(counterOn(atFrontage)).toBe(ward.seatIds.length);
+    expect(atFrontage.length).toBeGreaterThan(ward.name.length);
+
+    // THE FALSIFIER, and the reason the width is the fix: the same ward, the
+    // same tally, the same zoom, plated the two tiles this view used to give
+    // every room - 51 pixels, which the word alone fills. The ladder is working
+    // in both readings; what changed is how much room it was given to work in.
+    const atTwoTiles = textFor(
+      drawnCivic({
+        layout: planned.layout,
+        epic,
+        tally,
+        zoom: 1.6,
+        widthOverride: 2,
+      }),
+      ward.civicRoomId,
+    );
+    expect(atTwoTiles).toBe(ward.name);
+    expect(counterOn(atTwoTiles)).toBeNull();
+  });
+});

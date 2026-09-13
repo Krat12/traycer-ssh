@@ -1774,6 +1774,88 @@ describe("officeCivicSignText - the civic counter ladder", () => {
     ).toBe(rung);
   });
 
+  /**
+   * THE SCOPE IS STATED, NEVER INFERRED FROM `hostId`, and this pair is why.
+   *
+   * `null` as a host means the UNATTRIBUTED building - a real host with agents
+   * and archived records of its own - so a resolver that read `null` as
+   * "everybody" would report that one slice on a shared room and the whole epic
+   * on an unattributed one. Both rooms below carry `hostId: null` and differ
+   * only in `hostScope`, and they must answer differently: that is the field
+   * doing work no reading of `hostId` could do.
+   *
+   * Mission control is the view with a shared room, because its single storey
+   * serves every host; every other view's storeys belong to one host each and
+   * their rooms stay `"host"`.
+   */
+  const THREE_HOST_ARCHIVE: OfficeCivicTally = {
+    occupiedByRoom: new Map<string, number>(),
+    archivedByHost: new Map<string | null, number>([
+      ["host-a", 5],
+      ["host-b", 7],
+      [null, 2],
+    ]),
+  };
+
+  it("reads one host's records on a per-host archive, whatever else the tally holds", () => {
+    const room = civicRoom({ kind: "archive", name: "Archive" });
+    expect(room.hostScope).toBe("host");
+    expect(room.hostId).toBeNull();
+    // Its own host is the unattributed one, so the answer is 2 - not 14, and
+    // not either named host's.
+    const rung = `${room.name} · 2`;
+    expect(
+      civicText({
+        room,
+        tally: THREE_HOST_ARCHIVE,
+        lod: 2,
+        widthTiles: widthTilesFor(rung),
+      }),
+    ).toBe(rung);
+  });
+
+  it("sums every host's records on a shared archive", () => {
+    const room = civicRoom({
+      kind: "archive",
+      name: "Records",
+      hostScope: "every-host",
+    });
+    const rung = `${room.name} · 14`;
+    expect(
+      civicText({
+        room,
+        tally: THREE_HOST_ARCHIVE,
+        lod: 2,
+        widthTiles: widthTilesFor(rung),
+      }),
+    ).toBe(rung);
+  });
+
+  it("counts a shared ward's seats once, whoever is in them", () => {
+    // The occupancy half needs no scope: `occupiedByRoom` is keyed by the ROOM,
+    // so a bed taken by a host-b agent in a hall every host shares is already
+    // counted against that room and not against a host. Pinned so that a future
+    // scope-aware occupancy read has to justify itself.
+    const shared = civicRoom({
+      kind: "infirmary",
+      name: "Medbay",
+      hostScope: "every-host",
+      seatIds: ["bed-0", "bed-1", "bed-2", "bed-3"],
+    });
+    const rung = `${shared.name} · 3 of 4`;
+    expect(
+      civicText({
+        room: shared,
+        tally: {
+          occupiedByRoom: new Map([[shared.civicRoomId, 3]]),
+          archivedByHost: THREE_HOST_ARCHIVE.archivedByHost,
+        },
+        lod: 2,
+        widthTiles: widthTilesFor(rung),
+      }),
+    ).toBe(rung);
+  });
+
   it("carries no count on the help desk at lod 2, even at a width a counter would fit", () => {
     const epic = makeTestEpic("one-team", 12, 1);
     const statusById = new Map(epic.statusById);
