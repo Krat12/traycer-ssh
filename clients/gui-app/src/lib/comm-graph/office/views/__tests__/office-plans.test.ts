@@ -1096,3 +1096,50 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
     expect(contained).toBe(false);
   });
 });
+
+describe("floor civic sign width", () => {
+  it("equals the room's span from its sign tile to its right wall, and the archive's is 4", () => {
+    // Measured on two-hosts: Lounge went 2 → 7 tiles (13 at 309),
+    // Infirmary 2 → 6, Front desk stays 2, Archive 2 → 4. This pins
+    // the RULE, not those numbers: the span is derived from the room's
+    // own bounds and sign tile, and only the archive's 4 is a literal
+    // (its bounds are the one-tile records door).
+    const epic = makeTestEpic("two-hosts", 80, 1);
+    const layout = OFFICE_VIEWS.floor.plan(
+      planInputFor({
+        agents: epic.agents,
+        statusById: epic.statusById,
+        overrides: {},
+      }),
+    );
+    const civicSigns = layout.signs.filter((sign) => sign.kind === "civic");
+    expect(civicSigns.length).toBeGreaterThan(0);
+    let archives = 0;
+    let rooms = 0;
+    let widerThanTwo = 0;
+    for (const floor of layout.floors) {
+      for (const room of floor.civic) {
+        const sign = civicSigns.find(
+          (entry) => entry.civicRoomId === room.civicRoomId,
+        );
+        if (sign === undefined) {
+          throw new Error(`missing civic sign for ${room.civicRoomId}`);
+        }
+        rooms += 1;
+        if (room.kind === "archive") {
+          expect(sign.widthTiles).toBe(4);
+          archives += 1;
+          continue;
+        }
+        const span = room.bounds.col + room.bounds.cols - room.signTile.col;
+        expect(sign.widthTiles).toBe(span);
+        if (span > 2) widerThanTwo += 1;
+      }
+    }
+    expect(rooms).toBeGreaterThan(0);
+    expect(archives).toBeGreaterThan(0);
+    // A suite that only ever saw the two-tile help desk would not be
+    // testing the span rule at all.
+    expect(widerThanTwo).toBeGreaterThan(0);
+  });
+});

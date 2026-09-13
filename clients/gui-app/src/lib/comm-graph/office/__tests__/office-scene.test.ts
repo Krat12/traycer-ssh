@@ -3,7 +3,10 @@ import type { CommGraphPulse } from "@/lib/comm-graph/comm-graph-timeline";
 import { layoutOffice } from "@/lib/comm-graph/office/office-layout";
 import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
-import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
+import {
+  officeArchivedByHost,
+  partitionOfficePopulation,
+} from "@/lib/comm-graph/office/office-population";
 import {
   MAX_CONCURRENT_ERRANDS,
   OFFICE_CULL_MARGIN_PX,
@@ -5828,6 +5831,342 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       }),
     );
     expect(scene.whereabouts(queuedId)).toBe("Help desk");
+  });
+
+  function civicNameOnFloor(
+    layout: OfficeLayout,
+    floorIndex: number,
+    kind: "infirmary" | "waiting-room",
+  ): string {
+    const room = layout.floors[floorIndex].civic.find(
+      (entry) => entry.kind === kind,
+    );
+    if (room === undefined) {
+      throw new Error(`expected a ${kind} on floor ${floorIndex}`);
+    }
+    return room.name;
+  }
+
+  /**
+   * The box `locate` answers for a seated agent: the seat's declared
+   * painted box, or the desk-tile origin through this view's projector.
+   * `footRect` is the character sprite; locate is the seat.
+   */
+  function seatBox(layout: OfficeLayout, seat: OfficeSeat): OfficeRect {
+    if (seat.hitBox !== null) return seat.hitBox;
+    const origin = view.painter
+      .projector(layout)
+      .project(seat.deskTile.col, seat.deskTile.row);
+    return {
+      x: origin.x,
+      y: origin.y,
+      width: seat.hitTiles.width * OFFICE_TILE,
+      height: seat.hitTiles.height * OFFICE_TILE,
+    };
+  }
+
+  it("names a seated bed agent with this view's own word for the infirmary", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        reducedMotion: true,
+      }),
+    );
+    const bedded = failureIds(outbreak[0]).find(
+      (id) => bookOf(scene).civicClaimOf(id) === "bed",
+    );
+    if (bedded === undefined) throw new Error("expected a bedded agent");
+    const seat = bookOf(scene).effectiveSeat(bedded);
+    if (seat === null) throw new Error("expected a bed seat");
+    const word = civicNameOnFloor(
+      layoutOf(scene),
+      seat.floorIndex,
+      "infirmary",
+    );
+    expect(scene.whereabouts(bedded)).toBe(word);
+  });
+
+  it("names a seated lounge agent with this view's own word for the waiting room", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const scene = newScene();
+    const waiting = waitingScript({ ...epic, statusById: idle }, 6);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: waiting[0],
+        reducedMotion: true,
+      }),
+    );
+    const seatedLounge = [...waiting[0].entries()]
+      .filter(([, status]) => status === "awaiting")
+      .map(([id]) => id)
+      .find((id) => bookOf(scene).civicClaimOf(id) === "lounge");
+    if (seatedLounge === undefined) {
+      throw new Error("expected a lounge sitter");
+    }
+    const seat = bookOf(scene).effectiveSeat(seatedLounge);
+    if (seat === null) throw new Error("expected a lounge seat");
+    const word = civicNameOnFloor(
+      layoutOf(scene),
+      seat.floorIndex,
+      "waiting-room",
+    );
+    expect(scene.whereabouts(seatedLounge)).toBe(word);
+  });
+
+  it("names an agent standing in the reception queue Help desk", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // C7: the counter people queue at IS the help desk, so the card
+    // says that wherever the room is named - "Front desk" on Floor,
+    // whatever K2 calls it elsewhere. This is awayWhereabouts, not
+    // the seated civic-room word.
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const queuedId = epic.agents.find((person) => !person.archived)?.id;
+    if (queuedId === undefined) throw new Error("expected a live agent");
+    const attention = new Map(idle);
+    attention.set(queuedId, "attention");
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: attention,
+        reducedMotion: true,
+      }),
+    );
+    expect(frameOf(scene).awayAgentIds.has(queuedId)).toBe(true);
+    expect(scene.whereabouts(queuedId)).toBe("Help desk");
+  });
+
+  it("names a civic walker as on the way to the room, in the plan's own word", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 60, 1);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const script = outbreakScript({ ...epic, statusById: idle }, 3);
+    const crashed = failureIds(script[0]);
+    expect(crashed.length).toBeGreaterThan(0);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: script[0],
+      }),
+    );
+    let walker: string | undefined;
+    let expected: string | undefined;
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      const book = bookOf(scene);
+      const frame = frameOf(scene);
+      const id = crashed.find(
+        (agentId) =>
+          frame.awayAgentIds.has(agentId) &&
+          book.civicClaimOf(agentId) === "bed",
+      );
+      if (id === undefined) continue;
+      const seat = book.effectiveSeat(id);
+      if (seat === null) continue;
+      const word = civicNameOnFloor(
+        layoutOf(scene),
+        seat.floorIndex,
+        "infirmary",
+      );
+      walker = id;
+      expected = `Walking to the ${word}`;
+      expect(scene.whereabouts(id)).toBe(expected);
+      break;
+    }
+    expect(walker).toBeDefined();
+    expect(expected).toBeDefined();
+  });
+
+  it("locates a bedded agent at the bed's box, not its desk's", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const scene = newScene();
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        reducedMotion: true,
+      }),
+    );
+    const bedded = failureIds(outbreak[0]).find(
+      (id) => bookOf(scene).civicClaimOf(id) === "bed",
+    );
+    if (bedded === undefined) throw new Error("expected a bedded agent");
+    const layout = layoutOf(scene);
+    const bed = bookOf(scene).effectiveSeat(bedded);
+    const desk = layout.desks.get(bedded);
+    if (bed === null || bed.kind !== "bed") {
+      throw new Error("expected the bed seat");
+    }
+    if (desk === undefined) throw new Error("expected the agent's desk");
+    const located = scene.locate(bedded);
+    if (located === null) throw new Error("expected a location");
+    const bedBox = seatBox(layout, bed);
+    const deskBox = seatBox(layout, desk);
+    expect(bedBox).not.toEqual(deskBox);
+    expect(located).toEqual(bedBox);
+    expect(located).not.toEqual(deskBox);
+  });
+
+  it("reads civic occupancy off the seat book, not the plan's capacity", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // 12 agents → 2 beds. One crash fills a bed without filling the
+    // ward, so a tally that returned `seatIds.length` cannot pass.
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 1);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const book = bookOf(scene);
+    const infirmary = layout.floors[0].civic.find(
+      (room) => room.kind === "infirmary",
+    );
+    const lounge = layout.floors[0].civic.find(
+      (room) => room.kind === "waiting-room",
+    );
+    if (infirmary === undefined || lounge === undefined) {
+      throw new Error("expected an infirmary and a waiting room");
+    }
+    expect(lounge.seatIds.length).toBeGreaterThan(0);
+
+    let fromBook = 0;
+    for (const seatId of infirmary.seatIds) {
+      if (book.occupant(seatId) !== null) fromBook += 1;
+    }
+    expect(fromBook).toBeGreaterThan(0);
+    expect(fromBook).toBeLessThan(infirmary.seatIds.length);
+
+    const tally = scene.civicTally();
+    expect(tally.occupiedByRoom.get(infirmary.civicRoomId)).toBe(fromBook);
+    // A room nobody is in is ABSENT, not 0: the map is occupancy, not
+    // a capacity table.
+    expect(tally.occupiedByRoom.has(lounge.civicRoomId)).toBe(false);
+
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const afterBook = bookOf(scene);
+    let remaining = 0;
+    for (const seatId of infirmary.seatIds) {
+      if (afterBook.occupant(seatId) !== null) remaining += 1;
+    }
+    expect(remaining).toBeLessThan(fromBook);
+    const after = scene.civicTally();
+    if (remaining === 0) {
+      expect(after.occupiedByRoom.has(infirmary.civicRoomId)).toBe(false);
+    } else {
+      expect(after.occupiedByRoom.get(infirmary.civicRoomId)).toBe(remaining);
+    }
+  });
+
+  it("reports archivedByHost from the partition, and advances its clock only on tick", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // 80 is large enough that the fixture's 4% archive rate is a
+    // non-zero count (3 at seed 1), so a zero would not silently pass
+    // as "both sides were empty".
+    const epic = makeTestEpic("one-team", 80, 1);
+    const visible = visibleIdsOf(epic);
+    const input = sceneInput({
+      agents: epic.agents,
+      visibleAgentIds: visible,
+      statusById: epic.statusById,
+      reducedMotion: true,
+    });
+    const scene = newScene();
+    scene.sync(input);
+
+    const reported = scene.civicTally().archivedByHost;
+    const folded = officeArchivedByHost(input.partition, input.statusById);
+    expect(reported).toEqual(folded);
+    let archived = 0;
+    for (const count of reported.values()) archived += count;
+    expect(archived).toBeGreaterThan(0);
+
+    // THE SCENE'S OWN CLOCK, not Date.now(): a suspended office must
+    // not blink through the time it spent off screen. 250 ms is one
+    // siren frame (`OFFICE_SIREN_FRAME_MS`); a clock that read the
+    // wall would not advance by exactly this delta.
+    const SIREN_TICK_MS = 250;
+    expect(scene.animationClockMs()).toBe(0);
+    scene.tick(SIREN_TICK_MS);
+    expect(scene.animationClockMs()).toBe(SIREN_TICK_MS);
+    scene.sync(input);
+    expect(scene.animationClockMs()).toBe(SIREN_TICK_MS);
+    scene.tick(100);
+    expect(scene.animationClockMs()).toBe(SIREN_TICK_MS + 100);
   });
 });
 

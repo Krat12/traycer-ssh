@@ -8,16 +8,21 @@
  */
 import { describe, expect, it } from "vitest";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
-import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
+import {
+  officeArchivedByHost,
+  partitionOfficePopulation,
+} from "@/lib/comm-graph/office/office-population";
 import {
   compareHeat,
   OFFICE_SIGN_FONT_PX,
   OFFICE_SIGN_LETTER_SPACING_EM,
   OFFICE_SIGN_PADDING_X,
   OFFICE_SIGN_PLATE_MAX_CHARS,
+  OFFICE_SIREN_FRAME_MS,
   nameTagTextThatFits,
   officeBoardText,
   officeBoardWidthPx,
+  officeCivicSignText,
   officeFloorSignsToDraw,
   officePlateWidthPx,
   officeSignCenterX,
@@ -26,6 +31,8 @@ import {
 import {
   OFFICE_TILE,
   type OfficeAgentStatus,
+  type OfficeCivicRoom,
+  type OfficeCivicTally,
   type OfficeFloor,
   type OfficeLayout,
   type OfficeSign,
@@ -1562,6 +1569,454 @@ describe("officeSignsToDraw - fixup 6 rule 3: bullpen and solo plates come down 
       expect(drawn).toHaveLength(1);
       expect(drawn[0].text).toBe(expected);
     }
+  });
+});
+
+/**
+ * THE CIVIC SIGN'S OWN LADDER, and the beacon a roadless ward carries.
+ *
+ * A civic plate is a SUMMARY, like a board: the renderer draws the reading
+ * this module chose and truncates nothing. The fit is therefore pixels
+ * against `officePlateWidthPx`, never the name-plate character budget that
+ * would cut `Infirmary · 3 of 4` to `Infirmary · 3…`. Widths below are
+ * derived from `measure`, the same way the board cases derive theirs.
+ */
+describe("officeCivicSignText - the civic counter ladder", () => {
+  const WARD_ID = "ward/0/civic/infirmary";
+  const WARD_SEATS = ["bed-0", "bed-1", "bed-2", "bed-3"] as const;
+  const COUNTER_RUNG = "Infirmary · 3 of 4";
+  const WORD_RUNG = "Infirmary";
+  const CIVIC_ZOOM = 1;
+
+  function civicRoom(
+    overrides: Partial<OfficeCivicRoom> & {
+      readonly kind: OfficeCivicRoom["kind"];
+      readonly name: string;
+    },
+  ): OfficeCivicRoom {
+    return {
+      civicRoomId: `civic/${overrides.kind}`,
+      bounds: { col: 2, row: 2, cols: 6, rows: 4 },
+      doorTile: { col: 2, row: 5 },
+      signTile: { col: 2, row: 2 },
+      seatIds: [],
+      floorIndex: 0,
+      hostId: null,
+      kerbTile: null,
+      ...overrides,
+    };
+  }
+
+  const WARD = civicRoom({
+    kind: "infirmary",
+    name: WORD_RUNG,
+    civicRoomId: WARD_ID,
+    seatIds: WARD_SEATS,
+  });
+
+  const THREE_OF_FOUR: OfficeCivicTally = {
+    occupiedByRoom: new Map([[WARD_ID, 3]]),
+    archivedByHost: new Map<string | null, number>(),
+  };
+
+  /**
+   * HOW MANY TILES AT ZOOM 1 ADMIT THIS READING.
+   *
+   * `officePlateWidthPx(widthTiles, 1) = widthTiles * OFFICE_TILE`, so this
+   * is the exact width at which `measure(text)` equals the plate. Named
+   * rather than written down: changing the face moves the tile count with
+   * the pixels, which is the point of deriving it.
+   */
+  function widthTilesFor(text: string): number {
+    return measure(text) / OFFICE_TILE;
+  }
+
+  function civicText(args: {
+    readonly room: OfficeCivicRoom;
+    readonly tally: OfficeCivicTally;
+    readonly lod: 1 | 2;
+    readonly widthTiles: number;
+  }): string {
+    return officeCivicSignText({
+      room: args.room,
+      tally: args.tally,
+      lod: args.lod,
+      widthTiles: args.widthTiles,
+      zoom: CIVIC_ZOOM,
+      measure,
+    });
+  }
+
+  it("says the counter rung at a width derived from that rung's own pixels", () => {
+    const widthTiles = widthTilesFor(COUNTER_RUNG);
+    const available = officePlateWidthPx(widthTiles, CIVIC_ZOOM);
+    expect(measure(COUNTER_RUNG)).toBeLessThanOrEqual(available);
+    expect(
+      civicText({
+        room: WARD,
+        tally: THREE_OF_FOUR,
+        lod: 2,
+        widthTiles,
+      }),
+    ).toBe(COUNTER_RUNG);
+  });
+
+  it("falls to the room's word when the counter rung overflows and the word fits", () => {
+    const widthTiles = widthTilesFor(WORD_RUNG);
+    const available = officePlateWidthPx(widthTiles, CIVIC_ZOOM);
+    expect(measure(WORD_RUNG)).toBeLessThanOrEqual(available);
+    expect(measure(COUNTER_RUNG)).toBeGreaterThan(available);
+    expect(
+      civicText({
+        room: WARD,
+        tally: THREE_OF_FOUR,
+        lod: 2,
+        widthTiles,
+      }),
+    ).toBe(WORD_RUNG);
+  });
+
+  it("never drops the count when the counter rung's pixels fit, even past the name-plate character budget", () => {
+    // THE LADDER EXISTS FOR THIS. `Infirmary · 3 of 4` is eighteen
+    // characters, past `OFFICE_SIGN_PLATE_MAX_CHARS` (12). A civic sign
+    // that inherited the name-plate budget would filter the counter rung
+    // out and letter the word instead, which is a dropped count at a
+    // width the room can actually hold.
+    expect(COUNTER_RUNG.length).toBeGreaterThan(OFFICE_SIGN_PLATE_MAX_CHARS);
+    const widthTiles = widthTilesFor(COUNTER_RUNG);
+    const available = officePlateWidthPx(widthTiles, CIVIC_ZOOM);
+    expect(measure(COUNTER_RUNG)).toBeLessThanOrEqual(available);
+    const text = civicText({
+      room: WARD,
+      tally: THREE_OF_FOUR,
+      lod: 2,
+      widthTiles,
+    });
+    expect(text).toBe(COUNTER_RUNG);
+    expect(text).not.toBe(WORD_RUNG);
+  });
+
+  it("says the word at lod 1 even at a width the counter rung would fit", () => {
+    const widthTiles = widthTilesFor(COUNTER_RUNG);
+    const available = officePlateWidthPx(widthTiles, CIVIC_ZOOM);
+    expect(measure(COUNTER_RUNG)).toBeLessThanOrEqual(available);
+    expect(
+      civicText({
+        room: WARD,
+        tally: THREE_OF_FOUR,
+        lod: 1,
+        widthTiles,
+      }),
+    ).toBe(WORD_RUNG);
+  });
+
+  it("letters Archive · n from the partition's archived count at this cursor, not from walk-outs", () => {
+    // 200 is large enough that triage's 4% archive rate is a non-zero
+    // count (8 at seed 1), so a zero would not silently pass as "the
+    // sign said 0 and the tally was 0". The cursor is the fixture's own
+    // map: nobody has walked to a records door, and the number is still
+    // the building's.
+    const epic = makeTestEpic("triage", 200, 1);
+    const statusById = new Map(epic.statusById);
+    const partition = partitionOfficePopulation({
+      agents: epic.agents,
+      statusById,
+      previous: null,
+    });
+    const archivedByHost = officeArchivedByHost(partition, statusById);
+    const layout = OFFICE_VIEWS.floor.plan({
+      agents: epic.agents,
+      partition,
+      activityById: new Map(),
+      occupancy: new Map(),
+      needsCapacity: [],
+      viewport: { width: 1040, height: 700 },
+      previous: null,
+    });
+    const archive = layout.floors[0].civic.find(
+      (room) => room.kind === "archive",
+    );
+    if (archive === undefined) throw new Error("expected an archive room");
+    let independent = 0;
+    for (const person of epic.agents) {
+      if (person.hostId !== archive.hostId) continue;
+      if (statusById.get(person.id) !== "archived") continue;
+      independent += 1;
+    }
+    expect(independent).toBeGreaterThan(0);
+    const fromPartition = archivedByHost.get(archive.hostId) ?? 0;
+    expect(fromPartition).toBe(independent);
+    const rung = `${archive.name} · ${fromPartition}`;
+    const widthTiles = widthTilesFor(rung);
+    expect(measure(rung)).toBeLessThanOrEqual(
+      officePlateWidthPx(widthTiles, CIVIC_ZOOM),
+    );
+    expect(
+      civicText({
+        room: archive,
+        tally: {
+          occupiedByRoom: new Map(),
+          archivedByHost,
+        },
+        lod: 2,
+        widthTiles,
+      }),
+    ).toBe(rung);
+  });
+
+  it("carries no count on the help desk at lod 2, even at a width a counter would fit", () => {
+    const epic = makeTestEpic("one-team", 12, 1);
+    const statusById = new Map(epic.statusById);
+    const partition = partitionOfficePopulation({
+      agents: epic.agents,
+      statusById,
+      previous: null,
+    });
+    const layout = OFFICE_VIEWS.floor.plan({
+      agents: epic.agents,
+      partition,
+      activityById: new Map(),
+      occupancy: new Map(),
+      needsCapacity: [],
+      viewport: { width: 1040, height: 700 },
+      previous: null,
+    });
+    const desk = layout.floors[0].civic.find(
+      (room) => room.kind === "help-desk",
+    );
+    if (desk === undefined) throw new Error("expected a help-desk room");
+    // C7: the queue in front of the desk IS the count. The real Floor
+    // help-desk has no seats, so a case that handed that room through
+    // would get `null` from the empty-`seatIds` branch and never
+    // exercise the help-desk rule. Seats and an occupancy entry make
+    // the kind the only reason the counter stays off.
+    const seated = {
+      ...desk,
+      seatIds: ["s1", "s2", "s3", "s4"],
+    };
+    const wouldBeCounter = `${desk.name} · 3 of 4`;
+    const widthTiles = widthTilesFor(wouldBeCounter);
+    expect(measure(wouldBeCounter)).toBeLessThanOrEqual(
+      officePlateWidthPx(widthTiles, CIVIC_ZOOM),
+    );
+    expect(
+      civicText({
+        room: seated,
+        tally: {
+          occupiedByRoom: new Map([[desk.civicRoomId, 3]]),
+          archivedByHost: new Map<string | null, number>(),
+        },
+        lod: 2,
+        widthTiles,
+      }),
+    ).toBe(desk.name);
+  });
+
+  it("still draws the word when even the word overflows the plate", () => {
+    // THE WORD IS THE FLOOR. A civic sign is never dropped and never
+    // reads `…`: every `area` plate on a Floor storey already overflows
+    // its two tiles, and a ward is an area. The help desk is the real
+    // two-tile civic sign - its bounds ARE the counter row - and
+    // `Front desk` at 76px is wider than two tiles at every zoom,
+    // including close-up's 51.2px at zoom 1.6.
+    const epic = makeTestEpic("one-team", 12, 1);
+    const statusById = new Map(epic.statusById);
+    const partition = partitionOfficePopulation({
+      agents: epic.agents,
+      statusById,
+      previous: null,
+    });
+    const layout = OFFICE_VIEWS.floor.plan({
+      agents: epic.agents,
+      partition,
+      activityById: new Map(),
+      occupancy: new Map(),
+      needsCapacity: [],
+      viewport: { width: 1040, height: 700 },
+      previous: null,
+    });
+    const desk = layout.floors[0].civic.find(
+      (room) => room.kind === "help-desk",
+    );
+    if (desk === undefined) throw new Error("expected a help-desk room");
+    const sign = layout.signs.find(
+      (entry) =>
+        entry.kind === "civic" && entry.civicRoomId === desk.civicRoomId,
+    );
+    if (sign === undefined) throw new Error("expected the help-desk sign");
+    expect(sign.widthTiles).toBe(2);
+    // CLOSE-UP'S TWO-TILE PLATE. Two tiles at zoom 1.6 is 51.2px;
+    // `Front desk` is 10 × 6.8px + 8px padding = 76px.
+    const HELP_DESK_OVERFLOW_ZOOM = 1.6;
+    const available = officePlateWidthPx(
+      sign.widthTiles,
+      HELP_DESK_OVERFLOW_ZOOM,
+    );
+    expect(measure(desk.name)).toBeGreaterThan(available);
+    expect(
+      officeCivicSignText({
+        room: desk,
+        tally: THREE_OF_FOUR,
+        lod: 2,
+        widthTiles: sign.widthTiles,
+        zoom: HELP_DESK_OVERFLOW_ZOOM,
+        measure,
+      }),
+    ).toBe(desk.name);
+  });
+});
+
+/**
+ * THE MEDBAY BEACON. Mission control has no street, so no ambulance can
+ * come (C6): the light on the ward's own sign is the whole of the alarm
+ * there. A floor WITH a road keeps the light off, because the vehicle is
+ * the alarm on that view.
+ */
+describe("officeSignsToDraw - the medbay beacon", () => {
+  const WARD_ID = "medbay/0/civic/infirmary";
+  const WARD = {
+    civicRoomId: WARD_ID,
+    kind: "infirmary" as const,
+    bounds: { col: 2, row: 2, cols: 6, rows: 4 },
+    doorTile: { col: 2, row: 5 },
+    signTile: { col: 2, row: 2 },
+    name: "Infirmary",
+    seatIds: ["bed-0"],
+    floorIndex: 0,
+    hostId: null,
+    kerbTile: null,
+  };
+  /**
+   * Wide enough for the full counter rung at zoom 1, so a missing plate
+   * cannot masquerade as `sirenFrame: null`.
+   */
+  const BEACON_SIGN_TILES = 20;
+
+  function civicSignOn(floor: OfficeFloor): OfficeSign {
+    return {
+      kind: "civic",
+      tile: WARD.signTile,
+      widthTiles: BEACON_SIGN_TILES,
+      text: WARD.name,
+      ownerAgentId: null,
+      hostId: floor.hostId,
+      agentIds: [],
+      civicRoomId: WARD_ID,
+    };
+  }
+
+  function resolveBeacon(args: {
+    readonly floor: OfficeFloor;
+    readonly occupied: number;
+    readonly nowMs: number;
+    readonly reducedMotion: boolean;
+  }): 0 | 1 | null {
+    const occupiedByRoom =
+      args.occupied === 0
+        ? new Map<string, number>()
+        : new Map([[WARD_ID, args.occupied]]);
+    const drawn = officeSignsToDraw({
+      floors: [args.floor],
+      civicTally: {
+        occupiedByRoom,
+        archivedByHost: new Map<string | null, number>(),
+      },
+      clock: { nowMs: args.nowMs, reducedMotion: args.reducedMotion },
+      signs: [civicSignOn(args.floor)],
+      visibleAgentIds: new Set(),
+      statusById: new Map(),
+      nameById: new Map(),
+      hostNameById: new Map(),
+      roleClaims: {},
+      zoom: 1,
+      measure,
+      projector: SHIFTED_PROJECTOR,
+      lod: 2,
+    });
+    expect(drawn).toHaveLength(1);
+    return drawn[0].sirenFrame;
+  }
+
+  it("rests on the dark frame while the roadless ward is empty, reduced motion or not", () => {
+    expect(OFFICE_SIREN_FRAME_MS).toBe(250);
+    const floor = emptyFloor({ road: null, civic: [WARD] });
+    // EMPTY: the lamp is there and is not telling anybody to hurry.
+    // Tried at every interesting clock, including the occupied-side
+    // boundaries, so a bug that ignored occupancy and just blinked
+    // would not hide behind "we only sampled 0 ms". Reduced motion
+    // must not light an empty ward either - holding the lit frame is
+    // the OCCUPIED reduced-motion state, not the empty one.
+    for (const reducedMotion of [false, true]) {
+      for (const nowMs of [0, 125, 250, 375, 1_000]) {
+        expect(
+          resolveBeacon({ floor, occupied: 0, nowMs, reducedMotion }),
+        ).toBe(0);
+      }
+    }
+  });
+
+  it("alternates on the 250 ms boundary while a bed is taken and motion is not reduced", () => {
+    expect(OFFICE_SIREN_FRAME_MS).toBe(250);
+    const floor = emptyFloor({ road: null, civic: [WARD] });
+    const at = (nowMs: number): 0 | 1 | null =>
+      resolveBeacon({
+        floor,
+        occupied: 1,
+        nowMs,
+        reducedMotion: false,
+      });
+    // OCCUPIED: floor(nowMs / 250) % 2, pinned on the boundary itself
+    // rather than "two different values". 0 is the dark lens, 1 the lit.
+    expect(at(249)).toBe(0);
+    expect(at(250)).toBe(1);
+    expect(at(499)).toBe(1);
+    expect(at(500)).toBe(0);
+    expect(at(0)).toBe(0);
+    expect(at(125)).toBe(0);
+    expect(at(375)).toBe(1);
+    expect(at(1_000)).toBe(0);
+  });
+
+  it("holds the lit frame at every clock while occupied under reduced motion", () => {
+    // Holding the DARK frame would make an occupied ward look empty
+    // for exactly the reader who cannot watch it blink. The lit frame
+    // is the one that still says "someone is in here".
+    const floor = emptyFloor({ road: null, civic: [WARD] });
+    for (const nowMs of [0, 125, 249, 250, 375, 499, 500, 1_000]) {
+      expect(
+        resolveBeacon({
+          floor,
+          occupied: 1,
+          nowMs,
+          reducedMotion: true,
+        }),
+      ).toBe(1);
+    }
+  });
+
+  it("carries no beacon on an infirmary whose floor has a road", () => {
+    const floor = emptyFloor({
+      civic: [WARD],
+      road: {
+        entryTile: { col: 0, row: 15 },
+        tiles: [
+          { col: 0, row: 15 },
+          { col: 1, row: 15 },
+        ],
+        exitTile: { col: 1, row: 15 },
+      },
+    });
+    // The sign still draws - a missing plate would also look like
+    // `sirenFrame === null`. Occupied, so a roadless floor would be
+    // blinking; the road is what keeps the light off (C6).
+    expect(
+      resolveBeacon({
+        floor,
+        occupied: 1,
+        nowMs: 250,
+        reducedMotion: false,
+      }),
+    ).toBeNull();
   });
 });
 

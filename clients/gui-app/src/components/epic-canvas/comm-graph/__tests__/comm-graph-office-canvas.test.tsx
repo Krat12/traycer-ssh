@@ -149,6 +149,7 @@ import { OfficeStaticLayer } from "@/components/epic-canvas/comm-graph/office/of
 import { useThemeLibraryStore } from "@/stores/settings/theme-library-store";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import { isOfficeHotStatus } from "@/lib/comm-graph/office/office-status";
+import { OFFICE_LOD_CLOSEUP_ZOOM } from "@/lib/comm-graph/office/office-lod";
 import { NAME_TAG_LINE_HEIGHT } from "@/components/epic-canvas/comm-graph/office/office-name-tags";
 
 const OFFICE_VIEW: CommGraphTileViewState = {
@@ -2285,6 +2286,7 @@ describe("CommGraphOfficeCanvas fixups 1 and 2 - renderer projection, semantic z
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     useCommGraphTimelineStore.setState({ stateByEpicId: {} });
+    useAppLocalNotificationsStore.getState().deactivateIdentity();
   });
 
   const RENDERER_BOUNDS: OfficeTileRect = {
@@ -2906,6 +2908,79 @@ describe("CommGraphOfficeCanvas fixups 1 and 2 - renderer projection, semantic z
     // same over an identical roster - the unfixed renderer gives both boards
     // the same officeBoardSummary text.
     expect(plateTexts[0]).not.toBe(plateTexts[1]);
+  });
+
+  it("letters a civic sign with the scene's live occupancy, not the bare word", () => {
+    // THE CANVAS HANDS THE SCENE'S TALLY TO THE RESOLVER. A hand-built
+    // empty tally would letter `INFIRMARY · 0 OF n` at close-up; the
+    // live count is what proves the seam. Close-up is
+    // `OFFICE_LOD_CLOSEUP_ZOOM` (1.6), the band the counter exists at.
+    const epic = makeTestEpic("one-team", 12, 9);
+    const live = epic.agents.filter((person) => !person.archived);
+    // `.at` rather than `live[0]`, so the guard below is a real check: an
+    // index read is typed non-optional here and the throw would be dead code.
+    const crashed = live.at(0);
+    if (crashed === undefined) throw new Error("expected a live agent");
+    const nodes: CommGraphAgentNode[] = epic.agents.map((person) => ({
+      id: person.id,
+      kind: person.kind,
+      name: person.name,
+      hostId: person.hostId,
+      parentId: person.parentId,
+      harnessId: person.harnessId,
+      model: person.model,
+      archived: person.archived,
+      archivedAt: person.archivedAt,
+      createdAt: person.createdAt,
+    }));
+    const store = useAppLocalNotificationsStore.getState();
+    store.activateIdentity("k4-civic-sign");
+    store.upsert({
+      id: "k4-civic-fail",
+      originHostId: crashed.hostId,
+      updatedAt: 1,
+      readAt: null,
+      kind: "stream.transport.error",
+      sourceRef: crashed.id,
+      payload: {
+        kind: "chat",
+        epicId: "epic-1",
+        chatId: crashed.id,
+      },
+      message: "crash",
+      detail: null,
+    });
+
+    render(
+      withQueryClient(
+        cloneElement(
+          officeElementWithView(
+            OFFICE_VIEWS.floor,
+            new Set(live.map((person) => person.id)),
+            nodes,
+            {},
+          ),
+          {
+            view: {
+              ...FIXED_CAMERA_VIEW,
+              zoom: OFFICE_LOD_CLOSEUP_ZOOM,
+            },
+          },
+        ),
+      ),
+    );
+    setIntersecting(true);
+    flushRaf(4);
+
+    const plate = paintedText().find((text) => text.startsWith("INFIRMARY"));
+    expect(plate).toBeDefined();
+    const match = /^INFIRMARY · (\d+) OF (\d+)$/.exec(plate ?? "");
+    expect(match).not.toBeNull();
+    if (match === null) return;
+    const taken = Number(match[1]);
+    const beds = Number(match[2]);
+    expect(taken).toBeGreaterThan(0);
+    expect(taken).toBeLessThan(beds);
   });
 
   /**

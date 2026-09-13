@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  officeArchivedByHost,
   partitionOfficePopulation,
   type OfficePopulation,
   type OfficePopulationInput,
@@ -2194,5 +2195,66 @@ describe("partitionOfficePopulation", () => {
       // passes because it stopped looking.
       expect(transitions).toBe(40_960);
     });
+  });
+});
+
+describe("officeArchivedByHost", () => {
+  it("counts archived agents per host from the partition and the cursor, excluding anyone with no status entry", () => {
+    // Measured: two-hosts/200/seed 1 archives 3 on host-a and 5 on
+    // host-b, so both keys are occupied rather than one host's zero
+    // passing as an empty-map coincidence. The extra unattributed
+    // record is this case's own: the fixture never uses `null`.
+    const epic = makeTestEpic("two-hosts", 200, 1);
+    const unattributed = agent({
+      id: "unattributed-record",
+      hostId: null,
+      archived: true,
+      archivedAt: 1_000_000,
+      createdAt: 10_000,
+    });
+    const agents = [...epic.agents, unattributed];
+    const statusById = new Map(epic.statusById);
+    statusById.set(unattributed.id, "archived");
+    const partition = partitionVerified({
+      agents,
+      statusById,
+      previous: null,
+    });
+
+    function archivedOn(hostId: string | null): number {
+      let n = 0;
+      for (const person of agents) {
+        if (person.hostId !== hostId) continue;
+        if (statusById.get(person.id) !== "archived") continue;
+        n += 1;
+      }
+      return n;
+    }
+
+    const onA = archivedOn("host-a");
+    const onB = archivedOn("host-b");
+    const onNull = archivedOn(null);
+    expect(onA).toBeGreaterThan(0);
+    expect(onB).toBeGreaterThan(0);
+    expect(onNull).toBe(1);
+
+    const tally = officeArchivedByHost(partition, statusById);
+    expect(tally.get("host-a")).toBe(onA);
+    expect(tally.get("host-b")).toBe(onB);
+    expect(tally.get(null)).toBe(onNull);
+
+    const drop = agents.find(
+      (person) =>
+        person.hostId === "host-a" && statusById.get(person.id) === "archived",
+    );
+    if (drop === undefined) {
+      throw new Error("expected an archived agent on host-a");
+    }
+    const without = new Map(statusById);
+    without.delete(drop.id);
+    const after = officeArchivedByHost(partition, without);
+    expect(after.get("host-a")).toBe(onA - 1);
+    expect(after.get("host-b")).toBe(onB);
+    expect(after.get(null)).toBe(onNull);
   });
 });
