@@ -4218,6 +4218,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     return count;
   }
 
+  function chairsForDesk(layout: OfficeLayout, agentId: string): number {
+    const desk = layout.desks.get(agentId);
+    if (desk === undefined) return 0;
+    const ownFloor = layout.floors[desk.floorIndex];
+    const own = ownFloor.civic.find((entry) => entry.kind === "waiting-room");
+    if (own !== undefined && own.seatIds.length > 0) return own.seatIds.length;
+    let count = 0;
+    for (const floor of layout.floors) {
+      if (floor.hostId !== desk.hostId) continue;
+      const room = floor.civic.find((entry) => entry.kind === "waiting-room");
+      count += room === undefined ? 0 : room.seatIds.length;
+    }
+    return count;
+  }
+
   /**
    * WHAT THIS VIEW CALLS THE ROOM OF THAT KIND.
    *
@@ -5524,6 +5539,108 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // unbedded crashes.
     expect(after.civicClaimOf(earlyOverflow)).toBe("bed");
     expect(after.civicClaimOf(lateOverflow)).toBeNull();
+  });
+
+  it("gives a freed lounge chair to the earliest overflow waiter, not whoever sorts first by id", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // waitingScript puts every waiter in ONE sync, so arrival order would
+    // equal id order and this case would pass vacuously. Waves, as the
+    // bed case does. A bed wanter sits alongside so a merged (host-only)
+    // queue would serve them before the lounge overflow.
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const subjects = epic.agents
+      .filter((person) => !person.archived)
+      .map((person) => person.id)
+      .sort();
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const beds = bedsForDesk(layout, subjects[0]);
+    const chairs = chairsForDesk(layout, subjects[0]);
+    expect(beds).toBeGreaterThan(0);
+    expect(chairs).toBeGreaterThan(0);
+    expect(subjects.length).toBeGreaterThan(beds + chairs + 2);
+
+    const bedTakers = subjects.slice(subjects.length - beds);
+    const chairSitters = subjects.slice(
+      subjects.length - beds - chairs,
+      subjects.length - beds,
+    );
+    const bedOverflow = subjects[subjects.length - beds - chairs - 1];
+    const earlyOverflow = subjects[subjects.length - beds - chairs - 2];
+    const lateOverflow = subjects[0];
+    expect(earlyOverflow > lateOverflow).toBe(true);
+
+    const mixed = (
+      failingIds: ReadonlyArray<string>,
+      waitingIds: ReadonlyArray<string>,
+    ): Map<string, OfficeAgentStatus> => {
+      const next = new Map<string, OfficeAgentStatus>(idle);
+      for (const id of failingIds) next.set(id, "failure");
+      for (const id of waitingIds) next.set(id, "awaiting");
+      return next;
+    };
+    const syncMixed = (
+      failingIds: ReadonlyArray<string>,
+      waitingIds: ReadonlyArray<string>,
+    ): void => {
+      scene.sync(
+        sceneInput({
+          agents: epic.agents,
+          visibleAgentIds: visible,
+          statusById: mixed(failingIds, waitingIds),
+          reducedMotion: true,
+        }),
+      );
+    };
+
+    syncMixed(bedTakers, []);
+    syncMixed(bedTakers, chairSitters);
+    syncMixed([...bedTakers, bedOverflow], chairSitters);
+    syncMixed([...bedTakers, bedOverflow], [...chairSitters, earlyOverflow]);
+    syncMixed(
+      [...bedTakers, bedOverflow],
+      [...chairSitters, earlyOverflow, lateOverflow],
+    );
+
+    const before = bookOf(scene);
+    for (const id of chairSitters) {
+      expect(before.civicClaimOf(id)).toBe("lounge");
+    }
+    expect(before.civicClaimOf(earlyOverflow)).toBeNull();
+    expect(before.civicClaimOf(lateOverflow)).toBeNull();
+    expect(before.civicClaimOf(bedOverflow)).toBeNull();
+
+    const healed = chairSitters[0];
+    const freed = before.effectiveSeat(healed);
+    if (freed === null || freed.kind !== "lounge") {
+      throw new Error(`expected ${healed} to hold a lounge chair`);
+    }
+    const freedSeatId = freed.seatId;
+    const remainingSitters = chairSitters.filter((id) => id !== healed);
+    syncMixed(
+      [...bedTakers, bedOverflow],
+      [...remainingSitters, earlyOverflow, lateOverflow],
+    );
+
+    const after = bookOf(scene);
+    expect(after.civicClaimOf(healed)).toBeNull();
+    expect(after.civicClaimOf(earlyOverflow)).toBe("lounge");
+    expect(after.effectiveSeat(earlyOverflow)?.seatId).toBe(freedSeatId);
+    expect(after.civicClaimOf(lateOverflow)).toBeNull();
+    expect(after.civicClaimOf(bedOverflow)).not.toBe("lounge");
   });
 
   it("walks a recovered crash home, and an awaiting agent to the lounge and home", (context) => {
@@ -12847,6 +12964,138 @@ describe("OfficeSeatBook evidence - releasing claims and civic recompute", () =>
     book.recomputeClaims(failing, ids);
     expect(bedHolders(book)).toEqual(first);
   });
+
+  /**
+   * The determinism case above assigns desks, so overflow never reaches the
+   * wake loop (`seat.kind !== "cubby"`). A cubby overflow with no spare
+   * desk is the shape that loop would actually claim: civic bookkeeping
+   * that recorded only successful claims would let it through, the wake
+   * would miss, and `needsCapacity` would ask the plan to grow.
+   */
+  it("keeps a cubby civic overflow out of the wake pass on recompute, with no desk shortfall", () => {
+    const bed = civicSeat({
+      seatId: "bed-1",
+      kind: "bed",
+      deskTile: { col: 12, row: 2 },
+    });
+    const seats = new Map<string, OfficeSeat>();
+    const assigned = new Map<string, OfficeDesk>();
+    const cubbies: ReadonlyArray<{
+      readonly agentId: string;
+      readonly seatId: string;
+    }> = [
+      { agentId: "filler", seatId: "cubby-filler" },
+      { agentId: "overflow", seatId: "cubby-overflow" },
+    ];
+    for (const [index, cubby] of cubbies.entries()) {
+      const seat = cubbySeat({
+        seatId: cubby.seatId,
+        deskTile: { col: 2 + index * 4, row: 2 },
+        floorIndex: 0,
+      });
+      seats.set(seat.seatId, seat);
+      assigned.set(cubby.agentId, { ...seat, agentId: cubby.agentId });
+    }
+    seats.set(bed.seatId, bed);
+    const layout: OfficeLayout = {
+      view: "floor",
+      cols: 24,
+      rows: 16,
+      desks: assigned,
+      seats,
+      signs: [],
+      rooms: [],
+      floors: [handBuiltFloor([])],
+      doorTile: { col: 0, row: 0 },
+      lobbyTile: { col: 0, row: 1 },
+      props: [],
+      walkable: allWalkable(16, 16),
+      frozen: null,
+      shiftFromPrevious: null,
+      stable: true,
+    };
+    const book = new OfficeSeatBook();
+    book.adopt(layout, ["filler", "overflow"], "keep");
+    const failing = new Map<string, OfficeAgentStatus>([
+      ["filler", "failure"],
+      ["overflow", "failure"],
+    ]);
+    book.recomputeClaims(failing, ["filler", "overflow"]);
+
+    expect(book.civicClaimOf("filler")).toBe("bed");
+    expect(book.civicClaimOf("overflow")).toBeNull();
+    expect(book.effectiveSeat("overflow")?.kind).toBe("cubby");
+    expect(book.effectiveSeat("overflow")?.seatId).toBe("cubby-overflow");
+    expect(book.needsCapacity()).toEqual([]);
+  });
+
+  /**
+   * Same mutant as the no-spare-desk case, visible consequence: a free
+   * reserve would be taken by a fall-through wake, and the overflow would
+   * leave its cubby. `recomputeClaims`, not the live wake-pass guard.
+   */
+  it("keeps a cubby civic overflow on its cubby through recompute when a reserve desk is free", () => {
+    const bed = civicSeat({
+      seatId: "bed-1",
+      kind: "bed",
+      deskTile: { col: 12, row: 2 },
+    });
+    const reserve = deskSeat({
+      seatId: "reserve-1",
+      deskTile: { col: 8, row: 2 },
+      floorIndex: 0,
+    });
+    const seats = new Map<string, OfficeSeat>();
+    const assigned = new Map<string, OfficeDesk>();
+    const cubbies: ReadonlyArray<{
+      readonly agentId: string;
+      readonly seatId: string;
+    }> = [
+      { agentId: "filler", seatId: "cubby-filler" },
+      { agentId: "overflow", seatId: "cubby-overflow" },
+    ];
+    for (const [index, cubby] of cubbies.entries()) {
+      const seat = cubbySeat({
+        seatId: cubby.seatId,
+        deskTile: { col: 2 + index * 4, row: 2 },
+        floorIndex: 0,
+      });
+      seats.set(seat.seatId, seat);
+      assigned.set(cubby.agentId, { ...seat, agentId: cubby.agentId });
+    }
+    seats.set(bed.seatId, bed);
+    seats.set(reserve.seatId, reserve);
+    const layout: OfficeLayout = {
+      view: "floor",
+      cols: 24,
+      rows: 16,
+      desks: assigned,
+      seats,
+      signs: [],
+      rooms: [],
+      floors: [handBuiltFloor([])],
+      doorTile: { col: 0, row: 0 },
+      lobbyTile: { col: 0, row: 1 },
+      props: [],
+      walkable: allWalkable(16, 16),
+      frozen: null,
+      shiftFromPrevious: null,
+      stable: true,
+    };
+    const book = new OfficeSeatBook();
+    book.adopt(layout, ["filler", "overflow"], "keep");
+    expect(book.occupancy().get("reserve-1")).toBeUndefined();
+
+    const failing = new Map<string, OfficeAgentStatus>([
+      ["filler", "failure"],
+      ["overflow", "failure"],
+    ]);
+    book.recomputeClaims(failing, ["filler", "overflow"]);
+
+    expect(book.effectiveSeat("overflow")?.kind).toBe("cubby");
+    expect(book.effectiveSeat("overflow")?.seatId).toBe("cubby-overflow");
+    expect(book.heldClaimWant("overflow")).toBeNull();
+  });
 });
 
 /**
@@ -13015,6 +13264,19 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
     );
     expect(scene.locate(overflow)).not.toBeNull();
     expectOccupantsInjective(book);
+
+    // C2: a full ward is not a floor that needs a bigger one. An unchanged
+    // follow-up sync is what would re-plan if overflow had been written
+    // into `needsCapacity` on the pass above.
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds,
+        statusById: filled,
+        reducedMotion: true,
+      }),
+    );
+    expect(bookOf(scene).needsCapacity()).toEqual([]);
   });
 
   /**
@@ -13149,6 +13411,16 @@ describe("OfficeScene finding 7b - a queue walk must vacate the civic seat", () 
       if (here.x === expected.x && here.y === expected.y) return true;
     }
     return false;
+  }
+
+  function locateMatches(
+    scene: OfficeScene,
+    agentId: string,
+    box: OfficeRect,
+  ): boolean {
+    const here = scene.locate(agentId);
+    if (here === null) return false;
+    return here.x === box.x && here.y === box.y;
   }
 
   interface FilledLoungeFloor {
@@ -13305,6 +13577,16 @@ describe("OfficeScene finding 7b - a queue walk must vacate the civic seat", () 
     expect(mid.occupancy().get(floor.loungeSeatId)).toBe(floor.holder);
     expect(floor.scene.whereabouts(floor.holder)).toBe("Help desk");
     expect(floor.scene.locate(floor.holder)).not.toEqual(queueBox);
+
+    floor.scene.tick(100);
+    if (locateMatches(floor.scene, floor.holder, queueBox)) {
+      throw new Error(
+        "queue walk finished in one tick; mid-walk occupancy cannot be observed",
+      );
+    }
+    expect(bookOf(floor.scene).occupancy().get(floor.loungeSeatId)).toBe(
+      floor.holder,
+    );
 
     expect(
       tickUntilAtRect(floor.scene, floor.holder, queueBox, QUEUE_WALK_TICKS),

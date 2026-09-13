@@ -2977,6 +2977,13 @@ export class OfficeScene {
     // A status that STOPPED asking is released first, everywhere, before any
     // seat is handed out: the bed an agent has just recovered from is a bed the
     // next one can have on this same sync rather than the next.
+    //
+    // UNDER AN INSTANT MODE, that is - reduced motion, or any suppressed
+    // motion, where the walk home is resolved inside this pass and `vacated`
+    // runs before the allocation below. With motion on, 2b's rule holds
+    // instead: this pass only ENDS the claim, the reservation survives while
+    // the body is still in the seat, and the seat frees when the walk ends.
+    // The block at the foot of this loop says where each walk ends.
     for (const agentId of this.seats.knownAgentIds()) {
       // ANY held claim, not only a civic one. A cubby agent on a wake reserve
       // that crashes holds a DESK claim of the wrong kind, and `claim` refuses
