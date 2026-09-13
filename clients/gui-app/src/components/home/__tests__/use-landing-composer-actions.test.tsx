@@ -2823,11 +2823,55 @@ describe("useLandingComposerActions", () => {
         { wrapper: queryClientWrapper(queryClient) },
       );
       submitPrompt(result, null);
+      expect(Object.keys(receipts().dispatchedByAttemptId)).toHaveLength(1);
       await waitFor(() => {
         expect(useEpicCanvasStore.getState().openTabOrder).toHaveLength(1);
       });
-      expect(Object.keys(receipts().dispatchedByAttemptId)).toHaveLength(1);
+      // Accepted, but not the foreground epic: no receipt, and the attempt
+      // is retired rather than left pending until a reset or eviction.
       expect(receipts().byAttemptId).toEqual({});
+      expect(receipts().dispatchedByAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
+    it("emits nothing and retires the attempt when the draft lost the focused route before the create settled", async () => {
+      const draftId = mountFocusedDraft("draft-defocused");
+      const createGate = deferred<unknown>();
+      landingMocks.request.mockImplementation((method) =>
+        method === "epic.create" ? createGate.promise : Promise.resolve({}),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, draftId);
+      expect(Object.keys(receipts().dispatchedByAttemptId)).toHaveLength(1);
+      // The user moves to another tab while the create is in flight; the
+      // draft tab is still there to be replaced, but it no longer owns the
+      // focused route, so the epic must not take the foreground.
+      const otherRef = { kind: "epic" as const, id: "tab-elsewhere" };
+      const draftRef = { kind: "draft" as const, id: draftId };
+      useTabsStore.setState({
+        items: [
+          { kind: "tab", id: tabItemId(draftRef), ref: draftRef },
+          { kind: "tab", id: tabItemId(otherRef), ref: otherRef },
+        ],
+        activeItemId: tabItemId(otherRef),
+        systemTabs: { history: null, settings: null },
+        stripOrder: [draftRef, otherRef],
+      });
+      await act(async () => {
+        createGate.resolve({ roomInfo: null });
+        await createGate.promise;
+      });
+      await waitFor(() => {
+        expect(receipts().dispatchedByAttemptId).toEqual({});
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      expect(landingMocks.navigate).not.toHaveBeenCalled();
       queryClient.clear();
     });
 
