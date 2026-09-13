@@ -13324,6 +13324,12 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
     );
     expect(scene.locate(overflow)).not.toBeNull();
     expectOccupantsInjective(book);
+    // The overflow pass itself. A follow-up that replanned would clear a
+    // shortfall written here, so this is the observation with no replan
+    // between it and the pass it is about.
+    expect(book.needsCapacity()).toEqual([]);
+    const cubbySeatId = book.effectiveSeat(overflow)?.seatId;
+    const deskCount = layoutOf(scene).desks.size;
 
     // C2: a full ward is not a floor that needs a bigger one. An unchanged
     // follow-up sync is what would re-plan if overflow had been written
@@ -13337,6 +13343,8 @@ describe("OfficeScene evidence - civic wanter under full beds and reserves", () 
       }),
     );
     expect(bookOf(scene).needsCapacity()).toEqual([]);
+    expect(bookOf(scene).effectiveSeat(overflow)?.seatId).toBe(cubbySeatId);
+    expect(layoutOf(scene).desks.size).toBe(deskCount);
   });
 
   /**
@@ -14314,5 +14322,142 @@ describe("OfficeScene finding 3c - a civic arrival spawned into suppression is s
     expect(characterRect(frameOf(scene), "alpha")).not.toEqual(
       chairFootRect(layoutOf(scene), desk.chairTile),
     );
+  });
+});
+
+/**
+ * Discriminator for dropping `want` from `civicOrderKey`.
+ *
+ * A bed overflow that later wants a chair must join the lounge queue at
+ * the back. A merged (host-only) key would keep its bed-queue place and
+ * overtake the lounge waiter who asked first. The earlier "bed wanter
+ * alongside chairs" fixture cannot see this: that agent never changed
+ * kind, so claim still filters it off the freed chair.
+ */
+describe("OfficeScene evidence - a kind-switch joins the lounge queue at the back", () => {
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function civicSeatCount(
+    layout: OfficeLayout,
+    kind: "infirmary" | "waiting-room",
+  ): number {
+    let count = 0;
+    for (const floor of layout.floors) {
+      const room = floor.civic.find((entry) => entry.kind === kind);
+      if (room !== undefined) count += room.seatIds.length;
+    }
+    return count;
+  }
+
+  it("gives a freed lounge chair to the waiter who asked for one, not the bed overflow that switched kind", () => {
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = new Map<string, OfficeAgentStatus>(
+      epic.agents.map((person) => [
+        person.id,
+        person.archived ? "archived" : "idle",
+      ]),
+    );
+    const visible = new Set(
+      epic.agents
+        .filter((person) => !person.archived)
+        .map((person) => person.id),
+    );
+    const subjects = epic.agents
+      .filter((person) => !person.archived)
+      .map((person) => person.id)
+      .sort();
+    const scene = new OfficeScene(OFFICE_VIEWS.floor, null);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const beds = civicSeatCount(layout, "infirmary");
+    const chairs = civicSeatCount(layout, "waiting-room");
+    expect(beds).toBeGreaterThan(0);
+    expect(chairs).toBeGreaterThan(0);
+    expect(subjects.length).toBeGreaterThan(beds + chairs + 1);
+
+    const bedTakers = subjects.slice(subjects.length - beds);
+    const chairSitters = subjects.slice(
+      subjects.length - beds - chairs,
+      subjects.length - beds,
+    );
+    const switcher = subjects[0];
+    const waiter = subjects[subjects.length - beds - chairs - 1];
+    expect(switcher < waiter).toBe(true);
+
+    const mixed = (
+      failingIds: ReadonlyArray<string>,
+      waitingIds: ReadonlyArray<string>,
+    ): Map<string, OfficeAgentStatus> => {
+      const next = new Map<string, OfficeAgentStatus>(idle);
+      for (const id of failingIds) next.set(id, "failure");
+      for (const id of waitingIds) next.set(id, "awaiting");
+      return next;
+    };
+    const syncMixed = (
+      failingIds: ReadonlyArray<string>,
+      waitingIds: ReadonlyArray<string>,
+    ): void => {
+      scene.sync(
+        sceneInput({
+          agents: epic.agents,
+          visibleAgentIds: visible,
+          statusById: mixed(failingIds, waitingIds),
+          reducedMotion: true,
+        }),
+      );
+    };
+
+    syncMixed(bedTakers, []);
+    syncMixed([...bedTakers, switcher], []);
+    if (bookOf(scene).civicClaimOf(switcher) !== null) {
+      throw new Error("expected the switcher to be bed-overflow");
+    }
+    syncMixed([...bedTakers, switcher], chairSitters);
+    syncMixed([...bedTakers, switcher], [...chairSitters, waiter]);
+    if (bookOf(scene).civicClaimOf(waiter) !== null) {
+      throw new Error("expected the waiter to be lounge-overflow");
+    }
+    syncMixed(bedTakers, [...chairSitters, waiter, switcher]);
+
+    const before = bookOf(scene);
+    expect(before.civicClaimOf(switcher)).toBeNull();
+    expect(before.civicClaimOf(waiter)).toBeNull();
+    for (const id of chairSitters) {
+      expect(before.civicClaimOf(id)).toBe("lounge");
+    }
+
+    const healed = chairSitters[0];
+    const freed = before.effectiveSeat(healed);
+    if (freed === null || freed.kind !== "lounge") {
+      throw new Error(`expected ${healed} to hold a lounge chair`);
+    }
+    const freedSeatId = freed.seatId;
+    const remainingSitters = chairSitters.filter((id) => id !== healed);
+    syncMixed(bedTakers, [...remainingSitters, waiter, switcher]);
+
+    const after = bookOf(scene);
+    expect(after.civicClaimOf(healed)).toBeNull();
+    expect(after.civicClaimOf(waiter)).toBe("lounge");
+    expect(after.effectiveSeat(waiter)?.seatId).toBe(freedSeatId);
+    expect(after.civicClaimOf(switcher)).toBeNull();
   });
 });
