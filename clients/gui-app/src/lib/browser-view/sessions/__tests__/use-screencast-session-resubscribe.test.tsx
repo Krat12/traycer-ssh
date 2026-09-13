@@ -62,7 +62,7 @@ function createHarness(): {
       let onStatus: StatusChangeHandler = () => {};
       const round: Round = {
         fireFrame: (envelope) => onFrame(envelope, null),
-        fireStatus: (status, reason) => onStatus(status, reason),
+        fireStatus: (status, reason) => onStatus(status, reason, null),
         closed: false,
       };
       const session: IStreamSession = {
@@ -72,7 +72,7 @@ function createHarness(): {
         },
         onStatusChange(handler) {
           onStatus = handler;
-          handler("connecting", null);
+          handler("connecting", null, null);
         },
         getNegotiatedSchemaVersion: () => null,
         requestReconnect() {},

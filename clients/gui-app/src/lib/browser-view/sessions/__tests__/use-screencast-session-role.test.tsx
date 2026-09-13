@@ -35,7 +35,7 @@ function createHarness(): {
     sendClientFrame() {},
     onServerFrame() {},
     onStatusChange(handler) {
-      handler("connecting", null);
+      handler("connecting", null, null);
     },
     getNegotiatedSchemaVersion: () => null,
     requestReconnect() {},

@@ -72,6 +72,7 @@ function coordinatorState(args: {
     viewports: {},
     setViewport: unusedAction("setViewport"),
     reportViewport: () => undefined,
+    releaseViewport: () => undefined,
     errorMessage: null,
     retry: () => undefined,
     openTab: unusedAction("openTab"),
