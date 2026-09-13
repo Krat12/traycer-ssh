@@ -1430,7 +1430,12 @@ describe("officeSignsToDraw - fixup 6 rule 3: bullpen and solo plates come down 
           sign.kind === "plate" &&
           sign.text.startsWith("Bullpen · ") &&
           sign.text.endsWith(" live solos") &&
-          sign.widthTiles === 18,
+          // SEVENTEEN, not the eighteen this pod is wide: a plate stops short of
+          // the tile its own team board letters, so the widest solo bank's plate
+          // gives that one up. The pod is unchanged and so is everything this
+          // case is about - the reading is still over the character budget and
+          // still has to come down a rung.
+          sign.widthTiles === 17,
       );
       expect(wideBullpens.length).toBeGreaterThan(0);
       const names = new Map(epic.agents.map((agent) => [agent.id, agent.name]));

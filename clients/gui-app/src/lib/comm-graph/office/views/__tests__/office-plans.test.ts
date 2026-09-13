@@ -364,13 +364,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
      * PLACEMENT is the half that has to give, which is why this case is about
      * where a plate hangs and never about how long its name is.
      *
-     * Scoped to pairs involving a CIVIC plate. The unrestricted claim - every
-     * pair of plates, whatever their kinds - is red today on pod plates against
-     * team boards in the oblique views at close-up (13 pairs in Towers at 309),
-     * a defect this layer did not introduce and does not fix; widening the
-     * filter is this case's own red-check for that one.
+     * EVERY PAIR, whatever their kinds. This was scoped to pairs involving a
+     * civic plate when it was written, because the unrestricted claim was red on
+     * pod plates against their own team boards in the oblique views at close-up
+     * - 13 pairs in Towers at 309 and at 1,000, 2 at 12, 1 in Building - a
+     * defect the civic layer had not introduced. That is fixed (a pod's plate
+     * stops short of the tile its board letters, and a pod too narrow for both
+     * letters no count), so the case says what it always meant to.
      */
-    it("keeps every civic plate's backing clear of every other plate's, at office zoom and at close-up", () => {
+    it("keeps every plate's backing clear of every other plate's, at office zoom and at close-up", () => {
       if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
       // The face the plate is actually set in, derived rather than guessed: the
       // tracking counts towards `measureText` as well as towards the painted
@@ -455,7 +457,6 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
           for (let j = i + 1; j < boxes.length; j += 1) {
             const a = boxes[i];
             const b = boxes[j];
-            if (!a.civic && !b.civic) continue;
             const clear =
               a.right <= b.left ||
               b.right <= a.left ||

@@ -1609,9 +1609,11 @@ describe("oblique plates: fixup 6 rule 2 - plates fit their pods and never overl
         candidate.kind === "plate" && candidate.text === "team-26-lead",
     );
     if (sign === undefined) throw new Error("expected a team-26-lead plate");
-    // Six tiles at this population - checked here rather than assumed, since
-    // the pod a real plan gives a lead is a fact about the packing.
-    expect(sign.widthTiles).toBe(6);
+    // FIVE tiles at this population - checked here rather than assumed, since
+    // the pod a real plan gives a lead is a fact about the packing. Six until
+    // the plate stopped short of the tile its own team board letters: the pod is
+    // still six wide, and the sixth is the board's.
+    expect(sign.widthTiles).toBe(5);
     const resolvedAt = (zoom: number): string | undefined =>
       officeSignsToDraw({
         floors: layout.floors,
@@ -2128,5 +2130,88 @@ describe("plaza civic rooms", () => {
       expect(rooms, label).toBeGreaterThan(0);
       expect(civic, label).toHaveLength(rooms);
     }
+  });
+});
+
+/**
+ * FINDING 5: a pod plate and its own team board used to print over each other
+ * at close-up.
+ *
+ * The board stands on the pod's LAST tile, inside the plate's span, so the two
+ * labels overlap horizontally in every pod whose name letters that far. The only
+ * thing separating them was vertical - the eight world pixels a `pod-plate`
+ * board hangs below a bare one - and that cannot work at any zoom, because the
+ * separation scales with the camera while a plate's backing is a fixed fourteen
+ * pixels: 12.8 at 1.6, short by 1.2. Measured before: 13 overlapping pairs in
+ * Towers at 309 and at 1,000, 2 at 12, 1 in Building at 309 and at 1,000.
+ *
+ * The rule is a sentence rather than a number: a plate stops short of the tile
+ * its board letters, and A POD TOO NARROW TO LETTER BOTH CARRIES NO COUNT - the
+ * plate keeps the tile. The pods that gave way the other way round were the
+ * two-tile ones, where a one-tile plate resolved `A-ROOT` to `AR`: manufactured
+ * initials, which read as a different agent rather than as a short name, and are
+ * the rung T3 fixup 6 removed from the HQ board's ladder for that reason.
+ *
+ * The negative half is the point of this case: a WIDE pod must still letter its
+ * count. A rule that suppressed every board would pass an overlap sweep too.
+ */
+describe("oblique plates: finding 5 - a plate never letters over its own board", () => {
+  /** A board letters its own tile; a plate needs two to carry a name. */
+  const BOARD_TILES = 1;
+  const PLATE_MIN = 2;
+
+  it("gives each pod's plate the tiles its board does not need", () => {
+    let narrow = 0;
+    let wide = 0;
+    for (const n of [12, 309, 1000]) {
+      const epic = makeTestEpic("two-hosts", n, 1);
+      for (const view of [TOWERS_VIEW, BUILDING_VIEW]) {
+        const layout = view.plan(initialInput(epic, VIEWPORTS[0]));
+        const plates = layout.signs.filter((sign) => sign.kind === "plate");
+        expect(plates.length).toBeGreaterThan(0);
+        for (const room of layout.rooms) {
+          const cols = room.bounds.cols;
+          const plate = plates.find(
+            (sign) =>
+              sign.tile.col === room.bounds.col &&
+              sign.tile.row === room.bounds.row,
+          );
+          if (plate === undefined) continue;
+          const board = layout.signs.find(
+            (sign) =>
+              sign.kind === "board" &&
+              sign.tile.col === room.bounds.col + cols - 1 &&
+              sign.tile.row === room.bounds.row,
+          );
+          // THE BOARD'S ART STAYS EITHER WAY. It is furniture; only its lettering
+          // is what a narrow pod has no room for.
+          expect(
+            layout.props.some(
+              (item) =>
+                item.sprite.name === "board" &&
+                item.tile.col === room.bounds.col + cols - 1 &&
+                item.tile.row === room.bounds.row,
+            ),
+          ).toBe(true);
+          if (cols - BOARD_TILES >= PLATE_MIN) {
+            wide += 1;
+            // The plate stops one tile short, and the count is still lettered.
+            expect(plate.widthTiles).toBe(cols - BOARD_TILES);
+            expect(board).toBeDefined();
+          } else {
+            narrow += 1;
+            // The plate keeps the whole pod and the board says nothing.
+            expect(plate.widthTiles).toBe(cols);
+            expect(board).toBeUndefined();
+          }
+        }
+      }
+    }
+    // BOTH HALVES EXERCISED, or the case is only testing one of them: a rule that
+    // suppressed every count or none would fail here rather than pass. Counted
+    // over all three populations and both views rather than within each, because
+    // a 12-agent Building is all two-desk pods and has no wide one to letter.
+    expect(wide).toBeGreaterThan(0);
+    expect(narrow).toBeGreaterThan(0);
   });
 });
