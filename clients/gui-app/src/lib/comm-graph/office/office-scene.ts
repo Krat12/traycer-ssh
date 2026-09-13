@@ -3635,11 +3635,56 @@ export class OfficeScene {
     this.settleWalks(true);
   }
 
+  /**
+   * Whether this walker is ON ITS WAY TO A CIVIC SEAT - by destination, not by
+   * label.
+   *
+   * `errand` says how a walk was STARTED, and two different starts reach the
+   * same place: `startCivicWalk` labels its route `civic-out`, and a REHOME to
+   * a seat the recompute just granted goes through `returnToDesk`, which
+   * labels it `returning`. Reading the label settled the first and walked
+   * straight past the second.
+   *
+   * The comparison is not a new notion of "civic walker" invented for the
+   * settle - `rehomeCharacters` already asks exactly this, `destinationOf`
+   * against `seat.chairTile`, to decide whether a moved agent is already
+   * heading for its seat. All this adds is `civicClaimOf` to say which seats
+   * count.
+   *
+   * `civicClaimOf` is HELD-only, and that is load-bearing rather than
+   * incidental: an agent whose claim has gone `releasing` is walking HOME, and
+   * settling it at the civic chair would put it back in the bed it was just
+   * released from.
+   */
+  private walkingToCivicSeat(character: OfficeCharacter): boolean {
+    if (this.seats.civicClaimOf(character.agentId) === null) return false;
+    const seat = this.seats.effectiveSeat(character.agentId);
+    if (seat === null) return false;
+    // DEFENSIVE, and measured to be so: no case reddens without this
+    // comparison, because a held civic claimant cannot today be walking
+    // anywhere else. `mayStartErrand` refuses an agent whose `errandMustEnd`
+    // is true, and that is true for every status but `idle`, while a civic
+    // want needs `failure` or `awaiting` - so a claim holder never strolls.
+    // The one other walk it could be on is the walk HOME, and that begins by
+    // ending the claim, which takes `civicClaimOf` to null above.
+    //
+    // Kept anyway, because it is what makes this predicate locally true: the
+    // alternative asks the reader to reconstruct both of those arguments from
+    // two other files before believing `civicClaimOf` alone is safe.
+    const destination = this.destinationOf(character);
+    return (
+      destination.col === seat.chairTile.col &&
+      destination.row === seat.chairTile.row
+    );
+  }
+
   /** Teleports walkers to the end of their path and runs the arrival branch. */
   private settleWalks(civicOnly: boolean): void {
     for (const character of this.characters.values()) {
-      if (civicOnly && character.errand !== "civic-out") continue;
+      // The walking check first, so the predicate is only ever asked about a
+      // character that actually has a route left to run.
       if (character.pathIndex >= character.path.length) continue;
+      if (civicOnly && !this.walkingToCivicSeat(character)) continue;
       const last = character.path[character.path.length - 1];
       character.col = last.col;
       character.row = last.row;
