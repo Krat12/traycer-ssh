@@ -2990,8 +2990,27 @@ export class OfficeScene {
       //
       // Both keep their walk. The claim is ended either way, which is the part
       // that is this pass's business, and the seat frees when the walk ends.
+      //
+      // AND THAT PROMISE HAS TO BE KEPT ON BOTH BRANCHES. `leaving` keeps it
+      // through `depart()`, which ends the claim and vacates. The queue walk
+      // ends at the counter, where nothing was freeing anything: the seat
+      // stayed in `occupancy()` for as long as the agent stood there, and a
+      // competing crasher could not have it until the attention cleared.
       if (character.errand === "leaving") continue;
-      if (this.inReceptionQueue(character)) continue;
+      if (this.inReceptionQueue(character)) {
+        // ALREADY AT THE COUNTER, so the walk is over and there is no arrival
+        // left to free the seat - freed here, exactly as an absent claimant is
+        // above. Not a reduced-motion special case: `updateReceptionQueue`'s
+        // instant placement also fires with motion fully on when the agent's
+        // start tile already IS its queue slot.
+        //
+        // It cannot move into that placement, which is where it would
+        // naturally go: `updateReceptionQueue` runs BEFORE this pass, so the
+        // claim is still `held` there and `vacated` only acts on one already
+        // `releasing`.
+        if (character.errand === "queue-stand") this.seats.vacated(agentId);
+        continue;
+      }
       this.returnToDesk(character);
     }
 
@@ -5205,6 +5224,11 @@ export class OfficeScene {
       character.path = [];
       character.pathIndex = 0;
       character.walkPhaseMs = 0;
+      // THE WALK HAS ENDED, so a civic seat it was releasing is free now - the
+      // same debt the `returning` arrival settles below, and safe for the same
+      // reason: `vacated` acts only on a claim already in `releasing`, and a
+      // character standing at the counter is by construction not in its bed.
+      this.seats.vacated(character.agentId);
       return;
     }
     this.settleInChair(character);
