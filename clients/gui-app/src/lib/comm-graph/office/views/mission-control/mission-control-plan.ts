@@ -2142,6 +2142,12 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       // the scope has to say so rather than be read off that field. All four of
       // this hall's rooms are the same and say it the same way.
       hostScope: "every-host",
+      // OPEN. Mission control is ONE AMPHITHEATRE and none of its four rooms is
+      // a building: the medbay is an area of the hall floor (0 of 16 tiles
+      // blocked across its top row at 309 agents), the gallery is seating, the
+      // dispatch desk is a counter and Records is a door. A hall has walls; its
+      // areas do not.
+      enclosure: "open",
       // NOTHING DRIVES INTO AN AMPHITHEATRE (C6). The hall plans no road, so
       // there is no tile a kerb could name.
       kerbTile: null,
@@ -2162,6 +2168,12 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       floorIndex: FLOOR_INDEX,
       hostId: null,
       hostScope: "every-host",
+      // OPEN. Mission control is ONE AMPHITHEATRE and none of its four rooms is
+      // a building: the medbay is an area of the hall floor (0 of 16 tiles
+      // blocked across its top row at 309 agents), the gallery is seating, the
+      // dispatch desk is a counter and Records is a door. A hall has walls; its
+      // areas do not.
+      enclosure: "open",
       kerbTile: null,
     },
     {
@@ -2189,6 +2201,12 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       floorIndex: FLOOR_INDEX,
       hostId: null,
       hostScope: "every-host",
+      // OPEN. Mission control is ONE AMPHITHEATRE and none of its four rooms is
+      // a building: the medbay is an area of the hall floor (0 of 16 tiles
+      // blocked across its top row at 309 agents), the gallery is seating, the
+      // dispatch desk is a counter and Records is a door. A hall has walls; its
+      // areas do not.
+      enclosure: "open",
       kerbTile: null,
     },
     {
@@ -2214,6 +2232,12 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       // whole epic, so `Records - 7` means seven records, not seven of whoever
       // happens to be unattributed.
       hostScope: "every-host",
+      // OPEN. Mission control is ONE AMPHITHEATRE and none of its four rooms is
+      // a building: the medbay is an area of the hall floor (0 of 16 tiles
+      // blocked across its top row at 309 agents), the gallery is seating, the
+      // dispatch desk is a counter and Records is a door. A hall has walls; its
+      // areas do not.
+      enclosure: "open",
       kerbTile: null,
     },
   ];

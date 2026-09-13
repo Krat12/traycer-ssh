@@ -8599,6 +8599,8 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
           floorIndex: 0,
           hostId: floor.hostId,
           hostScope: "host",
+          // A COUNTER, which is what this fixture stands in for.
+          enclosure: "open",
           kerbTile: floor.receptionTile,
         };
         return {

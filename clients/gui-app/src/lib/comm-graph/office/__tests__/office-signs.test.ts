@@ -1614,6 +1614,10 @@ describe("officeCivicSignText - the civic counter ladder", () => {
       // widen the field back to optional. One host's room is the default every
       // view but the hall states; a case that wants the shared reading says so.
       hostScope: overrides.hostScope ?? "host",
+      // Same shape and the same reason: a spread `Partial` would widen the
+      // field back to optional. "Walled" is the default because the rooms these
+      // cases letter are rooms; a case about a counter says so.
+      enclosure: overrides.enclosure ?? "walled",
     };
   }
 
@@ -1982,6 +1986,7 @@ describe("officeSignsToDraw - the medbay beacon", () => {
     floorIndex: 0,
     hostId: null,
     hostScope: "host" as const,
+    enclosure: "walled" as const,
     kerbTile: null,
   };
   /**

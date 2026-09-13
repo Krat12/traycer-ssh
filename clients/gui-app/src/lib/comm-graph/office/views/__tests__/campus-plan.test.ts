@@ -2252,6 +2252,7 @@ describe("campus civic plate width", () => {
       floorIndex: 0,
       hostId: null,
       hostScope: "host",
+      enclosure: "walled",
       kerbTile: null,
     };
   }

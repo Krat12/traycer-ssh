@@ -1184,6 +1184,12 @@ function buildPlazaCivic(
       // ONE PLAZA PER BUILDING. Towers and Building stack a storey per host, so
       // every room here serves the one whose plaza it stands on.
       hostScope: "host",
+      // OPEN, like everything else on a plaza. The bay is an AREA of the plaza
+      // floor, not a building on it: measured at 309 agents its top row is 1 of
+      // 17 blocked, and the blocked tiles down its left are beds rather than a
+      // wall. Nothing here shells its civic rooms, which is why all four say
+      // the same thing.
+      enclosure: "open",
       kerbTile: kerbBelow(road, wardDoor.col),
     },
     {
@@ -1198,6 +1204,8 @@ function buildPlazaCivic(
       floorIndex,
       hostId,
       hostScope: "host",
+      // OPEN: a single row of chairs on the walk row, 0 of 16 blocked.
+      enclosure: "open",
       // Nothing drives to the waiting room (C6), so it names no kerb.
       kerbTile: null,
     },
@@ -1223,6 +1231,8 @@ function buildPlazaCivic(
       floorIndex,
       hostId,
       hostScope: "host",
+      // OPEN: the counter and the tile the queue stands on.
+      enclosure: "open",
       kerbTile: kerbBelow(road, deskDoor.col),
     },
     {
@@ -1251,6 +1261,8 @@ function buildPlazaCivic(
       floorIndex,
       hostId,
       hostScope: "host",
+      // OPEN: one tile, and it is a door in the plaza's edge.
+      enclosure: "open",
       // Nobody is collected from the archive (C6).
       kerbTile: null,
     },

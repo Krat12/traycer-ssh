@@ -3011,6 +3011,11 @@ function buildCivicRecord(request: CivicRoomRequest): CivicBuild {
       // one building, so its rooms count that building's things and nothing
       // else's.
       hostScope: "host",
+      // WALLED, because `buildCivicRoom` gives every room this builder serves a
+      // shell - `buildRoomShell` on the same bounds, walls and door - before the
+      // record is made. The shell is why the bounds are 10x9 and 17x7 here
+      // rather than the size of the furniture inside them.
+      enclosure: "walled",
       // Nothing drives to the lounge (C6), so it names no kerb. The infirmary
       // stops a vehicle at the road tile its door opens ONTO - the row below
       // its own bottom wall, because `anchorInfirmaryToRoad` put the room at
@@ -3182,6 +3187,11 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       floorIndex,
       hostId: build.hostId,
       hostScope: "host",
+      // OPEN: these bounds are the RECEPTION COUNTER (C7), a piece of furniture
+      // standing in the lobby. Its tiles are blocked because a counter is
+      // solid, and a painter that read that as a wall would box in the one
+      // room in the layer whose whole point is that you can walk up to it.
+      enclosure: "open",
       // One tile past the counter's right end - the bell end, where the queue
       // forms - rather than on the counter itself.
       kerbTile: kerbOnRoad(road, helpDeskBellCol),
@@ -3209,6 +3219,9 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       floorIndex,
       hostId: build.hostId,
       hostScope: "host",
+      // OPEN: one tile, and that tile is a DOOR in the building's own outer
+      // wall (C5). The wall is the building's, not this room's.
+      enclosure: "open",
       // Nothing drives to the archive: nobody is collected from it (C6).
       kerbTile: null,
     },

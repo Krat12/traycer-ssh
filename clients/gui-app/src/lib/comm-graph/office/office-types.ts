@@ -523,8 +523,44 @@ export interface OfficeCivicRoom {
   /** Stable across plans: `"<host>/<floor>/civic/<kind>"`. */
   readonly civicRoomId: string;
   readonly kind: OfficeCivicKind;
-  /** Outer bounds INCLUDING the room's walls, like an amenity's. */
+  /**
+   * Outer bounds, INCLUDING this room's own walls WHERE IT HAS THEM - which is
+   * `enclosure`'s answer and not this field's.
+   *
+   * This doc used to promise the walls outright, "like an amenity's". Measured
+   * across the five views that plan civic rooms, that is true of four of the
+   * twenty rooms: the Floor's infirmary and waiting room, Campus's sick bay and
+   * records hut. The other sixteen are a counter, a bench row, a door or an
+   * area of a hall, and their bounds are the furniture's extent.
+   */
   readonly bounds: OfficeTileRect;
+  /**
+   * IS THIS ROOM A BUILDING OR A PIECE OF FURNITURE, stated by the plan.
+   *
+   * `"walled"` means the perimeter of `bounds` is this room's own structure: a
+   * ward, a records hut, a lounge with its own four walls. `"open"` means the
+   * bounds are the extent of FURNITURE standing in a larger space - a reception
+   * counter, a row of benches on a lawn, a door in somebody else's wall.
+   *
+   * A PAINTER CANNOT WORK THIS OUT FROM THE TILES, which is why it is a field.
+   * Walkability answers "where is the gap in this wall", not "is there a wall":
+   * a counter's tiles are blocked because a counter is solid, exactly as a
+   * wall's are, and a painter reading blockedness alone draws wall pieces round
+   * an open desk. Measured, that is not an edge case - it is what happened.
+   *
+   * NOR CAN THE KIND ANSWER IT. At 309 agents the perimeter blockedness of the
+   * SAME kind is opposite in two views: `waiting-room` is 17/17 across its top
+   * row and 7/7 down its left on the Floor - a walled room - and 0/16 in
+   * Campus, a bench row on open lawn. `infirmary` is 17/17 in Campus and 10/10
+   * on the Floor but 0/16 in Mission control, whose ward is an area in one
+   * hall. Three of the four kinds differ by view, so only the view knows.
+   *
+   * One direction of this is pinned across every view: a room that says
+   * `"walled"` has its first bounds row fully blocked. The reverse is not
+   * pinnable and must not be asserted - an open room's perimeter is blocked by
+   * its own furniture, which is the confusion this field exists to end.
+   */
+  readonly enclosure: "walled" | "open";
   /** The way in; for the archive, where the walk-out ends. */
   readonly doorTile: OfficeTilePos;
   /** Left tile of the room's sign. */

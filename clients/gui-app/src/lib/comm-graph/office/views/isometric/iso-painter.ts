@@ -297,14 +297,19 @@ function pushRoomWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
  * A civic room's walls: THE SAME TWO EDGES, drawn only where the plan actually
  * blocked a tile.
  *
- * That filter is the whole difference from a team room, and it is not a
- * refinement - it is the rule. A team room's back walls are solid, so its bounds
- * are enough. A civic room's are not: the sick bay leaves its AISLE COLUMN open
- * top to bottom because the door is in it, and the records hut leaves its own
- * door open on its last row. Deriving walls from bounds alone would brick both
- * of them shut, and deriving them from a per-kind table here would be the plan's
- * geometry written out a second place to drift from. Walkability is the plan's
- * own answer to "is this tile a wall", so the painter asks that.
+ * TWO QUESTIONS, not one, and the first wording of this collapsed them. Whether
+ * a civic room HAS walls is `room.enclosure`, which only the plan knows - four
+ * of the twenty rooms the views plan are buildings and sixteen are furniture in
+ * a larger space. Where the GAP in a wall is, is walkability: the sick bay
+ * leaves its aisle column open top to bottom because the door is in it, and the
+ * records hut leaves its own door open on its last row, so bounds alone would
+ * brick both shut.
+ *
+ * Walkability cannot answer the first question, which is the defect this now
+ * carries a guard against: a reception counter's tiles are blocked because a
+ * counter is solid, exactly as a wall's are. And the room KIND cannot answer it
+ * either - a `waiting-room` is a walled room on the Floor and a bench row on
+ * Campus's lawn, measured.
  *
  * Campus only, like the room walls above: a City block IS its own wall, and its
  * civic rooms are blocks.
@@ -316,6 +321,14 @@ function pushCivicWalls(scan: FloorScan, out: IsoSpriteDrawable[]): void {
   const walled = (col: number, row: number): boolean =>
     !layout.walkable[row]?.[col];
   for (const room of isoCivicIn(layout, tiles)) {
+    // ONLY A ROOM THAT HAS WALLS GETS WALL PIECES, and only the plan can say
+    // which those are. Reading blockedness alone walled the FRONT DESK - two
+    // pieces along the reception counter's top and one down its side, round a
+    // desk you are meant to walk up to - because a counter is solid furniture
+    // and blocked reads the same as a wall. The two questions are not one
+    // question: `enclosure` says whether there is a wall, and the filter below
+    // says where the gap in it is.
+    if (room.enclosure !== "walled") continue;
     const { bounds } = room;
     if (bounds.row >= tiles.row && bounds.row < lastRow) {
       const from = Math.max(bounds.col, tiles.col);

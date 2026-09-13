@@ -834,6 +834,11 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
       // quarter stands inside one of them, so every room here counts that
       // host's things - the Towers reading, not the hall's.
       hostScope: "host",
+      // WALLED: the ward is a building. Its top row is its back wall at every
+      // population - 17 of 17 blocked at 309 - and the aisle down its first
+      // column is the way in, which is why the walls it gets are filtered by
+      // walkability rather than taken from the bounds.
+      enclosure: "walled",
       kerbTile: { col: args.bounds.col, row: wardDoor.row },
     },
     {
@@ -857,6 +862,11 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
       floorIndex,
       hostId,
       hostScope: "host",
+      // OPEN: a row of benches on the courtyard lawn. Every tile of these
+      // bounds is walkable - 0 of 16 blocked at 309 - and there is no structure
+      // here to draw. Not the same claim as the desk's below: this one is open
+      // AND unblocked, which is why blockedness looked like an answer.
+      enclosure: "open",
       // Nobody is collected from a bench (C6).
       kerbTile: null,
     },
@@ -874,6 +884,12 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
       floorIndex,
       hostId,
       hostScope: "host",
+      // OPEN, AND THIS IS THE ONE THE PAINTER GOT WRONG. These bounds ARE the
+      // existing reception counter (C7): two tiles of solid furniture, blocked
+      // exactly as a wall is blocked, in the middle of an open gate. Reading
+      // blockedness alone put two wall pieces along the counter's top and one
+      // down its side, round a desk you are meant to walk up to.
+      enclosure: "open",
       kerbTile: deskKerb,
     },
     {
@@ -889,6 +905,10 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
       floorIndex,
       hostId,
       hostScope: "host",
+      // WALLED: the records hut is a building, four by three, with its door on
+      // its last row. Top row 4 of 4 blocked, first column blocked for two of
+      // three rows and open on the third - the door.
+      enclosure: "walled",
       // Nothing drives to the archive (C6).
       kerbTile: null,
     },
