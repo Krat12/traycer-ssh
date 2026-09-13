@@ -654,11 +654,13 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
             //
             // WHAT WAS SAMPLED, stated as a sample. Every PAIR - not each
             // combination's minimum - in 36 combinations of 6 views x 3
-            // populations x 2 zooms, taking only those under 5 px. This case
-            // RUNS five of those views: City returns at the enrolment gate
-            // above, so the City figures below came from the same box
-            // construction with that gate lifted, and they are the two that
-            // matter here:
+            // populations x 2 zooms, taking only those under 5 px. HISTORICAL
+            // NOTE on where the City figures came from: when they were taken
+            // this case ran five views, City returning at the enrolment gate
+            // above, so City was measured with that gate lifted. City is
+            // enrolled now and the case runs all six, so the construction that
+            // produced these is the one running here rather than a reconstruction
+            // of it. The figures are left as they were taken:
             //
             //   3 pairs at exactly 0
             //   2 at -5.6843e-14, 1 at -1.1369e-13, 1 at +1.1369e-13

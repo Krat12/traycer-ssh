@@ -1442,9 +1442,20 @@ describe("planCity", () => {
    * box a click lands on is exactly that sprite's rect - asserted against the
    * painter's own output rather than against a formula repeated here.
    *
-   * IT IS NOT EQUALITY IN ONE DIRECTION ONLY: the sprite is found BY the box and
-   * then its name is checked, so a box over the wrong tile finds no sprite at all
-   * and a box over the right tile with the wrong art fails on the name.
+   * THE SPRITE IS FOUND BY THE SEAT'S OWN TILE, not by the box under test, and
+   * that order is the whole discrimination. Finding it by the box and then
+   * checking its name - which this case did first - passes for any box that lands
+   * on furniture of the right KIND anywhere in the world: exchange two beds'
+   * boxes and each still finds a `bed-iso`, so the case could not tell a ward
+   * from a shuffled one. So the seat's chair tile is projected, the furniture
+   * standing over that corner is picked out by name, and the seat's box is
+   * compared to THAT rectangle.
+   *
+   * CONTAINMENT RATHER THAN A SECOND COPY OF `isoPropOrigin`: a sprite stands
+   * over the corner of the tile it belongs to, and one tile's corner falls inside
+   * exactly one sprite of a given name - beds are two tiles apart and chairs one,
+   * both wider apart than their art. Re-deriving the origin here would only
+   * assert that the test can do the painter's arithmetic.
    */
   it("boxes every civic seat on the furniture the floor pass draws there", () => {
     const layout = planCity(inputFor("triage", 60, VIEWPORT_1280));
@@ -1474,20 +1485,28 @@ describe("planCity", () => {
     );
     // Non-vacuous: this fixture plans a ward and a shelter, so there are seats.
     expect(civicSeats.length).toBeGreaterThan(0);
+    const projector = ISO_PAINTER.projector(layout);
     for (const seat of civicSeats) {
       const box = seat.hitBox;
       if (box === null) throw new Error(`no hitBox on ${seat.seatId}`);
-      const at = painted.filter(
+      const want = seat.kind === "bed" ? "bed-iso" : "lounge-chair-iso";
+      const corner = projector.project(seat.chairTile.col, seat.chairTile.row);
+      const over = painted.filter(
         (entry) =>
-          entry.box.x === box.x &&
-          entry.box.y === box.y &&
-          entry.box.width === box.width &&
-          entry.box.height === box.height,
+          entry.name === want &&
+          entry.box.x <= corner.x &&
+          corner.x < entry.box.x + entry.box.width &&
+          entry.box.y <= corner.y &&
+          corner.y < entry.box.y + entry.box.height,
       );
-      expect(at.length, `no sprite drawn at ${seat.seatId}'s box`).toBe(1);
-      expect(at[0].name).toBe(
-        seat.kind === "bed" ? "bed-iso" : "lounge-chair-iso",
-      );
+      expect(
+        over.length,
+        `${String(over.length)} ${want} sprites over ${seat.seatId}'s own tile`,
+      ).toBe(1);
+      expect(
+        over[0].box,
+        `${seat.seatId}'s box is not its own furniture`,
+      ).toEqual(box);
     }
   });
 
@@ -2019,6 +2038,41 @@ describe("planCity", () => {
         problems.push(`${agent.id} chairTile moved`);
       }
     }
+    // AND THE CIVIC QUARTER, which this case did not look at until read X - and
+    // `civicRoomIdOf` had the identical defect one spelling over, folding the
+    // same district index into every room and seat id. Desks were fixed before
+    // they landed; the quarter arrived later and brought it back, so the two
+    // halves are inspected together from here.
+    const civicOf = (
+      layout: OfficeLayout,
+    ): ReadonlyMap<string, ReadonlyArray<string>> => {
+      const byKind = new Map<string, ReadonlyArray<string>>();
+      for (const room of layout.floors.flatMap((floor) => floor.civic)) {
+        if (room.hostId !== "host-b") continue;
+        byKind.set(room.kind, [
+          room.civicRoomId,
+          ...room.seatIds.map((seatId) => {
+            const seat = layout.seats.get(seatId);
+            const tile = seat === undefined ? null : seat.chairTile;
+            return `${seatId}@${String(tile?.col)},${String(tile?.row)}`;
+          }),
+        ]);
+      }
+      return byKind;
+    };
+    const civicBefore = civicOf(a);
+    const civicAfter = civicOf(b);
+    // Four rooms, so the comparison below is not over an empty map.
+    expect(civicBefore.size).toBe(4);
+    for (const [kind, before] of civicBefore) {
+      const after = civicAfter.get(kind) ?? [];
+      if (after.join(" ") !== before.join(" ")) {
+        problems.push(
+          `host-b's ${kind} became ${after.join(" ")} from ${before.join(" ")}`,
+        );
+      }
+    }
+
     // Before the fix `seatIdOf` folded the district's INDEX into the id, so
     // every one of these 40 seat ids changed the moment host-a's district
     // took index 0 and pushed host-b's to index 1 - even though nothing
@@ -3024,11 +3078,16 @@ describe("planCity's civic quarter", () => {
           `${room.name} runs past its district's frozen width`,
         ).toBeLessThanOrEqual(limit);
       }
-      // Non-vacuous: the grown district really did reach the capped ward, which
-      // is the width the frozen budget was not chosen for.
+      // Non-vacuous, and EXACT: the grown district really did reach the CAPPED
+      // ward, which is the width the frozen budget was not chosen for. Four
+      // hundred agents over two hosts is two hundred each, which is the bed cap
+      // eight times over, so the ward is one wall column plus eight two-tile beds
+      // - seventeen. The earlier `>= 9` was satisfied by a FOUR-bed ward, which is
+      // the hundred-agent width and not a cap at all, so it could have passed
+      // while the growth this case is about had stopped less than half way.
       const ward = floor.civic.find((room) => room.kind === "infirmary");
       if (ward === undefined) throw new Error("no ward");
-      expect(ward.bounds.cols).toBeGreaterThanOrEqual(9);
+      expect(ward.bounds.cols, "the ward is not at its cap").toBe(17);
     }
   });
 

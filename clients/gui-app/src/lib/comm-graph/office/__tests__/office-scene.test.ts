@@ -5707,21 +5707,28 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
    * READ S'S S3: the eviction must not steal an ARCHIVE ROUTE.
    *
    * An archived agent walks to the archive door and disappears. If it was on a
-   * bench when the news arrived, `startLeaving` sent it to the door while
-   * leaving its errand target in place - the only route starter here that did -
-   * so an eviction reading targets found this LEAVING character and called
-   * `returnToDesk` on it. Its walk to the door became a walk to its chair, it
-   * was seated instead of departing, and with no further sync the archived body
-   * stayed in the office.
+   * bench when the news arrived, `startLeaving` sent it to the door while leaving
+   * its errand target in place, so an eviction reading targets found this LEAVING
+   * character and called `returnToDesk` on it. Its walk to the door became a walk
+   * to its chair, it was seated instead of departing, and with no further sync the
+   * archived body stayed in the office.
    *
    * NO SECOND SYNC after the archival, deliberately: a sync would re-run the
    * archival pass and start the walk again, hiding exactly the loss this case is
    * about. Ticks only.
    *
-   * Confined to the ARCHIVAL route, and that is measured rather than assumed: of
-   * the six route starters in this class, `returnToDesk`, both queue branches and
-   * the civic walk all clear the target, so a reception route was never at risk.
-   * Leaving was the one that did not.
+   * WHAT THIS IS CONFINED TO, corrected. This preamble used to say leaving was
+   * the ONE route starter that retained its target, and called the six-starter
+   * inventory measured; read W found both halves wrong. The six creators are the
+   * six `findOfficePath` calls - `spawnAtDoor`, `walkTo`, `startLeaving`,
+   * `startQueueWalk`, `startCivicWalk`, `startErrand` - `walkTo` retains on both
+   * exits, its caller `returnToDesk` keeps the target through a successful walk
+   * ON PURPOSE (`claimedSpotKeys` reserves the spot of a walker coming back), and
+   * `startErrand` sets one. There is no invariant that a route change clears it.
+   * What is true, and all this case needs: a DEPARTURE's target is obsolete,
+   * because leaving is not an errand return and the bench will never be reached;
+   * both queue branches clear theirs, so a reception route was never at risk. The
+   * return's own re-eviction is the separate defect, pinned by the case above.
    */
   it("lets an archived stroller leave, even as its bench is claimed", (context) => {
     if (!CIVIC_ROOMS_EXPECTED[viewId]) {
@@ -5918,19 +5925,188 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     expect(bookOf(scene).occupant(sitter.seat.seatId)).not.toBe(sitter.id);
     expect(feetFromSeat(scene, sitter.id, home)).toBeGreaterThan(0);
 
+    // EQUALITY ACROSS THE SYNC, not "no further from home", and the difference
+    // is a mutant: a sweep that evicts once and then SNAPS an already-returning
+    // stroller onto its chair on the next sync satisfies "not further" and
+    // "arrived" together, so neither of those establishes what this case claims.
+    // A sync moves nobody, so the coordinates are the assertion. The tick either
+    // side of it is the positive half: a scene that froze this walker would pass
+    // the equality forever.
     let arrived = false;
+    let moved = false;
     for (let step = 0; step < CIVIC_WALK_TICKS && !arrived; step += 1) {
+      const resting = characterRect(frameOf(scene), sitter.id);
       scene.tick(100);
-      const walked = feetFromSeat(scene, sitter.id, home);
+      const walked = characterRect(frameOf(scene), sitter.id);
+      if (walked.x !== resting.x || walked.y !== resting.y) moved = true;
       scene.sync(claimed);
-      const synced = feetFromSeat(scene, sitter.id, home);
+      const synced = characterRect(frameOf(scene), sitter.id);
       expect(
-        synced,
-        `sync ${String(step)} sent ${sitter.id} back from ${String(walked)} to ${String(synced)}`,
-      ).toBeLessThanOrEqual(walked);
+        `${String(synced.x)},${String(synced.y)}`,
+        `sync ${String(step)} moved ${sitter.id} off ${String(walked.x)},${String(walked.y)}`,
+      ).toBe(`${String(walked.x)},${String(walked.y)}`);
       arrived = onSeatIn(scene, frameOf(scene), home) === sitter.id;
     }
+    expect(moved, `${sitter.id} never moved across a tick`).toBe(true);
     expect(arrived, `${sitter.id} never got home from the bench`).toBe(true);
+  });
+
+  /** The four host-b agents, plus the host-a arrival that renumbered them. */
+  const HOST_B_WARD: ReadonlyArray<OfficeAgentInput> = [
+    agent({ id: "root-b", hostId: "host-b", createdAt: 1 }),
+    agent({ id: "alpha", hostId: "host-b", parentId: "root-b", createdAt: 2 }),
+    agent({ id: "beta", hostId: "host-b", parentId: "root-b", createdAt: 3 }),
+    agent({ id: "gamma", hostId: "host-b", parentId: "root-b", createdAt: 4 }),
+  ];
+  const HOST_A_ARRIVAL = agent({
+    id: "root-a",
+    hostId: "host-a",
+    createdAt: 9,
+  });
+
+  /** Where the book says this agent is, as an id and a tile, or `null`. */
+  function bedOf(scene: OfficeScene, agentId: string): string | null {
+    const book = bookOf(scene);
+    if (book.civicClaimOf(agentId) !== "bed") return null;
+    const seat = book.effectiveSeat(agentId);
+    if (seat === null) return null;
+    return `${seat.seatId}@${String(seat.chairTile.col)},${String(seat.chairTile.row)}`;
+  }
+
+  /**
+   * READ X'S X2: A CIVIC ROOM'S ID IS WHAT THE ROOM IS, NEVER WHERE IT CAME IN
+   * THE ORDER.
+   *
+   * `civicRoomIdOf` folded the FLOOR INDEX into every civic room id, and a floor
+   * index is a position in the partition's host-id ordering - so a host arriving
+   * lexically earlier renamed the rooms and every seat inside them on every
+   * later floor. The seat book then had nothing to adopt: it dropped the claims
+   * held by the patients lying in those beds, the same sync re-claimed the ward
+   * in civic order, and two agents who had not moved exchanged beds. `seatIdOf`
+   * in `city-plan.ts` had this defect for DESKS and was fixed before it landed;
+   * the civic ids brought it back in a second spelling.
+   *
+   * THE SEQUENCE IS THE DISCRIMINATOR, and every step of it is load-bearing.
+   * Alpha and beta fail and take the ward's two beds; alpha RECOVERS, freeing
+   * bed 0; gamma fails and takes it. That leaves the ward held in an order -
+   * beta on one bed, gamma on the other - that a re-claim from scratch does not
+   * reproduce, which is what makes the swap visible at all. A ward filled in one
+   * pass would be re-filled identically and the renaming would cost nothing
+   * anybody could see.
+   *
+   * REDUCED MOTION AND A SETTLED FEED THROUGHOUT, with a live cursor: the beds
+   * are taken instantly rather than walked to, so what the case reads is the
+   * BOOK's answer and not a walk in progress.
+   *
+   * Towers and Building pass this without the fix, and that is not evidence they
+   * were safe: a scene carries its previous layout, which keeps a known host's
+   * storeys in place, and their ids come apart the moment a plan has no carry -
+   * measured in `office-plans`, host-b's civic storey moving 0 -> 3 and all ten
+   * ids lost. The Floor, Campus and City lose them with or without it.
+   */
+  it("keeps a held bed's id and tile when a lexically earlier host arrives", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const visible = new Set(HOST_B_WARD.map((person) => person.id));
+    const scene = newScene();
+    const wardInput = (
+      statusById: ReadonlyMap<string, OfficeAgentStatus>,
+      agents: ReadonlyArray<OfficeAgentInput>,
+      ids: ReadonlySet<string>,
+    ): OfficeSceneInput =>
+      sceneInput({
+        agents,
+        visibleAgentIds: ids,
+        statusById,
+        reducedMotion: true,
+        feedSettled: true,
+      });
+
+    // BOTH BEDS TAKEN, by alpha and beta.
+    const filled = new Map<string, OfficeAgentStatus>([
+      ["root-b", "idle"],
+      ["alpha", "failure"],
+      ["beta", "failure"],
+      ["gamma", "idle"],
+    ]);
+    scene.sync(wardInput(filled, HOST_B_WARD, visible));
+    expect(bedOf(scene, "alpha"), "alpha never reached a bed").not.toBeNull();
+    expect(bedOf(scene, "beta"), "beta never reached a bed").not.toBeNull();
+
+    // ALPHA RECOVERS AND GAMMA FAILS, so the ward is held by beta and gamma in
+    // an order no single pass would produce.
+    const swapped = new Map<string, OfficeAgentStatus>([
+      ["root-b", "idle"],
+      ["alpha", "idle"],
+      ["beta", "failure"],
+      ["gamma", "failure"],
+    ]);
+    scene.sync(wardInput(swapped, HOST_B_WARD, visible));
+    const bedBefore = new Map([
+      ["beta", bedOf(scene, "beta")],
+      ["gamma", bedOf(scene, "gamma")],
+    ]);
+    expect(
+      bedBefore.get("beta"),
+      "beta lost its bed on recovery",
+    ).not.toBeNull();
+    expect(
+      bedBefore.get("gamma"),
+      "gamma never took the free bed",
+    ).not.toBeNull();
+    // HOST-B'S OWN GROUND, found through a seat rather than by host: Mission
+    // control's hall belongs to every host at once, and asking it for host-b's
+    // floor would ask a question the view does not have an answer to.
+    const bandOf = (): string => {
+      const seat = bookOf(scene).assignedSeat("beta");
+      const floor =
+        seat === null ? undefined : layoutOf(scene).floors[seat.floorIndex];
+      return JSON.stringify(floor?.bounds ?? null);
+    };
+    const bandBefore = bandOf();
+
+    // ONE IDLE AGENT ON A LEXICALLY EARLIER HOST. Host-b's roster and every
+    // status it holds are untouched, so nothing about host-b has changed except
+    // where its floor now sits in the ordering.
+    const withHostA = [...HOST_B_WARD, HOST_A_ARRIVAL];
+    const alsoA = new Map(swapped);
+    alsoA.set(HOST_A_ARRIVAL.id, "idle");
+    scene.sync(
+      wardInput(
+        alsoA,
+        withHostA,
+        new Set(withHostA.map((person) => person.id)),
+      ),
+    );
+
+    // THE ID IS THE UNIVERSAL PROMISE; THE TILE IS THE PROMISE OF A VIEW THAT
+    // KEEPS THE GROUND. Three of these views move host-b's floor when host-a
+    // arrives - the Floor stacks storeys, Campus and the storeyed pair re-band -
+    // and a bed that moved with its own ward has kept every promise it made. So
+    // the tile is asserted exactly where the band is unchanged, which is City's
+    // frozen quarter and Mission control's single hall, and read from the run
+    // rather than from a list of view names.
+    const problems: string[] = [];
+    const bandAfter = bandOf();
+    const groundHeld = bandAfter === bandBefore;
+    for (const [id, before] of bedBefore) {
+      const after = bedOf(scene, id);
+      const idOf = (held: string | null): string =>
+        held === null ? "no bed" : (held.split("@")[0] ?? held);
+      if (idOf(after) !== idOf(before)) {
+        problems.push(
+          `${id}'s bed id became ${idOf(after)} from ${idOf(before)}`,
+        );
+      }
+      if (groundHeld && after !== before) {
+        problems.push(
+          `${id}'s bed tile became ${String(after)} from ${String(before)}, on ground that did not move`,
+        );
+      }
+    }
+    expect(problems).toEqual([]);
   });
 
   it("leaves outbreak overflow at its desk with its glyph when the ward is full", (context) => {
