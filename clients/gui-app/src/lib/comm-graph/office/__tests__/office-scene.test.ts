@@ -5544,6 +5544,132 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     expect(rectOnProjectedPath(layout, path, lastRect)).toBe(true);
   });
 
+  /**
+   * FINDING 7's fixture: alpha seated in a lounge chair (`awaiting`) at
+   * cursor 100, archived at cursor 900 - the archived-agent precedent above,
+   * plus a civic claim to release. Local, not inline in the `it`, so the
+   * two motion modes below stay a two-line call each rather than doubling
+   * the case's own complexity.
+   */
+  function archivedLoungeHolder(reducedMotion: boolean): {
+    readonly scene: OfficeScene;
+    readonly loungeSeatId: string;
+  } {
+    const leaver = agent({ id: "alpha", createdAt: 1, archivedAt: 900 });
+    const statuses = new Map<string, OfficeAgentStatus>([
+      ["alpha", "awaiting"],
+      ["beta", "idle"],
+    ]);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: [leaver, BETA],
+        visibleAgentIds: BOTH,
+        statusById: statuses,
+        cursorMs: 100,
+        reducedMotion,
+      }),
+    );
+    const loungeSeat = bookOf(scene).effectiveSeat("alpha");
+    if (loungeSeat === null || loungeSeat.kind !== "lounge") {
+      throw new Error("expected alpha to hold a lounge chair before archiving");
+    }
+    scene.sync(
+      sceneInput({
+        agents: [leaver, BETA],
+        visibleAgentIds: BOTH,
+        statusById: statuses,
+        cursorMs: 900,
+        reducedMotion,
+      }),
+    );
+    return { scene, loungeSeatId: loungeSeat.seatId };
+  }
+
+  /** Ticks until alpha is gone from the frame, or gives up. */
+  function tickUntilDeparted(scene: OfficeScene): boolean {
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      if (!hasCharacter(frameOf(scene), "alpha")) return true;
+    }
+    return false;
+  }
+
+  it("frees a lounge seat only once its archived holder actually departs, in both motion modes", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+
+    // Reduced motion: `sendArchivedHome` deletes the character outright on
+    // this same sync, so there is no walk to wait out - the seat has to be
+    // free the instant the archive sync runs. Pre-fix, `endClaim` left the
+    // claim `releasing` with nobody left alive to ever call `vacated`, and
+    // the seat stayed in `occupancy()` for the life of the scene.
+    const still = archivedLoungeHolder(true);
+    expect(
+      bookOf(still.scene).occupancy().get(still.loungeSeatId),
+    ).toBeUndefined();
+    expect(hasCharacter(frameOf(still.scene), "alpha")).toBe(false);
+
+    // Motion on: alpha is WALKING OUT. Right after the archive sync the seat
+    // is still RESERVED - 2b's rule, that only `vacated` on arrival ends a
+    // claim - and alpha is headed for the door, not back to its desk.
+    // Pre-fix, the release loop's unconditional `returnToDesk` overwrote the
+    // departure `sendArchivedHome` had already started, and alpha never left.
+    const walking = archivedLoungeHolder(false);
+    expect(bookOf(walking.scene).occupancy().get(walking.loungeSeatId)).toBe(
+      "alpha",
+    );
+    expect(tickUntilDeparted(walking.scene)).toBe(true);
+    expect(
+      bookOf(walking.scene).occupancy().get(walking.loungeSeatId),
+    ).toBeUndefined();
+  });
+
+  it("keeps a civic holder's summons to the counter when its status flips to attention", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const alpha = epic.agents[2].id;
+
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: new Map(idle).set(alpha, "awaiting"),
+      }),
+    );
+    const seated = tickUntilSeatedIn(scene, [alpha], "lounge");
+    if (seated === undefined) throw new Error(`expected ${alpha} in a lounge`);
+
+    // Live motion, so this is a real summons under way, not a snapshot: the
+    // point is that it keeps GOING once started, not merely that it starts.
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: new Map(idle).set(alpha, "attention"),
+      }),
+    );
+    // `needsReception` is `attention`-only and `civicWantOf` answers neither
+    // `attention` nor `idle`, so the flip drops the civic want and the
+    // release loop fires for alpha's lounge claim on this very sync - the
+    // same sync `updateReceptionQueue` (which runs first) starts the queue
+    // walk on. Pre-fix, the release loop's unconditional `returnToDesk` ran
+    // straight after and overwrote that walk with one back to alpha's own
+    // desk. `whereabouts` reading "Help desk" is `inReceptionQueue` (`errand
+    // === "queue-out" || "queue-stand"`) made public: this is that check
+    // asked through the one door a test outside `describe.each`'s own scope
+    // (which owns `inReceptionQueue`) can ask it through.
+    expect(scene.whereabouts(alpha)).toBe("Help desk");
+  });
+
   it("never re-plans on a status flip", (context) => {
     if (!CIVIC_ROOMS_EXPECTED[viewId]) {
       context.skip(`${viewId} plans no civic rooms`);
@@ -5697,21 +5823,61 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
   });
 
+  /**
+   * REBUILT (see the class doc's finding-7 note): the original fixture
+   * crashed all twelve agents via `outbreakScript`, so nobody was ever idle
+   * and the ordinary-errand half of `assertBudgets` below counted zero on
+   * every tick of every run - `errands <= MAX_CONCURRENT_ERRANDS` held
+   * whether or not `civic-out` was ever charged against that cap, because
+   * there was never anything to charge. The two budgets read as
+   * INDEPENDENT only if ordinary errands can be OBSERVED reaching the cap
+   * while civic walkers are away too, on the same tick - not merely
+   * bounded by it on runs where nothing tested the bound.
+   *
+   * 64 idle agents (`MAX_CONCURRENT_ERRANDS * 2`, `CAP_CREW`'s own ratio
+   * above) plus 10 crashed and 10 waiting: enough idle heads that ordinary
+   * errands can saturate 32 on their own, and enough crashed/waiting ones
+   * that some are still walking to a bed or a lounge chair while that
+   * happens - civic-out is a NARROW window (the walk, not the sit), so it
+   * needs its own population rather than borrowing overflow from the ward.
+   *
+   * THE MUTANT THIS DEFENDS AGAINST: `civic-out` added to `AWAY_ERRANDS`.
+   * That mutant makes `errandCount()` (which gates `updateErrandStarts`)
+   * count civic walkers against the same 32, so on any tick with `k` civic
+   * walkers away, ordinary errands can reach at most `32 - k` - never the
+   * full 32. `peakErrandsWhileCivicWalking` is read ONLY on ticks where a
+   * civic walker is also away, which is what makes it the number that
+   * mutant actually bends.
+   */
   it("keeps civic walkers per floor within that floor's civic seats, and errands at 32 independently", (context) => {
     if (!CIVIC_ROOMS_EXPECTED[viewId]) {
       context.skip(`${viewId} plans no civic rooms`);
       return;
     }
-    const epic = makeTestEpic("one-team", 12, 9);
-    const idle = idleStatusById(epic);
+    const IDLE_COUNT = MAX_CONCURRENT_ERRANDS * 2;
+    const CRASHED_COUNT = 10;
+    const WAITING_COUNT = 10;
+    const epic = makeTestEpic(
+      "one-team",
+      IDLE_COUNT + CRASHED_COUNT + WAITING_COUNT,
+      1,
+    );
     const visible = visibleIdsOf(epic);
-    const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
+    const pool = epic.agents.map((person) => person.id);
+    const crashed = pool.slice(0, CRASHED_COUNT);
+    const waiting = pool.slice(CRASHED_COUNT, CRASHED_COUNT + WAITING_COUNT);
+    const statuses = new Map<string, OfficeAgentStatus>(
+      epic.agents.map((person) => [person.id, "idle" as const]),
+    );
+    for (const id of crashed) statuses.set(id, "failure");
+    for (const id of waiting) statuses.set(id, "awaiting");
+
     const scene = newScene();
     scene.sync(
       sceneInput({
         agents: epic.agents,
         visibleAgentIds: visible,
-        statusById: outbreak[0],
+        statusById: statuses,
       }),
     );
     const layout = layoutOf(scene);
@@ -5722,18 +5888,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // bounded - `peakWalkers` has to reach at least one before the bound it
     // clears means anything.
     let peakWalkers = 0;
+    let peakErrandsWhileCivicWalking = 0;
 
     const assertBudgets = (): void => {
       const book = bookOf(scene);
       const frame = frameOf(scene);
       const civicWalkers = new Map<number, number>();
       let errands = 0;
+      let civicWalkersTotal = 0;
       for (const id of book.knownAgentIds()) {
         if (!frame.awayAgentIds.has(id)) continue;
         const civic = book.civicClaimOf(id);
         if (civic !== null) {
           const floorIndex = book.effectiveSeat(id)?.floorIndex ?? 0;
           civicWalkers.set(floorIndex, (civicWalkers.get(floorIndex) ?? 0) + 1);
+          civicWalkersTotal += 1;
           continue;
         }
         const where = scene.whereabouts(id);
@@ -5750,6 +5919,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
         );
       }
       expect(errands).toBeLessThanOrEqual(MAX_CONCURRENT_ERRANDS);
+      if (civicWalkersTotal > 0) {
+        peakErrandsWhileCivicWalking = Math.max(
+          peakErrandsWhileCivicWalking,
+          errands,
+        );
+      }
     };
 
     assertBudgets();
@@ -5757,10 +5932,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       scene.tick(100);
       assertBudgets();
     }
-    // Twelve agents crash at once into a ward with fewer beds than that, so
-    // somebody walked: a run where nobody did would have cleared every bound
+    // A run where nobody walked to a civic seat would clear every bound
     // above without testing one of them.
     expect(peakWalkers).toBeGreaterThan(0);
+    // THE INDEPENDENCE CLAIM ITSELF: ordinary errands reached the FULL cap
+    // on some tick where a civic walker was also away. Pre-fix (`civic-out`
+    // charged to the same budget), this is strictly less than 32 whenever
+    // `peakWalkers` is reached at the same time ordinary errands are near
+    // capacity.
+    expect(peakErrandsWhileCivicWalking).toBe(MAX_CONCURRENT_ERRANDS);
   });
 
   it("names Infirmary and Lounge from whereabouts, and Help desk from the queue", (context) => {
