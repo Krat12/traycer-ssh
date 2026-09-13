@@ -2218,17 +2218,29 @@ describe("partitionOfficePopulation", () => {
  * "archived after the cursor", and dropping the reveal filter kills "not yet
  * revealed".
  *
- * THE MUTANT OF THE ACTUAL DEFECT - count `paint === "archived"` inside the
- * fixed function - CANNOT BE WRITTEN, and that is the strongest thing here.
- * `officeAgentStatuses` needs seven inputs; this function is given four of the
- * pieces (`agents`, `cursorMs`, `visibleAgentIds`) and has no `events`,
- * `activityTiers`, `attentionAgentIds` or `failureAgentIds`, and
- * `OfficePopulation` carries none of them either. The primary case's own
- * defect is the sharpest instance: an archived sender reads `awaiting` because
- * of `events`, which is the one missing input that is NOT live-only - it
- * survives a historical cursor - and it is unreachable from here. The paint is
- * not merely unread now; it is uncomputable, so the defect class is gone by
- * construction rather than by vigilance.
+ * THE MUTANT OF THE ACTUAL DEFECT DOES EXIST, and both cases above kill it
+ * numerically. An earlier version of this comment claimed it could not be
+ * written, on the grounds that the full display status needs seven inputs this
+ * function is not given. That reasoning was one step too short: the defect
+ * never needed the full status, only the part of it that separates these
+ * records from the rest.
+ *
+ * `OfficePopulationMember.hot` is that part. `sealMembers` computes it as
+ * `isOfficeHotStatus(statusById.get(id))`, and `OFFICE_STATUS_IS_HOT` marks
+ * `failure`, `attention`, `awaiting` and `working` hot while `archived` is
+ * not - which is exactly the four statuses that outrank `archived` in
+ * `statusFor`. So for a revealed record archived as of the cursor, `hot` is
+ * true if and only if the paint overrode the archive. `if (member.hot)
+ * continue;` in the member loop therefore reproduces the original undercount
+ * from this function's OWN inputs, and it does: the sender case and the
+ * failure-flag case both fail on `expected Map{} to deeply equal
+ * Map{ 'host-a' => 1 }`, while the two guards stay green.
+ *
+ * THE PARTITION IS NOT PAINT-FREE. It carries the paint's hot/not-hot
+ * projection, and that projection is enough. The rule this function keeps is
+ * therefore a rule and not a structural guarantee: **count from `archivedAt`
+ * and the cursor, and never consult `member.hot`** - it is a status in
+ * disguise, and the archive is not a question about heat.
  */
 describe("officeArchivedByHost", () => {
   /**

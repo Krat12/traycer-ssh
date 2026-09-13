@@ -874,6 +874,16 @@ export function partitionOfficePopulation(
  * An agent the cursor has not revealed is not counted. That is the same filter
  * `officeAgentStatuses` applies before it gives anybody a status, and it is
  * asked for directly here rather than inferred from a status map's keys.
+ *
+ * NEVER CONSULT `member.hot` IN THIS LOOP. It is the paint in disguise:
+ * `sealMembers` computes it as `isOfficeHotStatus(statusById.get(id))`, and the
+ * four statuses that outrank `archived` in `statusFor` - `failure`,
+ * `attention`, `awaiting`, `working` - are exactly the hot ones, while
+ * `archived` is not. So for a record archived as of the cursor, `hot` is true
+ * precisely when the paint overrode the archive, and one `if (member.hot)
+ * continue;` here would rebuild the whole undercount this function was rewritten
+ * to remove. Dropping `statusById` from the signature narrowed the way back in;
+ * it did not close it, because the partition carries the paint's projection.
  */
 export function officeArchivedByHost(args: {
   readonly partition: OfficePopulation;
