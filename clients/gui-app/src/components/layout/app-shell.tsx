@@ -166,8 +166,11 @@ export function AppShell(props: AppShellProps) {
               {showStatusBar && !isMobile ? <AppStatusBar /> : null}
               <OpenFolderDialog />
               <RemoteFolderPickerDialog />
-              {/* The spotlight tours' one mount: beside the picker it
-                suspends for, outside every epic surface it spotlights. */}
+              {/* The onboarding flow's one mount - the first-run welcome
+                modal and the spotlight tours: inside the shell so it has the
+                router, the dialog primitives and the toaster, beside the
+                picker the tours suspend for and outside every epic surface
+                they spotlight; gates itself on sign-in and desktop. */}
               <OnboardingFlowHost />
               <QuitInterceptBridge />
               {/* Mounted unconditionally: the bridge itself reads the action's

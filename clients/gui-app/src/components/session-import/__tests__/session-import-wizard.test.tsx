@@ -183,7 +183,7 @@ function TestWizard(props: {
     (state) =>
       sessionImportRunFor(state, streamBinding.hostId).status === "idle",
   );
-  const scan = useSessionImportScan(runIdle);
+  const scan = useSessionImportScan(runIdle, null);
   return (
     <SessionImportWizard
       {...props}
