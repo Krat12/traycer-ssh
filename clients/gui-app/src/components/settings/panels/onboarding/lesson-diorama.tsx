@@ -77,10 +77,12 @@ const CAPTION: Readonly<Record<LessonDioramaScene, string>> = {
  * Reduced motion is the settled frame with nothing scheduled: task 0 for the
  * tabs lesson, the finished two-pane split for the other. No cycle timers, no
  * drag pill, no pane entry fade, and no CSS colour/grid transitions either —
- * the timer half alone would leave the grid sliding open on mount.
+ * the timer half alone would leave the grid sliding open on mount. The
+ * preference is read LIVE (`useLiveReducedMotion`), so flipping it while the
+ * demo is open settles the frame at once rather than at the next mount.
  */
 export function LessonDiorama(props: LessonDioramaProps) {
-  const reducedMotion = useReducedMotion() === true;
+  const reducedMotion = useLiveReducedMotion();
   return (
     <LessonDioramaPlayer
       key={props.scene}
@@ -88,6 +90,30 @@ export function LessonDiorama(props: LessonDioramaProps) {
       reducedMotion={reducedMotion}
     />
   );
+}
+
+/**
+ * `prefers-reduced-motion`, live. Motion's `useReducedMotion` is the first
+ * read only — it is `useState(prefersReducedMotion.current)` with no setter,
+ * and its own media listener updates a module ref that never re-renders — so
+ * a demo left open while the OS setting changes would keep its timers and
+ * drag motion. This keeps that initial read (it is what the rest of the app's
+ * motion decides by) and subscribes to the media query for the changes.
+ */
+function useLiveReducedMotion(): boolean {
+  const initial = useReducedMotion() === true;
+  const [reduced, setReduced] = useState(initial);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = (event: MediaQueryListEvent): void => {
+      setReduced(event.matches);
+    };
+    query.addEventListener("change", apply);
+    return () => {
+      query.removeEventListener("change", apply);
+    };
+  }, []);
+  return reduced;
 }
 
 function LessonDioramaPlayer(props: {
@@ -119,11 +145,23 @@ function LessonDioramaPlayer(props: {
     return () => window.clearTimeout(id);
   }, [scene, running, phase]);
 
-  const activeTaskIndex = scene === "task-tabs" ? taskIndex : 0;
+  // The settled frame under reduced motion is DERIVED, not stored: the
+  // preference can flip while a cycle is mid-way, and deriving it means the
+  // very next render shows task 0 / the finished split with nothing to wait
+  // for. The stored state is reset alongside so that, if the preference flips
+  // back, the loop starts over from its first beat rather than from wherever
+  // it was interrupted.
+  const activeTaskIndex =
+    scene === "task-tabs" && !reducedMotion ? taskIndex : 0;
   const taskScene = taskSceneFor(activeTaskIndex);
   const navigationPhase: NavigationPhase =
     scene === "split-screen" && reducedMotion ? "split-2" : phase;
   const animate = !reducedMotion;
+  useEffect(() => {
+    if (!reducedMotion) return;
+    setTaskIndex(0);
+    setPhase("single");
+  }, [reducedMotion]);
 
   return (
     <div className="w-full max-w-full space-y-3">
@@ -169,6 +207,7 @@ function LessonDioramaPlayer(props: {
           {scene === "split-screen" && animate ? (
             <NavigationDragDemo
               phase={navigationPhase}
+              paused={paused}
               layerRef={dragLayerRef}
             />
           ) : null}
@@ -204,11 +243,22 @@ function LessonDioramaPlayer(props: {
   );
 }
 
+/**
+ * The drag beat: a drop zone lighting up and the agent's pill travelling from
+ * its sidebar row to it. Both run on Motion's own clock, which the phase
+ * timers do not own, so `paused` has to reach them too: paused mid-drag, the
+ * beat becomes a STILL — zone lit, pill parked on its row — rather than a
+ * pill that finishes its journey under a "Play demo" label. Play restarts the
+ * beat from its first frame (the keys change, and the phase timer restarts
+ * with the phase's full duration), so the still is the drag "about to
+ * happen", which is what it looks like.
+ */
 function NavigationDragDemo(props: {
   readonly phase: NavigationPhase;
+  readonly paused: boolean;
   readonly layerRef: { readonly current: HTMLDivElement | null };
 }) {
-  const { phase, layerRef } = props;
+  const { phase, paused, layerRef } = props;
   const dragging = phase === "drag-1" || phase === "drag-2";
   const second = phase === "drag-2";
   const agent = second ? NAV_DROP_AGENTS[1] : NAV_DROP_AGENTS[0];
@@ -247,9 +297,14 @@ function NavigationDragDemo(props: {
     <>
       <m.div
         data-testid="lesson-diorama-drop-zone"
-        key={`zone-${phase}`}
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: [0, 0.55, 0.9, 0.82], scale: [0.98, 1, 1.02, 1] }}
+        data-paused={paused ? "" : undefined}
+        key={`zone-${phase}-${paused}`}
+        initial={paused ? false : { opacity: 0, scale: 0.98 }}
+        animate={
+          paused
+            ? { opacity: 0.82, scale: 1 }
+            : { opacity: [0, 0.55, 0.9, 0.82], scale: [0.98, 1, 1.02, 1] }
+        }
         transition={{ duration: 1.1, ease: EASE, times: [0, 0.28, 0.72, 1] }}
         className={cn(
           "pointer-events-none absolute z-10 flex flex-col items-center justify-center rounded-md border border-dashed border-primary/55 bg-primary/10 text-center text-primary shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.1),0_0_2rem_-1rem_hsl(var(--primary)/0.85)]",
@@ -263,14 +318,23 @@ function NavigationDragDemo(props: {
       </m.div>
       <m.div
         data-testid="lesson-diorama-drag-pill"
-        key={`pill-${phase}-${startLeft}-${startTop}`}
-        initial={{ left: startLeft, top: startTop, opacity: 0, scale: 0.96 }}
-        animate={{
-          left: [startLeft, startLeft, "78%", "78%"],
-          top: [startTop, startTop, endTop, endTop],
-          opacity: [0, 1, 1, 0],
-          scale: [0.96, 1.03, 1, 0.98],
-        }}
+        data-paused={paused ? "" : undefined}
+        key={`pill-${phase}-${paused}-${startLeft}-${startTop}`}
+        initial={
+          paused
+            ? false
+            : { left: startLeft, top: startTop, opacity: 0, scale: 0.96 }
+        }
+        animate={
+          paused
+            ? { left: startLeft, top: startTop, opacity: 1, scale: 1 }
+            : {
+                left: [startLeft, startLeft, "78%", "78%"],
+                top: [startTop, startTop, endTop, endTop],
+                opacity: [0, 1, 1, 0],
+                scale: [0.96, 1.03, 1, 0.98],
+              }
+        }
         transition={{ duration: 1.45, ease: EASE, times: [0, 0.18, 0.76, 1] }}
         className="pointer-events-none absolute z-30 flex w-[min(30%,12.5rem)] items-center gap-1.5 rounded-md border border-primary/45 bg-popover/95 px-2 py-1.5 text-code-xs text-popover-foreground shadow-xl backdrop-blur-sm"
       >

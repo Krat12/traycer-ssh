@@ -226,6 +226,41 @@ describe("LessonDiorama", () => {
       expect(frame.getAttribute("data-phase")).toBe("drag-2");
     });
 
+    it("pause mid-drag stills the drag beat; play replays it from the start", () => {
+      renderScene("split-screen");
+      advance(NAVIGATION_PHASE_MS["single"]);
+      const frame = screen.getByTestId("lesson-diorama-frame");
+      expect(frame.getAttribute("data-phase")).toBe("drag-1");
+      expect(
+        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+      ).toBe(false);
+
+      fireEvent.click(screen.getByRole("button", { name: "Pause demo" }));
+      // The phase clock is stopped AND the Motion-driven pill and drop zone
+      // are rendered as a still: parked on the row, zone lit. Without the
+      // second half the pill would finish its journey under "Play demo".
+      advance(10000);
+      expect(frame.getAttribute("data-phase")).toBe("drag-1");
+      expect(
+        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+      ).toBe(true);
+      expect(
+        screen.getByTestId("lesson-diorama-drop-zone").hasAttribute("data-paused"),
+      ).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      fireEvent.click(screen.getByRole("button", { name: "Play demo" }));
+      expect(
+        screen.getByTestId("lesson-diorama-drag-pill").hasAttribute("data-paused"),
+      ).toBe(false);
+      // The beat restarts with the phase's full duration, not the remainder.
+      advance(NAVIGATION_PHASE_MS["drag-1"] - 1);
+      expect(frame.getAttribute("data-phase")).toBe("drag-1");
+      advance(1);
+      expect(frame.getAttribute("data-phase")).toBe("split-1");
+      expect(splitPaneHarnesses()).toEqual(["claude"]);
+    });
+
     it("clears the phase timeout on unmount mid-drag", () => {
       const { unmount } = renderScene("split-screen");
       advance(NAVIGATION_PHASE_MS["single"]);
@@ -260,6 +295,98 @@ describe("LessonDiorama", () => {
       renderScene("split-screen");
       const frame = screen.getByTestId("lesson-diorama-frame");
 
+      expect(frame.getAttribute("data-phase")).toBe("split-2");
+      expect(splitPaneHarnesses()).toEqual(["claude", "opencode"]);
+      expect(screen.queryByTestId("lesson-diorama-drag-pill")).toBeNull();
+      expect(screen.queryByTestId("lesson-diorama-drop-zone")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(frame.className).not.toContain("transition-");
+    });
+  });
+
+  describe("reduced motion changing while mounted", () => {
+    const originalMatchMedia = window.matchMedia;
+    afterEach(() => {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: originalMatchMedia,
+      });
+    });
+
+    /**
+     * Motion's `useReducedMotion` is the initial read only, so the component
+     * subscribes to the media query itself. This stub is what lets the test
+     * fire a real `change` event at that subscription after mount.
+     */
+    function installMatchMediaStub(): (matches: boolean) => void {
+      const listeners = new Set<(event: MediaQueryListEvent) => void>();
+      const list = {
+        matches: false,
+        media: "(prefers-reduced-motion: reduce)",
+        onchange: null,
+        addEventListener: (
+          _type: string,
+          listener: (event: MediaQueryListEvent) => void,
+        ) => {
+          listeners.add(listener);
+        },
+        removeEventListener: (
+          _type: string,
+          listener: (event: MediaQueryListEvent) => void,
+        ) => {
+          listeners.delete(listener);
+        },
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      };
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: () => list,
+      });
+      return (matches: boolean) => {
+        list.matches = matches;
+        const event = { matches, media: list.media } as MediaQueryListEvent;
+        act(() => {
+          for (const listener of listeners) listener(event);
+        });
+      };
+    }
+
+    it("task-tabs: a live switch to reduced motion settles on task 0 and stops the cycle", () => {
+      const setReducedMotion = installMatchMediaStub();
+      renderScene("task-tabs");
+      advance(TASK_TAB_CYCLE_MS);
+      expect(activeTabText()).toBe(TASKS[1]);
+
+      setReducedMotion(true);
+      const frame = screen.getByTestId("lesson-diorama-frame");
+      expect(frame.hasAttribute("data-reduced-motion")).toBe(true);
+      expect(activeTabText()).toBe(TASKS[0]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(screen.queryByRole("button")).toBeNull();
+      advance(TASK_TAB_CYCLE_MS * 3);
+      expect(activeTabText()).toBe(TASKS[0]);
+
+      // And back: the cycle restarts from its first beat.
+      setReducedMotion(false);
+      expect(frame.hasAttribute("data-reduced-motion")).toBe(false);
+      expect(screen.getByRole("button", { name: "Pause demo" })).toBeTruthy();
+      advance(TASK_TAB_CYCLE_MS);
+      expect(activeTabText()).toBe(TASKS[1]);
+    });
+
+    it("split-screen: a live switch to reduced motion settles on the finished split mid-drag", () => {
+      const setReducedMotion = installMatchMediaStub();
+      renderScene("split-screen");
+      advance(NAVIGATION_PHASE_MS["single"]);
+      const frame = screen.getByTestId("lesson-diorama-frame");
+      expect(frame.getAttribute("data-phase")).toBe("drag-1");
+      expect(screen.getByTestId("lesson-diorama-drag-pill")).toBeTruthy();
+
+      setReducedMotion(true);
       expect(frame.getAttribute("data-phase")).toBe("split-2");
       expect(splitPaneHarnesses()).toEqual(["claude", "opencode"]);
       expect(screen.queryByTestId("lesson-diorama-drag-pill")).toBeNull();
