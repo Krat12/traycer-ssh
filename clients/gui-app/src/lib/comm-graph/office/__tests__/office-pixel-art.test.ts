@@ -462,11 +462,22 @@ describe("sprite maps", () => {
       officeSpriteSize({ name: "siren-light" }),
     );
     expect(frameA.join("\n")).not.toBe(frameB.join("\n"));
-    // Both frames are LIT: a beacon going round shows its lens from both
-    // sides, and a dark frame would read as a bulb switching off. `n` is the
-    // lens colour the cross and the crashed screen already use.
-    expect(frameA.join("")).toContain("n");
-    expect(frameB.join("")).toContain("n");
+    // FRAME 0 DARK, FRAME 1 LIT, IN THAT ORDER, because the sign that drives
+    // them reads the order as a contract: it holds frame 0 while the ward is
+    // empty, alternates while a bed is taken, and holds FRAME 1 under reduced
+    // motion so a steady beacon still says occupied. Two lit frames - which is
+    // what a rotating beacon would want - make "empty" and "occupied, reduced
+    // motion" the same picture, so this asserts the distinction rather than the
+    // prettier animation. Swap the maps and this fails.
+    expect(frameA.join("")).not.toContain("y");
+    expect(frameA.join("")).not.toContain("n");
+    expect(frameB.join("")).toContain("y");
+    // AND ONLY THE LENS DIFFERS. One silhouette, housing and base included, so
+    // the alternation reads as a lamp blinking rather than a fixture changing
+    // shape - masking the three lens letters must leave the two frames equal.
+    const silhouette = (map: ReadonlyArray<string>): string =>
+      map.join("\n").replace(/[dyn]/g, "*");
+    expect(silhouette(frameA)).toBe(silhouette(frameB));
   });
 
   /**

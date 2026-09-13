@@ -2302,35 +2302,46 @@ export const GLASS_PARTITION_MAP: SpriteMap = [
 ];
 
 /**
- * THE MEDBAY LIGHT, FRAME A, and its partner below.
+ * THE MEDBAY LIGHT, FRAME 0 - THE LENS UNLIT - and frame 1 below.
  *
- * A beacon rather than a lamp: the lens is lit on ONE side per frame and dark
- * on the other, so alternating the two reads as a light going round instead of
- * a bulb switching off. Mission control's medbay sign carries it while a bed is
- * held, and nothing else does - a vehicle's lights are part of the vehicle's
- * own art (K3), which is why this pair is 8 px and not a compositing anchor.
+ * THE FRAME ORDER IS A CONTRACT, NOT A CHOICE: frame 0 is dark and frame 1 is
+ * lit, in that order, and swapping them breaks the sign that drives them. K4's
+ * pass holds frame 0 while the ward is empty, alternates 0/1 while a bed is
+ * taken, and holds frame 1 - not frame 0 - under reduced motion, so a steady
+ * beacon still reads as occupied. Two LIT frames would make "empty" and
+ * "occupied, reduced motion" the same picture, which is the one distinction the
+ * sign exists to draw.
+ *
+ * `d` is this art's "off": `MONITOR_OFF_MAP` is solid `d`, and it is the
+ * unlit-display colour in both themes rather than a flat dark that would read
+ * as a hole punched in a light-theme wall.
+ *
+ * Only the LENS differs between the frames - one silhouette, housing and base
+ * included - so the alternation reads as a lamp blinking rather than a fixture
+ * changing shape. 8 px and not a compositing anchor because a vehicle's lights
+ * are part of the vehicle's own art (K3); this pair is the hall's sign alone.
  */
 export const SIREN_LIGHT_MAP: SpriteMap = [
   "..OOOO..",
-  ".OnnyyO.",
-  "OnnnyyyO",
-  "OnnnyydO",
-  "OnnnyddO",
-  "OnnnddO.",
+  ".OddddO.",
+  "OddddddO",
+  "OddddddO",
+  "OddddddO",
+  "OdddddO.",
   ".OMMMO..",
   "..OOO...",
 ];
 
-/** Frame B: the lens lit on the other side. */
+/** Frame 1: the same lamp lit - an amber core with the warm rim it throws. */
 export const SIREN_LIGHT_B_MAP: SpriteMap = [
   "..OOOO..",
-  ".OyynnO.",
-  "OyyynnnO",
-  "OdyynnnO",
-  "OddynnnO",
-  ".OddnnnO",
-  "..OMMMO.",
-  "...OOO..",
+  ".OnyynO.",
+  "OnyyyynO",
+  "OnyyyynO",
+  "OnyyyynO",
+  "OnyyynO.",
+  ".OMMMO..",
+  "..OOO...",
 ];
 
 /**
