@@ -54,6 +54,17 @@ export function WelcomeProvidersPage(props: {
     (providersQuery.isPending && providersQuery.fetchStatus === "idle") ||
     (providersQuery.isError && providers === undefined);
   const listFailed = providersQuery.isError && providers === undefined;
+  // Continue advances on the ROSTER, so it waits for the roster to settle:
+  // the first fetch, a toggle in flight, and the `providers.list` refresh
+  // that toggle's success invalidates into. `useHostScopedMutation` fires
+  // that invalidation without awaiting it, and the mutation stays pending
+  // until its callbacks return, so by the time `isPending` drops the refetch
+  // is already `isFetching` - there is no gap between the two for a click to
+  // land in. Without this, "enable Claude, press Continue" branched on the
+  // roster from before the toggle and could finish the modal as
+  // `no-sessions` for a user who had just turned their one scannable
+  // provider on.
+  const rosterSettling = setEnabled.isPending || providersQuery.isFetching;
   const enabledProviderCount =
     providers?.filter((provider) => provider.enabled).length ?? 0;
 
@@ -183,9 +194,9 @@ export function WelcomeProvidersPage(props: {
         primary={{
           label: "Continue",
           onSelect: onContinue,
-          disabled: providers === undefined,
+          disabled: providers === undefined || rosterSettling,
           // The spinner says why Continue is not yet on offer.
-          pending: providersQuery.isPending && providersQuery.isFetching,
+          pending: rosterSettling,
         }}
       />
     </>

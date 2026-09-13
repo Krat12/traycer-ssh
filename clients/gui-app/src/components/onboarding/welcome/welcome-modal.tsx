@@ -110,10 +110,11 @@ export function WelcomeModal(props: {
   };
 
   const continueFromProviders = (): void => {
-    // The page disables Continue until `providers.list` resolves; this is
-    // the same fact read at the moment of the click, so a click that raced
-    // the query cannot finish the modal on an empty roster.
-    if (providers === undefined) return;
+    // The page disables Continue until `providers.list` has resolved and is
+    // not mid-refresh; this is the same fact read at the moment of the
+    // click, so a click that raced the query cannot finish the modal on an
+    // empty or stale roster.
+    if (providers === undefined || providersQuery.isFetching) return;
     Analytics.getInstance().track(AnalyticsEvent.OnboardingModalContinued, {
       page: "1",
       enabled_provider_count: enabledProviderIds.length,

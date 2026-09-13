@@ -35,14 +35,16 @@ export interface WelcomeAccountLine {
   readonly title: string | null;
 }
 
+const TRAYCER_READY_LINE: WelcomeAccountLine = {
+  text: "Ready with your Traycer subscription",
+  tone: "good",
+  title: null,
+};
+
 /** Mirrors Settings' `ProviderAuthLine`: the account as one short line. */
 export function accountLineFor(state: ProviderCliState): WelcomeAccountLine {
   if (state.providerId === "traycer" && state.enabled) {
-    return {
-      text: "Ready with your Traycer subscription",
-      tone: "good",
-      title: null,
-    };
+    return TRAYCER_READY_LINE;
   }
   if (!state.enabled) return { text: "Disabled", tone: "muted", title: null };
   const { auth } = state;
@@ -212,15 +214,18 @@ function buildWelcomeTile(
   }
   if (providerId === "traycer") {
     // Built in: there is no CLI to find and no account to check - the
-    // subscription IS the account, so the only two states are on and off.
+    // subscription IS the account, so it is CONNECTED whether or not it is
+    // on (decision 26). The ready line stays in both states and nothing is
+    // dimmed; the switch and the off tooltip are the only things that say
+    // it is off.
     return tile({
       providerId,
       install: "builtIn",
       enabled: state.enabled,
-      subtitle: state.enabled ? accountLineFor(state) : null,
+      subtitle: TRAYCER_READY_LINE,
       tooltip: state.enabled ? null : WELCOME_TRAYCER_OFF_TOOLTIP,
       switchDisabled: false,
-      dimmed: !state.enabled,
+      dimmed: false,
     });
   }
   const install = installStateFor(state);
@@ -272,23 +277,32 @@ function buildWelcomeTile(
 }
 
 /**
- * Decision 22: the subtitle is a REAL account line or nothing. "Checking
- * account…" and an authenticated label qualify; "Not signed in",
- * "Configured, not verified" and the rest are long-form state that belongs
- * in the tooltip, where it does not read as a call to action on a page that
+ * Decision 22: the subtitle is a REAL account line or nothing - the label
+ * the host attached to an authenticated account, and only that. A generic
+ * "Signed in" with no label, "Checking account…", "Not signed in",
+ * "Configured, not verified" and the rest are status text that belongs in
+ * the tooltip, where it does not read as a call to action on a page that
  * offers none.
  */
 function enabledSubtitle(state: ProviderCliState): WelcomeAccountLine | null {
-  if (state.authPending) return accountLineFor(state);
-  if (state.auth.status === "authenticated") return accountLineFor(state);
-  return null;
+  if (state.authPending) return null;
+  if (state.auth.status !== "authenticated") return null;
+  if (state.auth.label === null) return null;
+  return accountLineFor(state);
 }
 
 function enabledTooltip(state: ProviderCliState): string | null {
-  if (state.authPending) return state.auth.detail;
-  if (state.auth.status === "authenticated") return state.auth.detail;
+  const line = accountLineFor(state);
+  if (state.authPending) return line.text;
+  if (state.auth.status === "authenticated") {
+    // With a label the subtitle already says who; the tooltip adds the
+    // detail if there is one. Without a label the tooltip is the only place
+    // the account is described at all.
+    if (state.auth.label !== null) return state.auth.detail;
+    return state.auth.detail ?? line.text;
+  }
   if (state.auth.status === "unauthenticated") {
     return WELCOME_UNAUTHENTICATED_TOOLTIP;
   }
-  return accountLineFor(state).text;
+  return line.text;
 }

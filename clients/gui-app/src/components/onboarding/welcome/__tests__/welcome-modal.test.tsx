@@ -71,6 +71,8 @@ const providersFixture = vi.hoisted(() => ({
   providers: [] as ProviderCliState[],
   /** `false` = the list query has not answered yet. */
   resolved: true,
+  /** A refresh of an already-resolved list is in flight. */
+  refreshing: false,
   refetch: vi.fn(),
 }));
 
@@ -81,8 +83,8 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
           data: { providers: providersFixture.providers },
           isPending: false,
           isError: false,
-          isFetching: false,
-          fetchStatus: "idle",
+          isFetching: providersFixture.refreshing,
+          fetchStatus: providersFixture.refreshing ? "fetching" : "idle",
           refetch: providersFixture.refetch,
         }
       : {
@@ -95,12 +97,12 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
         },
 }));
 
-const setEnabledMutate = vi.hoisted(() => vi.fn());
+const setEnabled = vi.hoisted(() => ({ mutate: vi.fn(), pending: false }));
 
 vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", () => ({
   useProvidersSetEnabled: () => ({
-    mutate: setEnabledMutate,
-    isPending: false,
+    mutate: setEnabled.mutate,
+    isPending: setEnabled.pending,
   }),
 }));
 
@@ -176,7 +178,16 @@ function providerState(
     enabled,
     disabledBy: null,
     selected: { kind: "bundled" },
-    candidates: [],
+    // Installed, so page 1 offers the switch (a missing install is info-only).
+    candidates: [
+      {
+        kind: "path",
+        path: "/usr/bin/x",
+        available: true,
+        version: "1.0.0",
+        versionPending: false,
+      },
+    ],
     auth: { status: "unknown", badgeText: null, label: null, detail: null },
     authPending: false,
     checkedAt: null,
@@ -260,8 +271,10 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       providerState("cursor", false),
     ];
     providersFixture.resolved = true;
+    providersFixture.refreshing = false;
     providersFixture.refetch.mockReset();
-    setEnabledMutate.mockReset();
+    setEnabled.mutate.mockReset();
+    setEnabled.pending = false;
     stream.hostId = "host-a";
     stream.support = "supported";
     readinessHarness.readiness = { kind: "ready" };
@@ -454,6 +467,58 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
         { page: "1", enabled_provider_count: 2, session_count: 0 },
       ]);
       expect(screen.queryByTestId("welcome-modal")).toBeNull();
+    });
+
+    it("branches on the roster AFTER a toggle and its refresh, not the one before", () => {
+      providersFixture.providers = [
+        providerState("cursor", true),
+        providerState("claude-code", false),
+      ];
+      signIn();
+      const view = render(<OnboardingFlowHost />);
+      expect(scanClient.constructed).toBe(0);
+
+      fireEvent.click(
+        screen.getByRole("switch", { name: "Enable Claude Code" }),
+      );
+      expect(setEnabled.mutate).toHaveBeenCalledWith({
+        providerId: "claude-code",
+        enabled: true,
+        profileAction: null,
+      });
+      setEnabled.pending = true;
+      view.rerender(<OnboardingFlowHost />);
+      const continueButton = (): HTMLElement =>
+        screen.getByRole("button", { name: "Continue" });
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+
+      // Mutation settled; the list it invalidated is refetching.
+      setEnabled.pending = false;
+      providersFixture.refreshing = true;
+      view.rerender(<OnboardingFlowHost />);
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      fireEvent.click(continueButton());
+      expect(flow().modal).toBe("in-progress");
+      expect(flow().modalPage).toBe(1);
+
+      // The refreshed roster: Claude is on, and the scan for it starts.
+      providersFixture.refreshing = false;
+      providersFixture.providers = [
+        providerState("cursor", true),
+        providerState("claude-code", true),
+      ];
+      view.rerender(<OnboardingFlowHost />);
+      expect(scanClient.providers).toEqual(["claude"]);
+      act(() => {
+        callbacks().onStarted(["claude"]);
+      });
+      fireEvent.click(continueButton());
+      expect(flow().modal).toBe("in-progress");
+      expect(flow().modalPage).toBe(2);
+      expect(trackedEvents()).toContainEqual([
+        "onboarding_modal_continued",
+        { page: "1", enabled_provider_count: 2, session_count: 0 },
+      ]);
     });
 
     it("finishes as no-sessions when the host cannot scan", () => {

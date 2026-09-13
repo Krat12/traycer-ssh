@@ -4,8 +4,18 @@ import {
   render,
   screen,
   within,
+  type RenderResult,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import type {
   ProviderAuth,
   ProviderCliState,
@@ -153,15 +163,27 @@ function defaultProviders(): ProviderCliState[] {
   ];
 }
 
-function renderPage(): { onContinue: () => void; onSkip: () => void } {
-  const onContinue = vi.fn();
-  const onSkip = vi.fn();
-  render(
+let mounted: RenderResult | null = null;
+const onContinueMock = vi.fn();
+const onSkipMock = vi.fn();
+
+function pageElement(): ReactElement {
+  return (
     <TooltipProvider delayDuration={0}>
-      <WelcomeProvidersPage onContinue={onContinue} onSkip={onSkip} />
-    </TooltipProvider>,
+      <WelcomeProvidersPage onContinue={onContinueMock} onSkip={onSkipMock} />
+    </TooltipProvider>
   );
-  return { onContinue, onSkip };
+}
+
+function renderPage(): { onContinue: Mock; onSkip: Mock } {
+  mounted = render(pageElement());
+  return { onContinue: onContinueMock, onSkip: onSkipMock };
+}
+
+/** Re-render with the fixtures' current values (the mocks read them live). */
+function rerenderPage(): void {
+  if (mounted === null) throw new Error("page not rendered");
+  mounted.rerender(pageElement());
 }
 
 function tile(providerId: ProviderId): HTMLElement {
@@ -185,10 +207,13 @@ describe("<WelcomeProvidersPage />", () => {
     fixtures.refetch.mockReset();
     fixtures.setEnabledMutate.mockReset();
     fixtures.setEnabledPending = false;
+    onContinueMock.mockReset();
+    onSkipMock.mockReset();
   });
 
   afterEach(() => {
     cleanup();
+    mounted = null;
   });
 
   it("renders the six major tiles in order, then a disclosure for the rest", () => {
@@ -260,14 +285,17 @@ describe("<WelcomeProvidersPage />", () => {
     ).toBe("Not found");
     expect(switchFor("Cursor").hasAttribute("disabled")).toBe(true);
 
-    // Built in, off: badge only, no subtitle, switch live.
+    // Built in, off: connected (the ready line stays) with the switch off.
     const traycer = tile("traycer");
     expect(
       within(traycer).getByTestId("welcome-provider-badge").textContent,
     ).toBe("Built in");
     expect(
-      within(traycer).queryByTestId("welcome-provider-subtitle"),
-    ).toBeNull();
+      within(traycer).getByTestId("welcome-provider-subtitle").textContent,
+    ).toBe("Ready with your Traycer subscription");
+    expect(switchFor("Traycer Inference").getAttribute("aria-checked")).toBe(
+      "false",
+    );
     expect(switchFor("Traycer Inference").hasAttribute("disabled")).toBe(false);
   });
 
@@ -365,6 +393,44 @@ describe("<WelcomeProvidersPage />", () => {
     for (const element of screen.getAllByRole("switch")) {
       expect(element.hasAttribute("disabled")).toBe(true);
     }
+  });
+
+  it("withholds Continue through a toggle in flight AND the providers.list refresh it triggers", () => {
+    const { onContinue } = renderPage();
+    const continueButton = (): HTMLElement =>
+      screen.getByRole("button", { name: "Continue" });
+    expect(continueButton().hasAttribute("disabled")).toBe(false);
+
+    // The toggle is sent; the mutation is pending.
+    fireEvent.click(switchFor("Grok"));
+    expect(fixtures.setEnabledMutate).toHaveBeenCalledTimes(1);
+    fixtures.setEnabledPending = true;
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.click(continueButton());
+    expect(onContinue).not.toHaveBeenCalled();
+
+    // The mutation settled and invalidated the list, which is refetching:
+    // still not the roster Continue should read.
+    fixtures.setEnabledPending = false;
+    fixtures.isFetching = true;
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.click(continueButton());
+    expect(onContinue).not.toHaveBeenCalled();
+
+    // The refreshed roster landed.
+    fixtures.isFetching = false;
+    fixtures.providers = defaultProviders().map((provider) =>
+      provider.providerId === "grok"
+        ? { ...provider, enabled: true }
+        : provider,
+    );
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(false);
+    expect(switchFor("Grok").getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(continueButton());
+    expect(onContinue).toHaveBeenCalledTimes(1);
   });
 
   it("on a list error with no data: Unavailable tiles, an inline retry, and no Continue", () => {
