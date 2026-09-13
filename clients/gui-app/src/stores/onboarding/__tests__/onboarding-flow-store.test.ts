@@ -37,6 +37,7 @@ function data(): OnboardingFlowData {
     tours: state.tours,
     context: state.context,
     legacyCompleted: state.legacyCompleted,
+    completionPending: state.completionPending,
   };
 }
 
@@ -102,6 +103,7 @@ describe("useOnboardingFlowStore", () => {
       "branch",
       "chain",
       "chainScope",
+      "completionPending",
       "context",
       "legacyCompleted",
       "modal",
@@ -352,6 +354,61 @@ describe("useOnboardingFlowStore", () => {
       expect(data().activeTourId).toBe("history");
       expect(tour("history").status).toBe("active");
     });
+  });
+
+  it("activationRevision moves on every chain-level activation, including a same-tour replay with a null context, and stays put otherwise", () => {
+    const revision = () => useOnboardingFlowStore.getState().activationRevision;
+    const start = revision();
+    useOnboardingFlowStore.getState().startModal();
+    expect(revision()).toBe(start);
+    useOnboardingFlowStore.getState().finishModal("no-sessions");
+    expect(revision()).toBe(start + 1);
+    useOnboardingFlowStore.getState().setContext({ draftId: "d" });
+    useOnboardingFlowStore.getState().advance("add-folder", "add-folder", "next");
+    expect(revision()).toBe(start + 1);
+    useOnboardingFlowStore.getState().pauseChain();
+    useOnboardingFlowStore.getState().pauseChain();
+    expect(revision()).toBe(start + 2);
+    useOnboardingFlowStore.getState().resumeChain();
+    expect(revision()).toBe(start + 3);
+    // Replay: context resets - and replaying the SAME tour again while the
+    // context is already null still counts (an unanchored lesson replayed).
+    useOnboardingFlowStore.getState().replayTour("task-panels");
+    expect(revision()).toBe(start + 4);
+    expect(useOnboardingFlowStore.getState().context).toBeNull();
+    useOnboardingFlowStore.getState().replayTour("task-panels");
+    expect(revision()).toBe(start + 5);
+    // A finishing advance is a chain end too.
+    useOnboardingFlowStore.getState().advance("task-panels", "task-panels", "next");
+    expect(useOnboardingFlowStore.getState().chain).toBe("completed");
+    expect(revision()).toBe(start + 6);
+    useOnboardingFlowStore.getState().completeChain();
+    expect(revision()).toBe(start + 6);
+    // Not persisted.
+    const raw = localStorage.getItem(FLOW_KEY);
+    expect(raw).not.toBeNull();
+    expect(raw).not.toContain("activationRevision");
+  });
+
+  it("completionPending is set by a real chain end (completed or skipped) and cleared by acknowledgeCompletion; never by the migration's shape", () => {
+    const pending = () => useOnboardingFlowStore.getState().completionPending;
+    expect(pending()).toBe(false);
+    useOnboardingFlowStore.getState().skipChain();
+    expect(pending()).toBe(false);
+    useOnboardingFlowStore.getState().finishModal("sessions");
+    useOnboardingFlowStore.getState().skipChain();
+    expect(pending()).toBe(true);
+    useOnboardingFlowStore.getState().acknowledgeCompletion();
+    expect(pending()).toBe(false);
+    useOnboardingFlowStore.getState().replayTour("history");
+    useOnboardingFlowStore.getState().completeChain();
+    expect(pending()).toBe(true);
+    useOnboardingFlowStore.getState().acknowledgeCompletion();
+    useOnboardingFlowStore.getState().replayTour("history");
+    useOnboardingFlowStore.getState().pauseChain();
+    expect(pending()).toBe(false);
+    useOnboardingFlowStore.getState().completeChain();
+    expect(pending()).toBe(true);
   });
 
   it("showWelcomeModalAgain reopens the modal without touching the chain or tours", () => {
@@ -613,6 +670,8 @@ describe("useOnboardingFlowStore", () => {
         tours: INITIAL_FLOW.tours,
         context: null,
         legacyCompleted: true,
+        // The migration never announces a real end: no completion toast.
+        completionPending: false,
       });
 
       await useOnboardingFlowStore.persist.rehydrate();
@@ -701,6 +760,8 @@ describe("useOnboardingFlowStore", () => {
         tours: INITIAL_FLOW.tours,
         context: null,
         legacyCompleted: true,
+        // The migration never announces a real end: no completion toast.
+        completionPending: false,
       });
     });
   });

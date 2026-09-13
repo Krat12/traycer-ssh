@@ -73,6 +73,14 @@ export interface OnboardingFlowData {
   readonly context: OnboardingContext | null;
   /** Finished the OLD first-run tour before this build existed. */
   readonly legacyCompleted: boolean;
+  /**
+   * A REAL chain end (completed or skipped from an active or paused chain)
+   * that the completion toast has not yet acknowledged. Persisted, so a
+   * toast held at the moment the chain ended (the flow busy, no Settings
+   * bridge yet) survives a reload; the legacy migration never sets it, so
+   * an old-tour completer's synthetic `skipped` chain never toasts.
+   */
+  readonly completionPending: boolean;
 }
 
 interface OnboardingFlowActions {
@@ -93,9 +101,25 @@ interface OnboardingFlowActions {
   readonly completeChain: () => void;
   readonly replayTour: (tourId: TourId) => void;
   readonly showWelcomeModalAgain: () => void;
+  /** The completion toast showed (or was claimed elsewhere). */
+  readonly acknowledgeCompletion: () => void;
 }
 
-export type OnboardingFlowState = OnboardingFlowData & OnboardingFlowActions;
+/**
+ * In memory, not persisted: the count of chain-level activations this
+ * session - a chain start, resume, pause, end or replay that actually
+ * changed the flow. The tour host keys everything that closes over "the
+ * current run" on it (an old Joyride callback, a receipt announced before
+ * a replay), because the persisted fields cannot tell a same-tour replay of
+ * an unanchored lesson (context already null) from no change at all.
+ */
+export interface OnboardingFlowSession {
+  readonly activationRevision: number;
+}
+
+export type OnboardingFlowState = OnboardingFlowData &
+  OnboardingFlowSession &
+  OnboardingFlowActions;
 
 const AVAILABLE_TOUR: TourProgress = {
   status: "available",
@@ -138,6 +162,7 @@ export const INITIAL_FLOW: OnboardingFlowData = {
   tours: toursFrom(() => AVAILABLE_TOUR),
   context: null,
   legacyCompleted: false,
+  completionPending: false,
 };
 
 /** What the migration writes for an install that finished the old tour. */
@@ -185,7 +210,13 @@ function completeChainOf(data: OnboardingFlowData): OnboardingFlowData {
           completedAt: Date.now(),
         })
       : data.tours;
-  return { ...data, chain: "completed", activeTourId: null, tours };
+  return {
+    ...data,
+    chain: "completed",
+    activeTourId: null,
+    tours,
+    completionPending: true,
+  };
 }
 
 /** The next `available` tour after `after` in the branch order, if any. */
@@ -388,6 +419,7 @@ function persistedFlowData(persistedState: unknown): OnboardingFlowData {
     tours: toursFrom((id) => persistedTour(id, rawTours[id])),
     context: persistedContext(persistedState.context),
     legacyCompleted: persistedState.legacyCompleted === true,
+    completionPending: persistedState.completionPending === true,
   };
   // The one cross-field invariant: a running (active or paused) chain names
   // an active tour. Two ways a blob breaks it - the id names a tour that is
@@ -464,6 +496,7 @@ function dataOf(state: OnboardingFlowState): OnboardingFlowData {
     tours: state.tours,
     context: state.context,
     legacyCompleted: state.legacyCompleted,
+    completionPending: state.completionPending,
   };
 }
 
@@ -472,17 +505,42 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
     (set) => {
       // Every action is a pure transition over the data; returning the SAME
       // data object is how a no-op stays a no-op (zustand skips equal state).
-      const update = (
+      // A transition that moves the chain (its status, its scope, or a
+      // replay's context reset - an `advance` that finishes the chain
+      // included) is a chain-level activation and takes one more revision
+      // in the same write; `activate` forces that for the actions that are
+      // activations by definition even when the persisted fields look alike.
+      const write = (
         transition: (data: OnboardingFlowData) => OnboardingFlowData,
+        forceActivation: boolean,
       ): void => {
         set((state) => {
           const before = dataOf(state);
           const after = transition(before);
-          return after === before ? state : after;
+          if (after === before) return state;
+          const moved =
+            forceActivation ||
+            after.chain !== before.chain ||
+            after.chainScope !== before.chainScope ||
+            (before.context !== null && after.context === null);
+          return moved
+            ? { ...after, activationRevision: state.activationRevision + 1 }
+            : after;
         });
+      };
+      const update = (
+        transition: (data: OnboardingFlowData) => OnboardingFlowData,
+      ): void => {
+        write(transition, false);
+      };
+      const activateChain = (
+        transition: (data: OnboardingFlowData) => OnboardingFlowData,
+      ): void => {
+        write(transition, true);
       };
       return {
         ...INITIAL_FLOW,
+        activationRevision: 0,
         startModal: () =>
           update((data) =>
             data.modal === "done" || data.modal === "skipped"
@@ -499,7 +557,7 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
         // exits - pause, finish, skip - are three calls on one surface.
         pauseModal: () => undefined,
         finishModal: (branch) =>
-          update((data) =>
+          activateChain((data) =>
             activate(
               {
                 ...data,
@@ -512,7 +570,7 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
             ),
           ),
         skipModal: () =>
-          update((data) =>
+          activateChain((data) =>
             activate(
               {
                 ...data,
@@ -534,27 +592,38 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
             advanceFlow(data, expectedTourId, expectedStepId, reason),
           ),
         pauseChain: () =>
-          update((data) =>
+          activateChain((data) =>
             data.chain === "active" ? { ...data, chain: "paused" } : data,
           ),
         resumeChain: () =>
-          update((data) =>
+          activateChain((data) =>
             data.chain === "paused" && data.activeTourId !== null
               ? { ...data, chain: "active" }
               : data,
           ),
         skipChain: () =>
-          update((data) => {
+          activateChain((data) => {
             if (data.chain !== "active" && data.chain !== "paused") return data;
             const tours =
               data.activeTourId === null
                 ? data.tours
                 : withTour(data, data.activeTourId, AVAILABLE_TOUR);
-            return { ...data, chain: "skipped", activeTourId: null, tours };
+            return {
+              ...data,
+              chain: "skipped",
+              activeTourId: null,
+              tours,
+              completionPending: true,
+            };
           }),
-        completeChain: () => update(completeChainOf),
+        completeChain: () =>
+          activateChain((data) =>
+            data.chain === "active" || data.chain === "paused"
+              ? completeChainOf(data)
+              : data,
+          ),
         replayTour: (tourId) =>
-          update((data) => {
+          activateChain((data) => {
             const previous = data.activeTourId;
             const released =
               previous === null || previous === tourId
@@ -573,6 +642,10 @@ export const useOnboardingFlowStore = create<OnboardingFlowState>()(
           }),
         showWelcomeModalAgain: () =>
           update((data) => ({ ...data, modal: "pending", modalPage: 1 })),
+        acknowledgeCompletion: () =>
+          update((data) =>
+            data.completionPending ? { ...data, completionPending: false } : data,
+          ),
       };
     },
     {

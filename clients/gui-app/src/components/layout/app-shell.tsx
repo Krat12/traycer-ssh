@@ -21,9 +21,9 @@ import { MobileAppStatusBar } from "@/components/layout/status-bar/mobile-app-st
 import { TopLevelTabHost } from "@/components/layout/top-level-tab-host";
 import { TopLevelSurfaceActivationProvider } from "@/components/layout/top-level-surface-activation-provider";
 import { HostScopeReady } from "@/components/layout/host-readiness-controller";
+import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host";
 import { MigrationRunController } from "@/components/migration/migration-run-controller";
 import { LandingTerminalHost } from "@/components/home/terminal-panel/landing-terminal-host";
-import { OnboardingFlowHost } from "@/components/onboarding/welcome/onboarding-flow-host";
 import { OpenFolderDialog } from "@/components/open-folder-dialog";
 import { RemoteFolderPickerDialog } from "@/components/remote-folder-picker-dialog";
 import { useChatForkEventQuery } from "@/hooks/chats/use-chat-fork-queries";
@@ -166,9 +166,11 @@ export function AppShell(props: AppShellProps) {
               {showStatusBar && !isMobile ? <AppStatusBar /> : null}
               <OpenFolderDialog />
               <RemoteFolderPickerDialog />
-              {/* First-run welcome modal (and, later, the spotlight tours):
-                inside the shell so it has the router, the dialog primitives
-                and the toaster; gates itself on sign-in and desktop. */}
+              {/* The onboarding flow's one mount - the first-run welcome
+                modal and the spotlight tours: inside the shell so it has the
+                router, the dialog primitives and the toaster, beside the
+                picker the tours suspend for and outside every epic surface
+                they spotlight; gates itself on sign-in and desktop. */}
               <OnboardingFlowHost />
               <QuitInterceptBridge />
               {/* Mounted unconditionally: the bridge itself reads the action's
