@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import {
   afterEach,
@@ -73,6 +74,10 @@ const providersFixture = vi.hoisted(() => ({
   resolved: true,
   /** A refresh of an already-resolved list is in flight. */
   refreshing: false,
+  /** When the list last read successfully; the roster's freshness stamp. */
+  dataUpdatedAt: 1_000,
+  /** The last read of an already-resolved list failed (data is kept). */
+  errored: false,
   refetch: vi.fn(),
 }));
 
@@ -82,9 +87,10 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
       ? {
           data: { providers: providersFixture.providers },
           isPending: false,
-          isError: false,
+          isError: providersFixture.errored,
           isFetching: providersFixture.refreshing,
           fetchStatus: providersFixture.refreshing ? "fetching" : "idle",
+          dataUpdatedAt: providersFixture.dataUpdatedAt,
           refetch: providersFixture.refetch,
         }
       : {
@@ -93,18 +99,38 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
           isError: false,
           isFetching: true,
           fetchStatus: "fetching",
+          dataUpdatedAt: 0,
           refetch: providersFixture.refetch,
         },
 }));
 
-const setEnabled = vi.hoisted(() => ({ mutate: vi.fn(), pending: false }));
-
-vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", () => ({
-  useProvidersSetEnabled: () => ({
-    mutate: setEnabled.mutate,
-    isPending: setEnabled.pending,
-  }),
+/**
+ * A REAL mutation under the hook's own key with a controllable request: the
+ * Continue gate reads the mutation cache (`useWelcomeRoster`), so a stub
+ * returning `{ mutate, isPending }` would leave that cache empty and the
+ * gate vacuous.
+ */
+const setEnabled = vi.hoisted(() => ({
+  requests: [] as unknown[],
+  resolve: null as (() => void) | null,
 }));
+
+vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
+  const { useMutation } = await import("@tanstack/react-query");
+  const { providersMutationKeys } = await import("@/lib/query-keys");
+  return {
+    useProvidersSetEnabled: () =>
+      useMutation({
+        mutationKey: providersMutationKeys.setEnabled(),
+        mutationFn: (variables: unknown) => {
+          setEnabled.requests.push(variables);
+          return new Promise<void>((resolve) => {
+            setEnabled.resolve = resolve;
+          });
+        },
+      }),
+  };
+});
 
 interface StreamHarness {
   client: object;
@@ -160,6 +186,7 @@ function trackedEvents(): ReadonlyArray<[string, unknown]> {
   ]);
 }
 
+import { WithTestQueryClient } from "@/__tests__/with-test-query-client";
 import { OnboardingFlowHost } from "@/components/onboarding/welcome/onboarding-flow-host";
 import { setMobileApp } from "@/lib/mobile-app";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -272,9 +299,11 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     ];
     providersFixture.resolved = true;
     providersFixture.refreshing = false;
+    providersFixture.dataUpdatedAt = 1_000;
+    providersFixture.errored = false;
     providersFixture.refetch.mockReset();
-    setEnabled.mutate.mockReset();
-    setEnabled.pending = false;
+    setEnabled.requests.length = 0;
+    setEnabled.resolve = null;
     stream.hostId = "host-a";
     stream.support = "supported";
     readinessHarness.readiness = { kind: "ready" };
@@ -291,7 +320,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   });
 
   it("renders nothing while signed out", () => {
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     expect(screen.queryByTestId("welcome-modal")).toBeNull();
     expect(flow().modal).toBe("pending");
   });
@@ -299,14 +328,14 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   it("renders nothing in the installed mobile app", () => {
     setMobileApp(true);
     signIn();
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     expect(screen.queryByTestId("welcome-modal")).toBeNull();
     expect(flow().modal).toBe("pending");
   });
 
   it("opens on sign-in when the modal is pending: starts the flow, publishes presence, reports page 1 shown", () => {
     signIn();
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     expect(screen.getByTestId("welcome-modal")).not.toBeNull();
     expect(
       screen.getByRole("dialog", { name: "Welcome to Traycer" }),
@@ -325,7 +354,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   it("reopens a rehydrated in-progress modal on its saved page without restarting the flow", () => {
     signIn();
     useOnboardingFlowStore.setState({ modal: "in-progress", modalPage: 2 });
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     expect(screen.getByTestId("welcome-sessions-page")).not.toBeNull();
     expect(flow().modalPage).toBe(2);
     expect(trackedEvents()).toEqual([
@@ -336,7 +365,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   it("shows the connecting body until the default host is ready AND the stream names a host", () => {
     signIn();
     readinessHarness.readiness = { kind: "loading-host" };
-    const view = render(<OnboardingFlowHost />);
+    const view = render(<OnboardingFlowHost />, {
+      wrapper: WithTestQueryClient,
+    });
     expect(screen.getByTestId("welcome-connecting")).not.toBeNull();
     expect(screen.queryByTestId("welcome-providers-page")).toBeNull();
     expect(analyticsTrack).not.toHaveBeenCalled();
@@ -362,7 +393,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   it("Skip while connecting skips the modal", () => {
     signIn();
     readinessHarness.readiness = { kind: "loading-host" };
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     fireEvent.click(screen.getByRole("button", { name: "Skip" }));
     expect(flow().modal).toBe("skipped");
     expect(flow().branch).toBe("no-sessions");
@@ -377,7 +408,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
 
   it("Escape pauses: the modal hides for this session, the flow stays in progress, and only `pending` brings it back", () => {
     signIn();
-    const view = render(<OnboardingFlowHost />);
+    const view = render(<OnboardingFlowHost />, {
+      wrapper: WithTestQueryClient,
+    });
     expect(screen.getByTestId("welcome-modal")).not.toBeNull();
 
     fireEvent.keyDown(document.activeElement ?? document.body, {
@@ -406,7 +439,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     // observable half only: the frame is still there afterwards. The
     // `onInteractOutside` preventDefault is the other half.
     signIn();
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     fireEvent.pointerDown(document.body);
     fireEvent.pointerUp(document.body);
     expect(screen.getByTestId("welcome-modal")).not.toBeNull();
@@ -415,7 +448,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
 
   it("Skip setup on page 1 skips the modal", () => {
     signIn();
-    render(<OnboardingFlowHost />);
+    render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
     fireEvent.click(screen.getByRole("button", { name: "Skip setup" }));
     expect(flow().modal).toBe("skipped");
     expect(flow().activeTourId).toBe("add-folder");
@@ -430,7 +463,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     it("is withheld until providers.list resolves, so an unread roster cannot finish the modal", () => {
       providersFixture.resolved = false;
       signIn();
-      const view = render(<OnboardingFlowHost />);
+      const view = render(<OnboardingFlowHost />, {
+        wrapper: WithTestQueryClient,
+      });
       const continueButton = screen.getByRole("button", { name: "Continue" });
       expect(continueButton.hasAttribute("disabled")).toBe(true);
       fireEvent.click(continueButton);
@@ -456,7 +491,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
         providerState("claude-code", false),
       ];
       signIn();
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       expect(scanClient.constructed).toBe(0);
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(flow().modal).toBe("done");
@@ -469,40 +504,56 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(screen.queryByTestId("welcome-modal")).toBeNull();
     });
 
-    it("branches on the roster AFTER a toggle and its refresh, not the one before", () => {
+    it("branches on the roster AFTER a toggle and its refresh, not the one before", async () => {
       providersFixture.providers = [
         providerState("cursor", true),
         providerState("claude-code", false),
       ];
       signIn();
-      const view = render(<OnboardingFlowHost />);
+      const view = render(<OnboardingFlowHost />, {
+        wrapper: WithTestQueryClient,
+      });
       expect(scanClient.constructed).toBe(0);
 
       fireEvent.click(
         screen.getByRole("switch", { name: "Enable Claude Code" }),
       );
-      expect(setEnabled.mutate).toHaveBeenCalledWith({
-        providerId: "claude-code",
-        enabled: true,
-        profileAction: null,
+      await waitFor(() => {
+        expect(setEnabled.requests).toEqual([
+          { providerId: "claude-code", enabled: true, profileAction: null },
+        ]);
       });
-      setEnabled.pending = true;
-      view.rerender(<OnboardingFlowHost />);
       const continueButton = (): HTMLElement =>
         screen.getByRole("button", { name: "Continue" });
-      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      await waitFor(() => {
+        expect(continueButton().hasAttribute("disabled")).toBe(true);
+      });
 
       // Mutation settled; the list it invalidated is refetching.
-      setEnabled.pending = false;
       providersFixture.refreshing = true;
+      const resolve = setEnabled.resolve;
+      if (resolve === null) throw new Error("no toggle in flight");
+      await act(async () => {
+        resolve();
+        await Promise.resolve();
+      });
       view.rerender(<OnboardingFlowHost />);
       expect(continueButton().hasAttribute("disabled")).toBe(true);
       fireEvent.click(continueButton());
       expect(flow().modal).toBe("in-progress");
       expect(flow().modalPage).toBe(1);
 
-      // The refreshed roster: Claude is on, and the scan for it starts.
+      // The refresh FAILED and left the pre-toggle roster: still withheld,
+      // and the retry is on offer even though data is cached.
       providersFixture.refreshing = false;
+      providersFixture.errored = true;
+      view.rerender(<OnboardingFlowHost />);
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+      expect(screen.getByRole("button", { name: "Try again" })).not.toBeNull();
+
+      // The refreshed roster: Claude is on, and the scan for it starts.
+      providersFixture.errored = false;
+      providersFixture.dataUpdatedAt = Date.now() + 1;
       providersFixture.providers = [
         providerState("cursor", true),
         providerState("claude-code", true),
@@ -524,7 +575,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     it("finishes as no-sessions when the host cannot scan", () => {
       stream.support = "unsupported";
       signIn();
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       expect(scanClient.constructed).toBe(0);
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(flow().branch).toBe("no-sessions");
@@ -532,7 +583,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
 
     it("finishes as no-sessions when the scan completed with nothing importable", () => {
       signIn();
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       expect(scanClient.providers).toEqual(["claude"]);
       act(() => {
         callbacks().onStarted(["claude"]);
@@ -545,7 +596,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
 
     it("moves to page 2 while the scan is still running", () => {
       signIn();
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       act(() => {
         callbacks().onStarted(["claude"]);
       });
@@ -567,7 +618,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
 
     it("moves to page 2 when the scan found importable rows", () => {
       signIn();
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       act(() => {
         callbacks().onStarted(["claude"]);
         callbacks().onGroup(
@@ -599,7 +650,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     });
 
     it("Skip import finishes as no-sessions", () => {
-      render(<OnboardingFlowHost />);
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
       fireEvent.click(screen.getByRole("button", { name: "Skip import" }));
       expect(flow().modal).toBe("done");
       expect(flow().branch).toBe("no-sessions");

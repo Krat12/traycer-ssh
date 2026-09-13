@@ -9,7 +9,7 @@ import {
   disablingLastEnabledFor,
   type WelcomeTileModel,
 } from "@/components/onboarding/welcome/welcome-providers-model";
-import { useProvidersList } from "@/hooks/providers/use-providers-list-query";
+import { useWelcomeRoster } from "@/components/onboarding/welcome/use-welcome-roster";
 import { useProvidersSetEnabled } from "@/hooks/providers/use-providers-set-enabled-mutation";
 import {
   WELCOME_MAJOR_PROVIDER_IDS,
@@ -44,8 +44,8 @@ export function WelcomeProvidersPage(props: {
   readonly onSkip: () => void;
 }): ReactNode {
   const { onContinue, onSkip } = props;
-  const providersQuery = useProvidersList({ enabled: true, subscribed: true });
-  const providers = providersQuery.data?.providers;
+  const roster = useWelcomeRoster();
+  const { query: providersQuery, providers } = roster;
   const setEnabled = useProvidersSetEnabled();
   // A disabled query (no host bound yet) never leaves `pending` with an idle
   // fetch, and a hard query error leaves no data; surface both honestly as
@@ -53,18 +53,18 @@ export function WelcomeProvidersPage(props: {
   const hostUnavailable =
     (providersQuery.isPending && providersQuery.fetchStatus === "idle") ||
     (providersQuery.isError && providers === undefined);
-  const listFailed = providersQuery.isError && providers === undefined;
-  // Continue advances on the ROSTER, so it waits for the roster to settle:
-  // the first fetch, a toggle in flight, and the `providers.list` refresh
-  // that toggle's success invalidates into. `useHostScopedMutation` fires
-  // that invalidation without awaiting it, and the mutation stays pending
-  // until its callbacks return, so by the time `isPending` drops the refetch
-  // is already `isFetching` - there is no gap between the two for a click to
-  // land in. Without this, "enable Claude, press Continue" branched on the
-  // roster from before the toggle and could finish the modal as
-  // `no-sessions` for a user who had just turned their one scannable
+  // Retry whenever the last read FAILED, cached data or not: after a toggle
+  // a failed refresh leaves the old roster on screen, and the retry is the
+  // way to the one Continue is waiting for.
+  const listFailed = providersQuery.isError;
+  // Continue advances on the ROSTER, so it waits for the roster to settle
+  // (`useWelcomeRoster`): the first read, a toggle in flight, the refresh
+  // its success invalidates into, and a refresh that failed and left the
+  // roster from before the toggle in place. Without this, "enable Claude,
+  // press Continue" branched on the old roster and could finish the modal
+  // as `no-sessions` for a user who had just turned their one scannable
   // provider on.
-  const rosterSettling = setEnabled.isPending || providersQuery.isFetching;
+  const rosterSettling = !roster.settled;
   const enabledProviderCount =
     providers?.filter((provider) => provider.enabled).length ?? 0;
 
@@ -193,10 +193,15 @@ export function WelcomeProvidersPage(props: {
         secondary={{ label: "Skip setup", onSelect: onSkip }}
         primary={{
           label: "Continue",
-          onSelect: onContinue,
-          disabled: providers === undefined || rosterSettling,
-          // The spinner says why Continue is not yet on offer.
-          pending: rosterSettling,
+          onSelect: () => {
+            // Same fact the `disabled` reads, re-read at the click.
+            if (rosterSettling) return;
+            onContinue();
+          },
+          disabled: rosterSettling,
+          // The spinner says why Continue is not yet on offer - but not
+          // over an error, where the retry is the thing to press.
+          pending: rosterSettling && !providersQuery.isError,
         }}
       />
     </>

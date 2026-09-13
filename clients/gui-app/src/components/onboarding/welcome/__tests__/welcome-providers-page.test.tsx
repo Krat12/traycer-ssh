@@ -1,8 +1,10 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
   type RenderResult,
 } from "@testing-library/react";
@@ -33,9 +35,9 @@ const fixtures = vi.hoisted(() => ({
   resolved: true,
   isError: false,
   isFetching: false,
+  /** When the list last read successfully; the roster's freshness stamp. */
+  dataUpdatedAt: 1_000,
   refetch: vi.fn(),
-  setEnabledMutate: vi.fn(),
-  setEnabledPending: false,
 }));
 
 vi.mock("@/hooks/providers/use-providers-list-query", () => ({
@@ -45,17 +47,43 @@ vi.mock("@/hooks/providers/use-providers-list-query", () => ({
     isError: fixtures.isError,
     isFetching: fixtures.isFetching,
     fetchStatus: fixtures.isFetching ? "fetching" : "idle",
+    dataUpdatedAt: fixtures.resolved ? fixtures.dataUpdatedAt : 0,
     refetch: fixtures.refetch,
   }),
 }));
 
-vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", () => ({
-  useProvidersSetEnabled: () => ({
-    mutate: fixtures.setEnabledMutate,
-    isPending: fixtures.setEnabledPending,
-  }),
+/**
+ * A REAL mutation under the hook's own key, with a controllable request:
+ * the page's Continue gate reads the mutation cache (`useWelcomeRoster`),
+ * so a stub returning `{ mutate, isPending }` would leave that cache empty
+ * and the gate vacuous. `deferred` holds the in-flight request's resolvers.
+ */
+const setEnabledFixture = vi.hoisted(() => ({
+  requests: [] as unknown[],
+  deferred: null as {
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+  } | null,
 }));
 
+vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", async () => {
+  const { useMutation } = await import("@tanstack/react-query");
+  const { providersMutationKeys } = await import("@/lib/query-keys");
+  return {
+    useProvidersSetEnabled: () =>
+      useMutation({
+        mutationKey: providersMutationKeys.setEnabled(),
+        mutationFn: (variables: unknown) => {
+          setEnabledFixture.requests.push(variables);
+          return new Promise<void>((resolve, reject) => {
+            setEnabledFixture.deferred = { resolve, reject };
+          });
+        },
+      }),
+  };
+});
+
+import { WithTestQueryClient } from "@/__tests__/with-test-query-client";
 import { WelcomeProvidersPage } from "@/components/onboarding/welcome/welcome-providers-page";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ORDERED_PROVIDERS } from "@/lib/provider-ordering";
@@ -176,8 +204,30 @@ function pageElement(): ReactElement {
 }
 
 function renderPage(): { onContinue: Mock; onSkip: Mock } {
-  mounted = render(pageElement());
+  mounted = render(pageElement(), { wrapper: WithTestQueryClient });
   return { onContinue: onContinueMock, onSkip: onSkipMock };
+}
+
+/** The variables of the n-th `providers.setEnabled` request, once it is sent. */
+async function sentRequest(index: number): Promise<unknown> {
+  await waitFor(() => {
+    expect(setEnabledFixture.requests.length).toBeGreaterThan(index);
+  });
+  return setEnabledFixture.requests[index];
+}
+
+async function settleRequest(outcome: "success" | "failure"): Promise<void> {
+  await waitFor(() => {
+    expect(setEnabledFixture.deferred).not.toBeNull();
+  });
+  const deferred = setEnabledFixture.deferred;
+  if (deferred === null) throw new Error("no request in flight");
+  setEnabledFixture.deferred = null;
+  await act(async () => {
+    if (outcome === "success") deferred.resolve();
+    else deferred.reject(new Error("host refused"));
+    await Promise.resolve();
+  });
 }
 
 /** Re-render with the fixtures' current values (the mocks read them live). */
@@ -204,9 +254,10 @@ describe("<WelcomeProvidersPage />", () => {
     fixtures.resolved = true;
     fixtures.isError = false;
     fixtures.isFetching = false;
+    fixtures.dataUpdatedAt = 1_000;
     fixtures.refetch.mockReset();
-    fixtures.setEnabledMutate.mockReset();
-    fixtures.setEnabledPending = false;
+    setEnabledFixture.requests.length = 0;
+    setEnabledFixture.deferred = null;
     onContinueMock.mockReset();
     onSkipMock.mockReset();
   });
@@ -299,30 +350,39 @@ describe("<WelcomeProvidersPage />", () => {
     expect(switchFor("Traycer Inference").hasAttribute("disabled")).toBe(false);
   });
 
-  it("flipping a switch calls providers.setEnabled with no profile action", () => {
+  it("flipping a switch calls providers.setEnabled with no profile action", async () => {
     renderPage();
     fireEvent.click(switchFor("Grok"));
-    expect(fixtures.setEnabledMutate).toHaveBeenCalledWith({
+    expect(await sentRequest(0)).toEqual({
       providerId: "grok",
       enabled: true,
       profileAction: null,
     });
+    await settleRequest("success");
+    await waitFor(() => {
+      expect(switchFor("Traycer Inference").hasAttribute("disabled")).toBe(
+        false,
+      );
+    });
     fireEvent.click(switchFor("Traycer Inference"));
-    expect(fixtures.setEnabledMutate).toHaveBeenLastCalledWith({
+    expect(await sentRequest(1)).toEqual({
       providerId: "traycer",
       enabled: true,
       profileAction: null,
     });
   });
 
-  it("disables every switch while the shared mutation is in flight", () => {
-    fixtures.setEnabledPending = true;
+  it("disables every switch while the shared mutation is in flight", async () => {
     renderPage();
-    for (const element of screen.getAllByRole("switch")) {
-      expect(element.hasAttribute("disabled")).toBe(true);
-    }
     fireEvent.click(switchFor("Grok"));
-    expect(fixtures.setEnabledMutate).not.toHaveBeenCalled();
+    await sentRequest(0);
+    await waitFor(() => {
+      for (const element of screen.getAllByRole("switch")) {
+        expect(element.hasAttribute("disabled")).toBe(true);
+      }
+    });
+    fireEvent.click(switchFor("Codex"));
+    expect(setEnabledFixture.requests).toHaveLength(1);
   });
 
   it("refuses to turn off the last enabled provider and says why", async () => {
@@ -395,32 +455,40 @@ describe("<WelcomeProvidersPage />", () => {
     }
   });
 
-  it("withholds Continue through a toggle in flight AND the providers.list refresh it triggers", () => {
+  const continueButton = (): HTMLElement =>
+    screen.getByRole("button", { name: "Continue" });
+
+  it("withholds Continue through a toggle in flight AND the providers.list refresh it triggers", async () => {
     const { onContinue } = renderPage();
-    const continueButton = (): HTMLElement =>
-      screen.getByRole("button", { name: "Continue" });
     expect(continueButton().hasAttribute("disabled")).toBe(false);
 
     // The toggle is sent; the mutation is pending.
     fireEvent.click(switchFor("Grok"));
-    expect(fixtures.setEnabledMutate).toHaveBeenCalledTimes(1);
-    fixtures.setEnabledPending = true;
-    rerenderPage();
-    expect(continueButton().hasAttribute("disabled")).toBe(true);
+    await sentRequest(0);
+    await waitFor(() => {
+      expect(continueButton().hasAttribute("disabled")).toBe(true);
+    });
     fireEvent.click(continueButton());
     expect(onContinue).not.toHaveBeenCalled();
 
     // The mutation settled and invalidated the list, which is refetching:
     // still not the roster Continue should read.
-    fixtures.setEnabledPending = false;
     fixtures.isFetching = true;
+    await settleRequest("success");
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(true);
     fireEvent.click(continueButton());
     expect(onContinue).not.toHaveBeenCalled();
 
-    // The refreshed roster landed.
+    // The refresh finished but did NOT land a newer roster (a refetch that
+    // was cancelled, or one whose result the cache discarded): the roster
+    // is still the one from before the toggle, so Continue stays withheld.
     fixtures.isFetching = false;
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(true);
+
+    // The refreshed roster landed, stamped after the toggle.
+    fixtures.dataUpdatedAt = Date.now() + 1;
     fixtures.providers = defaultProviders().map((provider) =>
       provider.providerId === "grok"
         ? { ...provider, enabled: true }
@@ -429,6 +497,54 @@ describe("<WelcomeProvidersPage />", () => {
     rerenderPage();
     expect(continueButton().hasAttribute("disabled")).toBe(false);
     expect(switchFor("Grok").getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(continueButton());
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed refresh after a successful toggle keeps Continue withheld and offers Retry, until a retry lands the new roster", async () => {
+    const { onContinue } = renderPage();
+    fireEvent.click(switchFor("Grok"));
+    await sentRequest(0);
+    fixtures.isFetching = true;
+    await settleRequest("success");
+    rerenderPage();
+
+    // The refresh failed: TanStack keeps the OLD data, drops isFetching.
+    fixtures.isFetching = false;
+    fixtures.isError = true;
+    rerenderPage();
+    expect(continueButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.click(continueButton());
+    expect(onContinue).not.toHaveBeenCalled();
+    // Cached data or not, the way forward is the retry.
+    expect(screen.getByTestId("welcome-providers-error")).not.toBeNull();
+    expect(switchFor("Grok").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(fixtures.refetch).toHaveBeenCalledTimes(1);
+
+    // The retry succeeds with the post-toggle roster.
+    fixtures.isError = false;
+    fixtures.dataUpdatedAt = Date.now() + 1;
+    fixtures.providers = defaultProviders().map((provider) =>
+      provider.providerId === "grok"
+        ? { ...provider, enabled: true }
+        : provider,
+    );
+    rerenderPage();
+    expect(screen.queryByTestId("welcome-providers-error")).toBeNull();
+    expect(continueButton().hasAttribute("disabled")).toBe(false);
+    fireEvent.click(continueButton());
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("a FAILED toggle requires no refresh: Continue returns once the mutation settles", async () => {
+    const { onContinue } = renderPage();
+    fireEvent.click(switchFor("Grok"));
+    await sentRequest(0);
+    await settleRequest("failure");
+    await waitFor(() => {
+      expect(continueButton().hasAttribute("disabled")).toBe(false);
+    });
     fireEvent.click(continueButton());
     expect(onContinue).toHaveBeenCalledTimes(1);
   });

@@ -15,7 +15,7 @@ import {
   useWelcomeScan,
   type WelcomeScan,
 } from "@/components/onboarding/welcome/use-welcome-scan";
-import { useProvidersList } from "@/hooks/providers/use-providers-list-query";
+import { useWelcomeRoster } from "@/components/onboarding/welcome/use-welcome-roster";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
 import { cn } from "@/lib/utils";
@@ -88,9 +88,8 @@ export function WelcomeModal(props: {
   const streamHostId = useStreamRuntimeBinding()?.hostId ?? null;
   const hostReady = readiness.kind === "ready" && streamHostId !== null;
 
-  // App-wide host on purpose: this is an app-wide surface, not a composer.
-  const providersQuery = useProvidersList({ enabled: true, subscribed: true });
-  const providers = providersQuery.data?.providers;
+  const roster = useWelcomeRoster();
+  const { providers } = roster;
   const enabledProviderIds = useMemo(
     () =>
       providers === undefined
@@ -110,11 +109,11 @@ export function WelcomeModal(props: {
   };
 
   const continueFromProviders = (): void => {
-    // The page disables Continue until `providers.list` has resolved and is
-    // not mid-refresh; this is the same fact read at the moment of the
-    // click, so a click that raced the query cannot finish the modal on an
-    // empty or stale roster.
-    if (providers === undefined || providersQuery.isFetching) return;
+    // The page disables Continue until the roster has settled (resolved,
+    // not mid-refresh, not in error, every toggle refreshed into it); this
+    // is the same fact read at the moment of the click, so a click that
+    // raced the query cannot finish the modal on an empty or stale roster.
+    if (providers === undefined || !roster.settled) return;
     Analytics.getInstance().track(AnalyticsEvent.OnboardingModalContinued, {
       page: "1",
       enabled_provider_count: enabledProviderIds.length,
