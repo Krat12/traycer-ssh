@@ -1008,6 +1008,14 @@ const ONE_OF_EACH: Readonly<Record<OfficeDrawable["kind"], OfficeDrawable>> = {
     height: 16,
     fill: "room",
   },
+  vehicle: {
+    kind: "vehicle",
+    vehicleKind: "police-car",
+    x: 0,
+    y: 0,
+    facing: "right",
+    lights: 0,
+  },
   quad: {
     kind: "quad",
     points: [
@@ -1039,6 +1047,7 @@ describe("officeBakesIntoStaticFloor", () => {
     "pip",
     "block",
     "quad",
+    "vehicle",
   ] as const)("leaves a %s to the per-frame path", (kind) => {
     // A label on the floor is drawn in SCREEN space, a clock needs hands
     // over it, and neither an envelope nor a logo is static by nature. A
@@ -1046,7 +1055,9 @@ describe("officeBakesIntoStaticFloor", () => {
     // stand-in for the very floor this layer bakes - one axis-aligned, one
     // sheared by an isometric projector - so baking any of them here would
     // double-draw the overview and never repaint once the lod changed back.
-    // Each of the seven would have been silently dropped by a blitted floor
+    // A vehicle is an actor: it moves every frame, so baking one would smear
+    // a van across the floor bitmap and leave it there.
+    // Each of the eight would have been silently dropped by a blitted floor
     // that baked everything, and silently duplicated by one that baked
     // nothing.
     expect(officeBakesIntoStaticFloor(ONE_OF_EACH[kind])).toBe(false);

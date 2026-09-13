@@ -61,6 +61,8 @@ import {
   type OfficeAgentStatus,
   type OfficeCharacterAccessory,
   type OfficeCharacterPose,
+  type OfficeCivicKind,
+  type OfficeCivicRoom,
   type OfficeDrawable,
   type OfficeEnvelopeHitRegion,
   type OfficeErrandKind,
@@ -74,14 +76,15 @@ import {
   type OfficePipGlyph,
   type OfficePoint,
   type OfficeRect,
+  type OfficeRoad,
   type OfficeRoom,
   type OfficeSceneInput,
   type OfficeSeat,
   type OfficeSize,
   type OfficeSpriteName,
   type OfficeTilePos,
-  type OfficeCivicRoom,
   type OfficeTileRect,
+  type OfficeVehicleKind,
   type OfficeWorldDrawable,
 } from "@/lib/comm-graph/office/office-types";
 import {
@@ -140,6 +143,34 @@ const ARRIVAL_TILES_PER_SECOND = 8;
  * sprinting back reads as the office noticing.
  */
 const HURRY_TILES_PER_SECOND = 14;
+/**
+ * TWICE A WALKER'S, and written as twice rather than as six so that retuning
+ * the walk retunes the drive with it. It is the plain walk that is doubled, not
+ * the arrival or the hurry: those are situational speeds for a person with a
+ * reason to move, while a vehicle simply travels faster than people walk.
+ */
+const VEHICLE_TILES_PER_SECOND = 2 * WALK_TILES_PER_SECOND;
+/**
+ * How long a vehicle stands at the kerb: at least this, longer while anybody it
+ * came for is still on their feet, and never past the cap.
+ *
+ * The floor is what makes a trip read as a visit rather than a drive-by; the
+ * ceiling is what stops one agent whose walk never ends from parking an
+ * ambulance on the road for the rest of the session.
+ */
+const VEHICLE_WAIT_MIN_MS = 4_000;
+const VEHICLE_WAIT_MAX_MS = 12_000;
+/** The lamps swap this often while a vehicle moves or waits. */
+const VEHICLE_LIGHT_MS = 250;
+/**
+ * How many vehicles may be on the road at once, over the whole scene.
+ *
+ * The cap is the budget ([Performance] rule 6): a trigger that finds it taken
+ * is DROPPED rather than queued, because the room still receives the agent and
+ * only the show is skipped. Two is enough for an ambulance and a police car to
+ * pass each other and small enough that the frame never notices.
+ */
+const MAX_VEHICLES = 2;
 /**
  * Below this step length playback is running fast enough that a walk-in would
  * still be in progress when the next row is drawn, so arrivals are announced
@@ -597,6 +628,38 @@ interface OfficeEnvelope {
 }
 
 /**
+ * A vehicle on a floor's road: a SCENE-OWNED TRANSIENT ACTOR, on the envelope's
+ * pattern rather than a character's.
+ *
+ * It has no seat, no claim in the seat book, no path search and no hit region.
+ * It is not a character and nothing about the office's state depends on it -
+ * which is the point: the room receives its agent whether or not a vehicle ever
+ * came, so every gate below can drop one with nothing to repair.
+ *
+ * The route is the PLAN's (`OfficeFloor.road`), not the scene's. A vehicle
+ * interpolates along that polyline; it never asks whether a tile is walkable,
+ * because a road is drawn rather than searched.
+ */
+interface OfficeVehicle {
+  readonly kind: OfficeVehicleKind;
+  /** The floor the ROOM is on, which on a plaza storey is not every rider's. */
+  readonly floorIndex: number;
+  /** The room whose kerb it stops at; also the coalescing key, with `kind`. */
+  readonly civicRoomId: string;
+  /** Everyone this trip serves. Coalescing appends; it never queues a second. */
+  readonly forAgentIds: string[];
+  phase: "arrive" | "wait" | "depart";
+  /** Within the phase, not within the trip. */
+  elapsedMs: number;
+  /**
+   * Which way it points, carried rather than recomputed so that a WAITING
+   * vehicle keeps the facing it arrived on - there is no segment under it to
+   * take a direction from while it stands still.
+   */
+  facing: OfficeFacing;
+}
+
+/**
  * A crumpled page on its way to a bin. Flies the same arc an envelope does -
  * the shape is what makes a thrown thing read as thrown - and a miss then lies
  * on the floor beside the bin for a few seconds instead of blinking out.
@@ -660,6 +723,72 @@ function mixSeed(seed: number, salt: number): number {
 
 function tileKeyOf(tile: OfficeTilePos): string {
   return `${tile.col},${tile.row}`;
+}
+
+/**
+ * How far it is along a tile polyline from one index to another.
+ *
+ * MANHATTAN per segment, the same measure `advanceWalk` spends its budget in,
+ * so "twice a walker's speed" means the same thing on a road as it does in a
+ * corridor. A road's tiles are normally adjacent and every segment is 1, but
+ * measuring rather than counting means a polyline that skips a tile still costs
+ * what it is actually long.
+ */
+function pathLength(
+  tiles: ReadonlyArray<OfficeTilePos>,
+  from: number,
+  to: number,
+): number {
+  const step = to >= from ? 1 : -1;
+  let total = 0;
+  for (let at = from; at !== to; at += step) {
+    const here = tiles[at];
+    const next = tiles[at + step];
+    total += Math.abs(next.col - here.col) + Math.abs(next.row - here.row);
+  }
+  return total;
+}
+
+/**
+ * Where a traveller is after `travelled` tiles from `from` towards `to`, as a
+ * fractional tile plus the segment it is on.
+ *
+ * The segment comes back with the position because the CALLER needs both and
+ * walking the polyline twice to get them separately is the kind of thing that
+ * drifts: the facing has to come from the segment the vehicle is actually on,
+ * not from one recomputed under slightly different rounding.
+ */
+function tileAlong(
+  tiles: ReadonlyArray<OfficeTilePos>,
+  from: number,
+  to: number,
+  travelled: number,
+): {
+  readonly col: number;
+  readonly row: number;
+  readonly index: number;
+  readonly step: number;
+} {
+  const step = to >= from ? 1 : -1;
+  let left = Math.max(0, travelled);
+  for (let at = from; at !== to; at += step) {
+    const here = tiles[at];
+    const next = tiles[at + step];
+    const span = Math.abs(next.col - here.col) + Math.abs(next.row - here.row);
+    if (span === 0) continue;
+    if (left < span) {
+      const fraction = left / span;
+      return {
+        col: here.col + (next.col - here.col) * fraction,
+        row: here.row + (next.row - here.row) * fraction,
+        index: at,
+        step,
+      };
+    }
+    left -= span;
+  }
+  const end = tiles[to];
+  return { col: end.col, row: end.row, index: to, step };
 }
 
 /**
@@ -1218,6 +1347,33 @@ function deskStateKey(state: OfficeDeskState): string {
 }
 
 /**
+ * The actors of a frame with the vehicles interleaved among them by depth.
+ *
+ * BOTH PAINTER SHAPES ARE SERVED HERE rather than in either painter, because
+ * the answer is the same for both and neither painter knows a road exists: a
+ * world painter merges this against its props afterwards, and a layered one
+ * draws it in order. A vehicle takes the plain foot depth of the tile it is
+ * crossing, so it passes in front of the plaza it drives over and behind the
+ * building face that stands on the same row - the faces carry their foot plus
+ * a fraction exactly so they can.
+ *
+ * VEHICLES COME FIRST AT AN EXACT TIE. A tie needs identical foot y and is
+ * therefore rare, so this is a determinism rule rather than a look: at equal
+ * depth the agent paints over the vehicle, because the agent is the subject of
+ * the scene and the vehicle is the show that came for it.
+ */
+function withVehiclesByDepth(
+  actors: ReadonlyArray<OfficeWorldDrawable>,
+  vehicles: ReadonlyArray<OfficeWorldDrawable>,
+): ReadonlyArray<OfficeWorldDrawable> {
+  if (vehicles.length === 0) return actors;
+  const merged = [...vehicles, ...actors];
+  // Stable, so the vehicles-first order survives the sort at equal depth.
+  merged.sort((left, right) => left.depth - right.depth);
+  return merged;
+}
+
+/**
  * One depth-ordered stream out of the two halves a world painter emits.
  *
  * Stable within a depth, and the PROPS come first at equal depth: a desk front
@@ -1410,6 +1566,7 @@ export class OfficeScene {
    */
   private readonly handover = new Map<string, string>();
   private envelopes: OfficeEnvelope[] = [];
+  private vehicles: OfficeVehicle[] = [];
   private paperBalls: OfficePaperBall[] = [];
   private agentById = new Map<string, OfficeAgentInput>();
   private visibleAgentIds: ReadonlySet<string> = new Set<string>();
@@ -1531,6 +1688,13 @@ export class OfficeScene {
    * where they will be seen instead of anywhere at all.
    */
   private lastViewRect: OfficeRect | null = null;
+  /**
+   * The band the last frame was drawn at, so a dispatch can refuse at overview.
+   *
+   * `null` before the first frame, and a scene that has never drawn does not
+   * refuse - the same answer `inLastViewRect` gives for the same reason.
+   */
+  private lastLod: OfficeLod | null = null;
 
   /**
    * A view and, optionally, the layout to answer with until the first sync.
@@ -1616,6 +1780,17 @@ export class OfficeScene {
     const firstSync = !this.synced;
     this.synced = true;
     this.visibleAgentIds = input.visibleAgentIds;
+    // Captured BEFORE the new map lands, because the whole of "entered" is the
+    // difference between the two.
+    //
+    // A REFERENCE, not a copy. Every producer builds a fresh map per input -
+    // `officeAgentStatuses` allocates one per call and the bench replaces its
+    // cached object wholesale - so holding the outgoing one costs nothing,
+    // while cloning would walk the population on every sync. The contract that
+    // makes it safe, and which the suites follow: NOBODY MUTATES A STATUS MAP
+    // IN PLACE between two syncs. Passing the same map twice is fine and reads
+    // as "nothing changed", which is exactly true.
+    const outgoingStatuses = this.statusById;
     this.statusById = input.statusById;
     this.openRequestsByReceiver = input.openRequestsByReceiver;
     this.playing = input.playing;
@@ -1685,6 +1860,18 @@ export class OfficeScene {
       if (!this.errandMustEnd(character.agentId)) continue;
       this.returnToDesk(character);
     }
+    // LAST, after all three passes and after the errand-end loop, because
+    // every one of them is something a dispatch reads. A police car asks who
+    // just got a queue slot, and the kerb wait asks who is still on their
+    // feet - which is only true of the agents this sync has already set
+    // walking, and only of the ones whose errand this sync did not just end.
+    // Dispatching before the loop would summon a car for an agent about to be
+    // sent back to its desk on the same sync.
+    this.updateVehicleDispatch({
+      outgoing: outgoingStatuses,
+      firstSync,
+      rewound,
+    });
 
     if (input.pulseKey !== this.lastPulseKey) {
       this.lastPulseKey = input.pulseKey;
@@ -1702,6 +1889,7 @@ export class OfficeScene {
     }
     this.updateErrandStarts();
     this.advanceEnvelopes(dtMs);
+    this.advanceVehicles(dtMs);
     this.advancePaperBalls(dtMs);
   }
 
@@ -1724,6 +1912,7 @@ export class OfficeScene {
     // Remembered for the errand starts, which only send people walking where
     // someone can see them walk; see `updateErrandStarts`.
     this.lastViewRect = rect;
+    this.lastLod = lod;
     const floor = this.floorIn(
       layout,
       officeTileRectOf({
@@ -1768,7 +1957,10 @@ export class OfficeScene {
       };
     }
     const props = this.buildSeatProps({ layout, seats, rect, lod });
-    const actors = this.buildActors(characters, lod);
+    const actors = withVehiclesByDepth(
+      this.buildActors(characters, lod),
+      this.buildVehicles(rect),
+    );
     const layered = this.view.painter.depth === "layered";
     return {
       size,
@@ -3122,6 +3314,10 @@ export class OfficeScene {
       this.deliver(envelope.toAgentId, envelope.pulseKind);
     }
     this.envelopes = [];
+    // Nothing to deliver: a trip is pure show. The agents it came for reach
+    // their rooms through the walk teleport below, exactly as they would have
+    // on foot, so dropping the vehicle loses information nobody was carrying.
+    this.vehicles = [];
     this.paperBalls = [];
     for (const character of this.characters.values()) {
       if (character.pathIndex >= character.path.length) continue;
@@ -3143,6 +3339,10 @@ export class OfficeScene {
    */
   private dropTransientMotion(): void {
     this.envelopes = [];
+    // A vehicle is live-only motion as much as either of these: the road the
+    // cursor lands on is a road with nothing on it, not one carrying a trip
+    // from the present the scrub just left.
+    this.vehicles = [];
     // Thrown balls are live-only motion too; a historical floor has none.
     this.paperBalls = [];
     for (const character of this.characters.values()) {
@@ -3164,6 +3364,338 @@ export class OfficeScene {
       this.deliver(envelope.toAgentId, envelope.pulseKind);
     }
     this.envelopes = live;
+  }
+
+  // ---- Vehicles -------------------------------------------------------- //
+
+  /**
+   * Who gets a vehicle this sync, if anybody.
+   *
+   * THE GATES, in the order the plan states them, because the order is the
+   * rule: the four that silence the layer outright, then the viewport, then
+   * coalescing, then the cap. Each is cheaper than the one after it, and each
+   * failure is a DROP rather than a queue - the room still receives its agent,
+   * and only the show is skipped.
+   *
+   * The seed at the first sync and at a scrub is not a gate but a definition:
+   * "entered" is a difference between two syncs, and there is no earlier sync
+   * to differ from. Without it, opening an epic that already has a flagged
+   * agent in it would summon somebody for a thing that happened yesterday.
+   */
+  private updateVehicleDispatch(args: {
+    readonly outgoing: ReadonlyMap<string, OfficeAgentStatus>;
+    readonly firstSync: boolean;
+    readonly rewound: boolean;
+  }): void {
+    const { firstSync, outgoing, rewound } = args;
+    // The seed is the RETURN, not a stored map: the next sync's outgoing
+    // statuses are this sync's incoming ones either way, so declining to
+    // dispatch here is the whole of "an agent already in `attention` when the
+    // scene opened, or when the cursor landed, did not enter anything".
+    if (firstSync || rewound) return;
+    // The four that silence the layer: the errand-start gates, exactly. BEFORE
+    // the transition scan, which is the only part of this that costs the
+    // population - a floor under reduced motion or mid-playback must not walk a
+    // thousand characters every sync to discover it was never going to
+    // dispatch.
+    if (this.playing || this.cursorMs !== null || this.reducedMotion) return;
+    if (this.lastLod === 0) return;
+    const entered = this.enteredStatuses(outgoing);
+    for (const agentId of entered) {
+      if (this.vehicles.length >= MAX_VEHICLES) return;
+      this.dispatchFor(agentId);
+    }
+  }
+
+  /**
+   * The agents whose status is not the one they had last sync, in canonical
+   * order, restricted to the two statuses that summon anybody.
+   *
+   * Canonical rather than map order for the reason every other contested
+   * choice is: which of two simultaneous triggers takes the last slot under the
+   * cap has to be a fact about their ids, or the same history dispatches
+   * differently on a replay.
+   */
+  private enteredStatuses(
+    outgoing: ReadonlyMap<string, OfficeAgentStatus>,
+  ): ReadonlyArray<string> {
+    const entered: string[] = [];
+    for (const character of this.orderedByAgentId()) {
+      const agentId = character.agentId;
+      const now = this.statusById.get(agentId);
+      if (now !== "attention" && now !== "failure") continue;
+      if (outgoing.get(agentId) === now) continue;
+      entered.push(agentId);
+    }
+    return entered;
+  }
+
+  /**
+   * One agent that just entered a summoning status, turned into a trip - or
+   * into nothing, which is the common answer.
+   *
+   * WHAT THIS PAIR IS NOT is a queue. Every early return here drops the
+   * trigger: there is no pending list, no retry on the next sync, and no
+   * memory that a vehicle was ever owed. That is what bounds the layer.
+   */
+  private dispatchFor(agentId: string): void {
+    const status = this.statusById.get(agentId);
+    if (status !== "attention") return;
+    // A police car comes for an agent that GOT A SLOT at the help desk, not
+    // for one that overflowed back to its desk - the symmetric partner of an
+    // ambulance coming for an agent that got a bed. The car drives in while
+    // the agent walks, which is why this is the slot and not the arrival.
+    const character = this.characters.get(agentId);
+    if (character === undefined) return;
+    if (character.queueTile === null) return;
+    const room = this.civicRoomFor(agentId, "help-desk");
+    if (room === null || room.kerbTile === null) return;
+    this.summon({ kind: "police-car", room, kerbTile: room.kerbTile, agentId });
+  }
+
+  /**
+   * The civic room of a kind that serves this agent.
+   *
+   * Its own floor's, where that floor has one; otherwise the floor the agent's
+   * HOST keeps its rooms on, which is how a storey with no infirmary of its
+   * own reaches the plaza's. The room is the coalescing key precisely because
+   * of this fallback: two agents on different storeys of one building share an
+   * infirmary, and therefore share the ambulance that comes to it.
+   */
+  private civicRoomFor(
+    agentId: string,
+    kind: OfficeCivicKind,
+  ): OfficeCivicRoom | null {
+    const floors = this.currentLayout.floors;
+    const own = floors[this.floorIndexOfAgent(agentId)];
+    const here = own.civic.find((room) => room.kind === kind);
+    if (here !== undefined) return here;
+    for (const floor of floors) {
+      if (floor.hostId !== own.hostId) continue;
+      const shared = floor.civic.find((room) => room.kind === kind);
+      if (shared !== undefined) return shared;
+    }
+    return null;
+  }
+
+  /**
+   * Put a vehicle on the road for this room, or join the one already there.
+   *
+   * COALESCED ON THE ROOM, not on the agent's floor: in the views whose civic
+   * rooms live on a plaza storey, a crash on the seventh floor and a crash on
+   * the second are the same infirmary's business and must be the same trip.
+   */
+  private summon(args: {
+    readonly kind: OfficeVehicleKind;
+    readonly room: OfficeCivicRoom;
+    readonly kerbTile: OfficeTilePos;
+    readonly agentId: string;
+  }): void {
+    const { agentId, kerbTile, kind, room } = args;
+    const standing = this.vehicles.find(
+      (vehicle) =>
+        vehicle.kind === kind && vehicle.civicRoomId === room.civicRoomId,
+    );
+    if (standing !== undefined) {
+      // Joins the trip and extends its wait rather than queuing a second van.
+      if (!standing.forAgentIds.includes(agentId)) {
+        standing.forAgentIds.push(agentId);
+      }
+      if (standing.phase === "wait") standing.elapsedMs = 0;
+      return;
+    }
+    // The floor whose ROAD this is, which is the room's floor and not the
+    // rider's - the two differ exactly where the fallback above found a room
+    // on another storey.
+    const floor = this.currentLayout.floors[room.floorIndex];
+    if (floor.road === null) return;
+    // Viewport-gated at dispatch, on the KERB: a trip nobody can see is a trip
+    // nobody needs. One already on the road finishes even if the camera leaves.
+    if (!this.tileInLastViewRect(kerbTile)) return;
+    if (this.vehicles.length >= MAX_VEHICLES) return;
+    this.vehicles.push({
+      kind,
+      floorIndex: room.floorIndex,
+      civicRoomId: room.civicRoomId,
+      forAgentIds: [agentId],
+      phase: "arrive",
+      elapsedMs: 0,
+      facing: this.roadFacingAt(floor.road, 0, 1),
+    });
+  }
+
+  /**
+   * Is this tile where the last frame was looking?
+   *
+   * The tile counterpart of `inLastViewRect`, and it answers the same way
+   * before the first frame: a scene that has been ticked but never drawn has
+   * no rect to test against, and holding the whole layer still for that would
+   * make it untestable without a canvas.
+   */
+  private tileInLastViewRect(tile: OfficeTilePos): boolean {
+    const rect = this.lastViewRect;
+    if (rect === null) return true;
+    const foot = this.footPoint(tile.col, tile.row);
+    return (
+      foot.x >= rect.x &&
+      foot.x <= rect.x + rect.width &&
+      foot.y >= rect.y &&
+      foot.y <= rect.y + rect.height
+    );
+  }
+
+  /**
+   * Every vehicle, one tick on.
+   *
+   * Arrive, wait, depart, gone. No walkability, no path search and no
+   * per-vehicle state beyond the phase and its elapsed time: position is a
+   * function of how long this phase has run, which is what makes a trip replay
+   * identically from the same tick sequence.
+   */
+  private advanceVehicles(dtMs: number): void {
+    if (this.vehicles.length === 0) return;
+    const live: OfficeVehicle[] = [];
+    for (const vehicle of this.vehicles) {
+      vehicle.elapsedMs += dtMs;
+      if (this.advanceVehicle(vehicle)) live.push(vehicle);
+    }
+    this.vehicles = live;
+  }
+
+  /** One vehicle; `false` once its trip is over and it leaves the road. */
+  private advanceVehicle(vehicle: OfficeVehicle): boolean {
+    const road = this.roadOf(vehicle);
+    if (road === null) return false;
+    const kerb = this.kerbIndexOf(vehicle, road);
+    if (kerb === null) return false;
+    if (vehicle.phase === "arrive") {
+      const travelled = this.tilesTravelled(vehicle.elapsedMs);
+      const legs = pathLength(road.tiles, 0, kerb);
+      if (travelled < legs) {
+        vehicle.facing = this.facingAlong(road, 0, kerb, travelled);
+        return true;
+      }
+      vehicle.phase = "wait";
+      vehicle.elapsedMs = 0;
+      return true;
+    }
+    if (vehicle.phase === "wait") {
+      if (vehicle.elapsedMs < VEHICLE_WAIT_MIN_MS) return true;
+      if (
+        vehicle.elapsedMs < VEHICLE_WAIT_MAX_MS &&
+        !this.everyRiderSettled(vehicle)
+      ) {
+        return true;
+      }
+      vehicle.phase = "depart";
+      vehicle.elapsedMs = 0;
+      return true;
+    }
+    const travelled = this.tilesTravelled(vehicle.elapsedMs);
+    const legs = pathLength(road.tiles, kerb, road.tiles.length - 1);
+    if (travelled >= legs) return false;
+    vehicle.facing = this.facingAlong(
+      road,
+      kerb,
+      road.tiles.length - 1,
+      travelled,
+    );
+    return true;
+  }
+
+  /**
+   * Has everyone this trip came for stopped moving?
+   *
+   * THREE WAYS TO BE SETTLED, and no fourth: gone from the floor, sitting in a
+   * chair, or standing at the help desk. `seated` covers both halves of a
+   * civic arrival - the agent that got a bed is in it, and the agent that
+   * overflowed kept its own desk - because `settleInChair` sets it whatever
+   * seat the claim resolved to. The counter is the one place an agent is IN a
+   * room without being in a seat, and it has its own state.
+   *
+   * Deliberately no per-agent field: the claim and the character already know,
+   * and a flag kept beside them is one more thing that can disagree.
+   */
+  private everyRiderSettled(vehicle: OfficeVehicle): boolean {
+    for (const agentId of vehicle.forAgentIds) {
+      const character = this.characters.get(agentId);
+      if (character === undefined) continue;
+      if (character.seated) continue;
+      if (character.errand === "queue-stand") continue;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * The storey this vehicle is driving on, or `null` if it has gone.
+   *
+   * A re-plan can drop a floor out from under a trip already on the road - a
+   * host leaving takes its storey with it - so the index is not guaranteed to
+   * still be in range. The TYPE says an index is always a floor, which is why
+   * the question has to be asked of the LENGTH: comparing the element against
+   * `undefined` is a condition the compiler can see is never true.
+   */
+  private floorOfVehicle(vehicle: OfficeVehicle): OfficeFloor | null {
+    const floors = this.currentLayout.floors;
+    if (vehicle.floorIndex >= floors.length) return null;
+    return floors[vehicle.floorIndex];
+  }
+
+  private roadOf(vehicle: OfficeVehicle): OfficeRoad | null {
+    return this.floorOfVehicle(vehicle)?.road ?? null;
+  }
+
+  /** Where on the polyline this vehicle's room stops it. */
+  private kerbIndexOf(vehicle: OfficeVehicle, road: OfficeRoad): number | null {
+    const floor = this.floorOfVehicle(vehicle);
+    const room = floor?.civic.find(
+      (entry) => entry.civicRoomId === vehicle.civicRoomId,
+    );
+    const kerb = room?.kerbTile ?? null;
+    if (kerb === null) return null;
+    const index = road.tiles.findIndex(
+      (tile) => tile.col === kerb.col && tile.row === kerb.row,
+    );
+    return index < 0 ? null : index;
+  }
+
+  private tilesTravelled(elapsedMs: number): number {
+    return (elapsedMs / 1000) * VEHICLE_TILES_PER_SECOND;
+  }
+
+  /**
+   * Which way a vehicle points, from the SCREEN-X of the segment it is on.
+   *
+   * Screen rather than tile, because the two disagree under an isometric
+   * projector: a road running `+col` climbs to the right on the Floor and
+   * down-left on Campus, and a van that took its facing from the tile grid
+   * would drive backwards there. A segment with no horizontal component at all
+   * leaves the facing alone rather than picking one.
+   */
+  private facingAlong(
+    road: OfficeRoad,
+    from: number,
+    to: number,
+    travelled: number,
+  ): OfficeFacing {
+    const at = tileAlong(road.tiles, from, to, travelled);
+    return this.roadFacingAt(road, at.index, at.step);
+  }
+
+  private roadFacingAt(
+    road: OfficeRoad,
+    index: number,
+    step: number,
+  ): OfficeFacing {
+    const tiles = road.tiles;
+    const next = index + step;
+    if (next < 0 || next >= tiles.length || index === next) return "right";
+    const here = this.footPoint(tiles[index].col, tiles[index].row);
+    const there = this.footPoint(tiles[next].col, tiles[next].row);
+    if (there.x > here.x) return "right";
+    if (there.x < here.x) return "left";
+    return "right";
   }
 
   // ---- Character animation ------------------------------------------- //
@@ -4286,8 +4818,13 @@ export class OfficeScene {
       // still frame, and a request can stay open for hours.
       if (status === "attention" || status === "failure") return true;
     }
-    // Thrown paper is overlay art, and the overlay at overview is envelopes.
-    return lod > 0 && this.paperBalls.length > 0;
+    // The overlay art that only exists above overview, where the overlay is
+    // envelopes alone. A vehicle belongs here rather than beside the envelope
+    // test at the top: one standing at a kerb is still alternating its lamps,
+    // so a road with anything on it is never a still frame - but `frame` draws
+    // no vehicle at overview, and a trip a zoom-out has made invisible must
+    // not hold the gate open for the rest of its twenty seconds.
+    return lod > 0 && (this.vehicles.length > 0 || this.paperBalls.length > 0);
   }
 
   /** Sheeted once the archive is real AND the person has actually gone. */
@@ -4775,6 +5312,69 @@ export class OfficeScene {
       });
     }
     return actors;
+  }
+
+  /**
+   * The vehicles on screen, as drawables.
+   *
+   * ONE DRAWABLE EACH and no hit region: a vehicle names nobody, and the
+   * agents it came for are already targets in their own right. It is culled on
+   * its foot point like everything else in a frame, so a trip that continues
+   * after the camera has left costs a frame nothing.
+   *
+   * The sprite is NOT resolved here. Which of the twelve names this becomes
+   * depends on the projection, and the scene does not know whether its view
+   * draws oblique or isometric - so the drawable carries the three facts that
+   * vary and the renderer resolves the name.
+   */
+  private buildVehicles(rect: OfficeRect): ReadonlyArray<OfficeWorldDrawable> {
+    if (this.vehicles.length === 0) return [];
+    const out: OfficeWorldDrawable[] = [];
+    for (const vehicle of this.vehicles) {
+      const at = this.vehicleTileOf(vehicle);
+      if (at === null) continue;
+      const foot = this.footPoint(at.col, at.row);
+      if (
+        foot.x < rect.x ||
+        foot.x > rect.x + rect.width ||
+        foot.y < rect.y ||
+        foot.y > rect.y + rect.height
+      ) {
+        continue;
+      }
+      out.push({
+        drawable: {
+          kind: "vehicle",
+          vehicleKind: vehicle.kind,
+          x: foot.x,
+          y: foot.y,
+          facing: vehicle.facing,
+          lights: Math.floor(this.nowMs / VEHICLE_LIGHT_MS) % 2 === 0 ? 0 : 1,
+        },
+        // The road's own depth: the foot of the tile it is crossing, the same
+        // number a walker standing there would carry.
+        depth: foot.y,
+        // Nobody's. A vehicle owns no name tag and no hit region, and
+        // `deepestByOwner` skips a null owner for exactly this case.
+        ownerAgentId: null,
+      });
+    }
+    return out;
+  }
+
+  /** Where a vehicle is this instant, as a fractional tile on its road. */
+  private vehicleTileOf(
+    vehicle: OfficeVehicle,
+  ): { readonly col: number; readonly row: number } | null {
+    const road = this.roadOf(vehicle);
+    if (road === null) return null;
+    const kerb = this.kerbIndexOf(vehicle, road);
+    if (kerb === null) return null;
+    if (vehicle.phase === "wait") return road.tiles[kerb];
+    const travelled = this.tilesTravelled(vehicle.elapsedMs);
+    return vehicle.phase === "arrive"
+      ? tileAlong(road.tiles, 0, kerb, travelled)
+      : tileAlong(road.tiles, kerb, road.tiles.length - 1, travelled);
   }
 
   /**
