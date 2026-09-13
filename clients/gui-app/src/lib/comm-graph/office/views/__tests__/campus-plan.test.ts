@@ -1835,9 +1835,16 @@ describe("planCampus", () => {
       // DESKS, which is what this case is named for and what `campusSeatProps`
       // draws. A bed and a bench are seats too and they carry a real box for the
       // same reason - `isoCampusSeatBox` off their own tile, asserted above by
-      // the `null` check every seat goes through - but the painter has no civic
-      // branch yet, so measuring their painted union here would measure nothing
-      // and pass. That pin belongs with the branch that draws them.
+      // the `null` check every seat goes through.
+      //
+      // THE PAINTER NOW HAS A CIVIC BRANCH, and this case still does not read
+      // it: `paintSeat` returns nothing for a civic seat, so a painted union
+      // measured here would be empty. Stated as what is UNVERIFIED rather than
+      // as a reason: between this skip and the sibling case's `null` check, the
+      // civic seats' hit-box GEOMETRY is pinned by neither - only its
+      // non-nullness is. The pin belongs with whichever branch ends up drawing
+      // civic furniture from the seat in the isometric views, and today none
+      // does; Campus draws it from the plan.
       if (seat.civicRoomId !== null) continue;
       const occupantId = occupantBySeatId.get(seat.seatId) ?? null;
       // Occupied, not sheeted, `openRequests: 3` - the union the ticket

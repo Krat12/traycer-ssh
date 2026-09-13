@@ -93,16 +93,32 @@ export const CIVIC_ROADS_EXPECTED: Readonly<Record<OfficeViewId, boolean>> = {
  * INHERITED its riders, so "ambulance" in this constant's name is the trigger
  * and the room, not what is drawn at the kerb.
  *
- * Inheritance is the sharper one. In the `true` views a trip that DROPPED its
- * riders is rejected on the dwell itself - `minimumDwell > 41`, 41 being what
- * such a trip is observed at. Campus's branch asserts that same 41 as its
- * expected value, so the dwell reading there cannot tell a carried rider from a
- * dropped one at all: what rejects the dropped one in Campus is the rider
- * observed directly - `sawInheritedRiderAway` before the regime split, and the
- * settled-tick observation inside the branch - never this row. So the row says
- * which of the three bounds does the waiting, and nothing about whether riders
- * are carried; widening it to another vehicle needs that vehicle's own
- * measurement.
+ * Inheritance is the sharper one, and the SECOND wording of this comment was
+ * wrong about it too. It said the transfer was still witnessed in Campus by
+ * `sawInheritedRiderAway` and the settled tick. It is not, and the way to find
+ * that out was to run it rather than to read it.
+ *
+ * MEASURED. Drop the inherited riders at the point they are transferred -
+ * `forAgentIds: [agentId]` in `spawnVehicleFor` - and the case reds in exactly
+ * three views: `expected 41 to be greater than or equal to 120`, `to 66` and
+ * `to 83`, which are floor, towers and building. Campus stays GREEN. Nothing in
+ * the Campus branch is watching the vehicle's rider list: `awayAgentIds` is
+ * built from `character.seated`, and an agent walks to its bed and settles
+ * whether or not a vehicle claims to be carrying it. So with the floor
+ * governing, the correct engine and the rider-dropping one both leave at 41.
+ *
+ * WHAT CAMPUS'S BRANCH ACTUALLY PINS, then: the shared wait gate. A vehicle
+ * that has bound a rider waits the four-second floor and leaves at 41, and the
+ * patient really is in bed before the engine arrives. RIDER TRANSFER is
+ * witnessed only by the `true` views, on `minimumDwell > 41` - the dwell IS
+ * their instrument, and Campus asserts that same 41 as its expected value, so
+ * the instrument cannot exist there. The limit is the whole Campus case for
+ * that mutant, not just one assertion in it.
+ *
+ * So the row says which of the three bounds does the waiting, and nothing about
+ * whether riders are carried. Widening it to another vehicle needs that
+ * vehicle's own measurement, and any claim that a `false` view witnesses a
+ * transfer needs the mutant above to red there.
  */
 export const AMBULANCE_RIDER_SETS_THE_DWELL: Readonly<
   Record<OfficeViewId, boolean>

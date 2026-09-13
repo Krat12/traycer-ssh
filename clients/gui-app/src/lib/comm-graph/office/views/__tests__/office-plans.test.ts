@@ -197,8 +197,10 @@ const TRIAGE_SCALES: ReadonlyArray<number> = [12, 309, 1000];
  *
  * Flat rather than scaled by zoom or by plate size: what it absorbs is a
  * floating-point residual on an EXACT abutment, which has no size of its own to
- * be proportional to. The measurement that picks the number, and the reason
- * tangency is legitimate here at all, is at the use site.
+ * be proportional to - and the zooms sampled here are two, so a flat CSS pixel
+ * is a claim about those two rather than about the zoom range. The measurement
+ * that picks the number, and the reason tangency is legitimate here at all, is
+ * at the use site.
  */
 const TOUCH_TOLERANCE_PX = 0.01;
 
@@ -496,22 +498,30 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
             // apart, so faces abut EXACTLY rather than nearly, and the residual
             // is whatever the multiplication left behind.
             //
-            // Measured across every view, population and zoom this suite runs -
-            // 36 combinations - the separations are bimodal and nothing lands
-            // between the two modes. City's pod plates at office zoom sit at
-            // -1.1369e-13 px at 309 agents and -5.6843e-14 px at 1,000; at 309
-            // the same relation ALSO yields +1.1369e-13 for another pair, which
-            // is the proof the sign is rounding and not geometry. The next value
-            // in the whole distribution is 2.8 px, and every other combination
-            // is 8.4 px or more.
+            // WHAT WAS SAMPLED, stated as a sample. Every PAIR - not each
+            // combination's minimum - in the 36 combinations this suite runs
+            // (6 views x 3 populations x 2 zooms), taking only those under 5 px:
             //
-            // So the threshold sits in an empty band eleven orders of magnitude
-            // wide: far above the residual, 280x below the tightest real
-            // clearance, and 120x below 1.2 px, the smallest REAL overprint this
-            // suite has ever caught (finding 5's board at close-up; the rest ran
-            // 2.8 to 8.4 px). Exact tangency is NOT a defect and must not be
-            // "fixed" by nudging a packer - the nudge would move a layout that
-            // is correct, to satisfy an artefact of reading it.
+            //   3 pairs at exactly 0
+            //   2 at -5.6843e-14, 1 at -1.1369e-13, 1 at +1.1369e-13
+            //   11 at 2.8, 5 at 3.4
+            //
+            // Seven pairs within 1.2e-13 of zero, three of them landing exactly
+            // on it, and then nothing until 2.8 px. The residual falling on BOTH
+            // sides of zero, and on zero itself, is what says its sign is
+            // rounding rather than geometry.
+            //
+            // The empty band is a property of this SAMPLE, not a proof about
+            // every fixture: a knife-edge sweep that hunts a pair deliberately
+            // placed a thousandth of a pixel apart is on the plan's open list.
+            // What is not sample-bound is the RATIO - 0.01 px is 8.8e10 times
+            // the largest residual measured, and 120x smaller than 1.2 px, the
+            // smallest REAL overprint this suite has caught (finding 5's board
+            // at close-up; the rest ran 2.8 to 8.4 px).
+            //
+            // Exact tangency is NOT a defect and must not be "fixed" by nudging
+            // a packer - the nudge would move a layout that is correct, to
+            // satisfy an artefact of reading it.
             const separation = Math.max(
               b.left - a.right,
               a.left - b.right,

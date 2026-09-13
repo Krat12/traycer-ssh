@@ -5486,6 +5486,16 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
         for (const seat of benchSeats) {
           const who = onSeat(seat);
           if (who === null || book.civicClaimOf(who) !== null) continue;
+          // SEATED, not merely standing on the tile. A bench row sits on
+          // walkable lawn that other walkers cross, so a body at these
+          // coordinates is not yet a body ON the bench - and "a stroller is
+          // already on it" is the premise this whole case rests on. The pose is
+          // what the frame says about that, so the pose is what is asked.
+          const sprite = characterSpriteAt(
+            frameOf(scene),
+            footRect(layoutOf(scene), seat.chairTile),
+          );
+          if (sprite?.pose !== "sit") continue;
           return { id: who, seat };
         }
       }
