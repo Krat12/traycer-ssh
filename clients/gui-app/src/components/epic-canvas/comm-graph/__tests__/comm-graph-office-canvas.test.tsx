@@ -4698,6 +4698,26 @@ describe("CommGraphOfficeCanvas fixup 8 - the caught-up feed is not an input to 
  * K2's art pin pins the PIXEL MAPS; these cases are the seam that stops
  * either side being re-authored without the other noticing. The Floor is
  * the wrong witness: it has a road, so its ward carries no beacon at all.
+ *
+ * WHAT EACH CASE ACTUALLY PROVED, corrected. Against the unfixed source BOTH
+ * cases fail in `chromeSirenOn`, on a lamp that is nowhere above the plate -
+ * `captureChromeSiren` is the first thing either one does with a blit, so
+ * `lensClearancePx` and its own throw are never reached. The red here is
+ * PLACEMENT, and it is one red carried twice, not two.
+ *
+ * The clearance bound is therefore a FIXED-SOURCE PROPERTY: `LENS_CLEARANCE_PX`
+ * is what makes the coverage claim testable from here on, not what proved the
+ * fix. Both halves are worth having and the distinction is not pedantry - a
+ * property pinned on fixed source holds the value against the NEXT change,
+ * while a red is evidence about the last one, and only a red licenses the
+ * claim that a defect was caught.
+ *
+ * It could be made a red only by loosening `chromeSirenOn` to accept any
+ * siren blit, including the world-space one. That trades a precise failure
+ * for a vague one and measures a position the fix deletes, so it is not done.
+ * `3508373b9`'s body says "the FIRST case fails on a missing chrome
+ * placement", which reads as a contrast with a second case that did something
+ * else; it did not, and this comment is the correction.
  */
 describe("CommGraphOfficeCanvas - Mission control ward beacon", () => {
   let rafQueue: Array<{
