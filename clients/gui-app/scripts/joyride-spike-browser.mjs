@@ -8,7 +8,9 @@
 //
 // `--out` receives PNG screenshots named after each checkpoint plus
 // `results.json`. Exit code is 1 when any hard check FAILS; OBSERVE lines
-// are measurements the gate must weigh, not assertions.
+// are measurements the gate must weigh, not assertions. One FAIL is expected
+// on react-joyride 3.2 and accepted by the coordinator: the equal-size
+// translation check in section 6 (see the comment there).
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -114,8 +116,8 @@ try {
   }
   const target = await targetResponse.json();
   client = await connectCdp(target.webSocketDebuggerUrl);
-  await client.send("Runtime.enable");
-  await client.send("Page.enable");
+  await client.send("Runtime.enable", {});
+  await client.send("Page.enable", {});
   await setViewport(1200, 800);
 
   // ---------------------------------------------------------------- helpers
@@ -224,6 +226,7 @@ try {
       client,
       `the tour card showing "${counter}"`,
       `document.querySelector('[data-spike="step-counter"]')?.textContent === ${JSON.stringify(counter)} && getComputedStyle(document.querySelector('.react-joyride__floater')).opacity === '1'`,
+      30_000,
     );
   const rectsMatch = (cutout, rect, pad) =>
     cutout !== null &&
@@ -259,8 +262,9 @@ try {
   check("overlay: overlayColor var(--onboarding-tour-overlay) resolves on the SVG fill (not the #00000080 default)", ov.coverPath.fill !== "rgba(0, 0, 0, 0.5)" && ov.coverPath.fill !== "rgb(0, 0, 0)" && ov.coverPath.fill !== "none", {
     fill: ov.coverPath.fill, cssVar: ov.resolvedOverlayVar,
   });
-  check("overlay: cover path carries upstream hardcoded opacity transition (what the reduced-motion override must remove)", ov.cutoutPath.transitionProperty === "opacity" && ov.cutoutPath.transitionDuration === "0.2s", {
-    transitionProperty: ov.cutoutPath.transitionProperty, transitionDuration: ov.cutoutPath.transitionDuration,
+  check("overlay: the cutout (cover) path carries upstream's hardcoded opacity transition; the outer overlay path has none", ov.cutoutPath.transitionProperty === "opacity" && ov.cutoutPath.transitionDuration === "0.2s" && ov.coverPath.transitionProperty === "all" && ov.coverPath.transitionDuration === "0s", {
+    cutoutPath: { transitionProperty: ov.cutoutPath.transitionProperty, transitionDuration: ov.cutoutPath.transitionDuration },
+    overlayPath: { transitionProperty: ov.coverPath.transitionProperty, transitionDuration: ov.coverPath.transitionDuration },
   });
   check("tooltip: role=dialog aria-modal=false, labelled/described ids resolve, no alertdialog", ov.tooltip.role === "dialog" && ov.tooltip.ariaModal === "false" && ov.tooltip.labelResolves && ov.tooltip.descriptionResolves && !ov.tooltip.alertdialogPresent, ov.tooltip);
   check("tooltip: Next / Skip / Pause tour rendered, counter 1 of 4", ov.tooltip.buttons.includes("Next") && ov.tooltip.buttons.includes("Skip") && ov.tooltip.buttons.includes("Pause tour") && ov.tooltip.counter === "1 of 4", { buttons: ov.tooltip.buttons });
@@ -285,7 +289,7 @@ try {
 
   // ------------------------------------------------ 3. sonner over the tour
   await control("showToast()");
-  await waitFor(client, "the toast", `Boolean(document.querySelector('[data-spike="toast-action"]'))`);
+  await waitFor(client, "the toast", `Boolean(document.querySelector('[data-spike="toast-action"]'))`, 30_000);
   await delay(700);
   const toastAction = await rectOf('[data-spike="toast-action"]');
   const toastHit = await hitAt(toastAction.x, toastAction.y);
@@ -342,52 +346,56 @@ try {
 
   // ------------------------------------------------ 6. resize / translate / zero / detach
   await control("setColumnWidth(360)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   column = await rectOf('[data-visible="true"] [data-spike="column"]');
-  check("geometry: style.width resize 240->360 - hole follows within 250ms", rectsMatch(ov.cutout, column, 8) && Math.round(column.width) === 360, { cutout: ov.cutout, column });
+  check("geometry: style.width resize 240->360 - hole follows within 200ms", rectsMatch(ov.cutout, column, 8) && Math.round(column.width) === 360, { cutout: ov.cutout, column });
   const floaterAfterResize = ov.floaterRect;
   observe("geometry: floater after resize (should sit right of the column)", { floaterLeft: floaterAfterResize.left, columnRight: column.left + column.width });
 
   await control("setColumnOffset(80)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   column = await rectOf('[data-visible="true"] [data-spike="column"]');
   const translationTracked = rectsMatch(ov.cutout, column, 8);
-  observe("geometry: equal-size translation (margin-left 80px, no size change) - does the hole follow within 250ms? (upstream tracks the target with a one-node ResizeObserver + scroll/resize listeners)", { tracked: translationTracked, cutout: ov.cutout, column, floaterLeft: ov.floaterRect.left });
+  // Expected to FAIL on react-joyride 3.2 (one-node ResizeObserver plus
+  // scroll/resize listeners cannot see a pure translation). Recorded as a
+  // hard FAIL rather than an observation because the gate asks for it; the
+  // coordinator accepted the limitation on 2026-09-13.
+  check("geometry: equal-size translation (margin-left 80px, no size change) - hole follows within 200ms", translationTracked, { tracked: translationTracked, cutout: ov.cutout, column, floaterLeft: ov.floaterRect.left });
   await snap("05-translation");
   await evaluate(client, `window.dispatchEvent(new Event('resize'))`);
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
-  observe("geometry: same translation after a window resize event - hole re-measured?", { tracked: rectsMatch(ov.cutout, column, 8), cutout: ov.cutout });
+  check("geometry: the same translation IS re-measured within 200ms of a window resize event (the escape hatch)", rectsMatch(ov.cutout, column, 8), { cutout: ov.cutout });
   await control("setColumnOffset(0)");
-  await delay(250);
+  await delay(200);
 
   await control("setColumnZero(true)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   p = await probe();
-  check("geometry: zero-sized target (resolver returns null per the plan's nonzero-box filter) -> no cutout path within 250ms, step not consumed", ov.overlayPresent && ov.pathCount === 1 && p.stepIndex === "1", { pathCount: ov.pathCount, cutout: ov.cutout, stepIndex: p.stepIndex });
+  check("geometry: zero-sized target (resolver returns null per the plan's nonzero-box filter) -> no cutout path within 200ms, step not consumed", ov.overlayPresent && ov.pathCount === 1 && p.stepIndex === "1", { pathCount: ov.pathCount, cutout: ov.cutout, stepIndex: p.stepIndex });
   observe("geometry: zero-sized target - is the CARD still mounted while the resolver returns null? (Step only re-renders on a store change; the app's MutationObserver/epoch must re-present)", { floaterPresent: ov.floaterPresent, floaterOpacity: ov.floaterOpacity, floaterRect: ov.floaterRect, eventsSince: (await events()).slice(-3).map((e) => `${e.type}/${e.action}/${e.index}`) });
   await snap("06-zero-size");
   await control("setColumnZero(false)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   column = await rectOf('[data-visible="true"] [data-spike="column"]');
-  check("geometry: target returns from zero size -> hole back on the column within 250ms", rectsMatch(ov.cutout, column, 8), { cutout: ov.cutout, column });
+  check("geometry: target returns from zero size -> hole back on the column within 200ms", rectsMatch(ov.cutout, column, 8), { cutout: ov.cutout, column });
 
   await control("setColumnDetached(true)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   const rail = await rectOf('[data-spike="rail"]');
   p = await probe();
-  check("geometry: column unmounted -> function target resolves rail -> hole matches rail within 250ms, step not consumed", rectsMatch(ov.cutout, rail, 8) && p.stepIndex === "1" && p.targetNotFound === "0", { cutout: ov.cutout, rail, stepIndex: p.stepIndex });
+  check("geometry: column unmounted -> function target resolves rail -> hole matches rail within 200ms, step not consumed", rectsMatch(ov.cutout, rail, 8) && p.stepIndex === "1" && p.targetNotFound === "0", { cutout: ov.cutout, rail, stepIndex: p.stepIndex });
   const floaterOnRail = ov.floaterRect;
   const floaterFollowedRail = floaterOnRail.left >= rail.left + rail.width && floaterOnRail.left < rail.left + rail.width + 80;
   observe("geometry: does the CARD follow the column->rail swap too (floater left edge just right of the rail)?", { followed: floaterFollowedRail, floaterRect: floaterOnRail, rail });
   await snap("07-rail-swap");
   await control("setColumnDetached(false)");
-  await delay(250);
+  await delay(200);
   ov = await readOverlay();
   column = await rectOf('[data-visible="true"] [data-spike="column"]');
   check("geometry: rail -> column again - hole back on the column", rectsMatch(ov.cutout, column, 8), { cutout: ov.cutout, column });
@@ -395,7 +403,7 @@ try {
   // ------------------------------------------------ 7. dialog suspension (z-50)
   await clearEvents();
   await control("setDialogOpen(true)");
-  await waitFor(client, "the dialog", `Boolean(document.querySelector('[data-spike="dialog"]'))`);
+  await waitFor(client, "the dialog", `Boolean(document.querySelector('[data-spike="dialog"]'))`, 30_000);
   await delay(400);
   ov = await readOverlay();
   p = await probe();
@@ -413,7 +421,7 @@ try {
   await snap("08-dialog-open");
   // nested
   await control("setNestedOpen(true)");
-  await waitFor(client, "the nested dialog", `Boolean(document.querySelector('[data-spike="nested-dialog"]'))`);
+  await waitFor(client, "the nested dialog", `Boolean(document.querySelector('[data-spike="nested-dialog"]'))`, 30_000);
   await delay(300);
   await control("setNestedOpen(false)");
   await delay(400);
@@ -435,7 +443,7 @@ try {
   await delay(200);
   await control("setResumeDeferred(true)");
   await control("setDialogOpen(true)");
-  await waitFor(client, "the dialog again", `Boolean(document.querySelector('[data-spike="dialog"]'))`);
+  await waitFor(client, "the dialog again", `Boolean(document.querySelector('[data-spike="dialog"]'))`, 30_000);
   await delay(400);
   await clearEvents();
   await pressEscape();
@@ -480,7 +488,7 @@ try {
   // (which is also how a real OS preference reaches the app).
   await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   await client.send("Page.navigate", { url: pageUrl });
-  await waitFor(client, "the reloaded harness", `Boolean(window.__joyrideSpike) && document.querySelector('#probe-state')?.dataset.reducedMotion === 'true'`);
+  await waitFor(client, "the reloaded harness", `Boolean(window.__joyrideSpike) && document.querySelector('#probe-state')?.dataset.reducedMotion === 'true'`, 30_000);
   await waitForTooltip("1 of 4");
   await delay(400);
   ov = await readOverlay();
@@ -489,7 +497,11 @@ try {
   await waitForTooltip("2 of 4");
   await delay(300);
   ov = await readOverlay();
-  check("reduced motion: scoped CSS override removes the spotlight cover-path opacity transition", ov.cutoutPath !== null && (ov.cutoutPath.transitionDuration === "0s" || ov.cutoutPath.transitionProperty === "none"), { transitionProperty: ov.cutoutPath?.transitionProperty, transitionDuration: ov.cutoutPath?.transitionDuration });
+  const transitionOff = (path) => path !== null && (path.transitionProperty === "none" || Number.parseFloat(path.transitionDuration) === 0);
+  check("reduced motion: scoped CSS override removes the transition on BOTH spotlight paths (outer overlay path and cutout cover path)", transitionOff(ov.coverPath) && transitionOff(ov.cutoutPath), {
+    overlayPath: ov.coverPath === null ? null : { transitionProperty: ov.coverPath.transitionProperty, transitionDuration: ov.coverPath.transitionDuration },
+    cutoutPath: ov.cutoutPath === null ? null : { transitionProperty: ov.cutoutPath.transitionProperty, transitionDuration: ov.cutoutPath.transitionDuration },
+  });
   check("reduced motion: styles.floater/overlay transition none", ov.floaterTransition === "none" && ov.overlayTransition === "none", { floater: ov.floaterTransition, overlay: ov.overlayTransition });
   await clearEvents();
   next = await rectOf('[data-action="primary"]');
@@ -524,7 +536,7 @@ try {
 
   // ------------------------------------------------ 11. missing target keeps the step
   await clearEvents();
-  await control("setStepIndex(3)");
+  const missingEnteredAt = await evaluate(client, `(() => { window.__joyrideSpike.setStepIndex(3); return Math.round(performance.now()); })()`);
   await delay(600);
   p = await probe();
   ov = await readOverlay();
@@ -534,10 +546,12 @@ try {
   await waitFor(client, "target_not_found after targetWaitTimeout 8000", `document.querySelector('#probe-state').dataset.targetNotFound === '1'`, 12_000);
   const waitEvents = await events();
   const tnf = waitEvents.find((e) => e.type === "error:target_not_found");
-  const tnfAt = waitEvents[0]?.at;
   p = await probe();
   ov = await readOverlay();
-  check("missing target: error:target_not_found fired ~8s later and the controlled index stayed at 3 (step kept, not skipped)", tnf !== undefined && tnf.index === 3 && p.stepIndex === "3" && tnf.controlled, { tnf, stepIndex: p.stepIndex, msAfterFirstEvent: tnfAt === undefined ? null : tnf.at - tnfAt, firstEvent: waitEvents[0] === undefined ? null : `${waitEvents[0].type}/${waitEvents[0].action}` });
+  // Both stamps are page `performance.now()` values: `missingEnteredAt` was
+  // taken in the same evaluate call that set the controlled index.
+  const msAfterStepEntry = tnf === undefined ? null : tnf.at - missingEnteredAt;
+  check("missing target: error:target_not_found fired 8000-9000ms after step entry (targetWaitTimeout 8000, 100ms poll) and the controlled index stayed at 3", tnf !== undefined && tnf.index === 3 && p.stepIndex === "3" && tnf.controlled && msAfterStepEntry !== null && msAfterStepEntry >= 8000 && msAfterStepEntry <= 9000, { tnf, stepIndex: p.stepIndex, msAfterStepEntry, eventsDuringWait: waitEvents.map((e) => `${e.type}/${e.action}/${e.index}`) });
   observe("missing target: what Joyride renders AFTER the timeout in controlled mode (the app must swap in the unanchored fallback step)", { overlayPresent: ov.overlayPresent, pathCount: ov.pathCount, floaterPresent: ov.floaterPresent, tourStatus: p.tourStatus });
   await snap("14-missing-timed-out");
 
@@ -653,7 +667,7 @@ function connectCdp(url) {
     socket.addEventListener("open", () => {
       clearTimeout(connectTimer);
       resolve({
-        send(method, params = {}) {
+        send(method, params) {
           return new Promise((requestResolve, requestReject) => {
             const id = ++nextId;
             pending.set(id, { resolve: requestResolve, reject: requestReject });
@@ -684,7 +698,7 @@ async function evaluate(client, expression) {
   return response.result.value;
 }
 
-async function waitFor(client, label, expression, timeoutMs = 30_000) {
+async function waitFor(client, label, expression, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await evaluate(client, expression)) return;
