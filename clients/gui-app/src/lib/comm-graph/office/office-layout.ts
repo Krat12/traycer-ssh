@@ -904,24 +904,54 @@ function packAmenities(
  * exactly one row above the road on every storey.
  *
  * It is the LAST spec in the column order, so nothing is packed below it and
- * moving it down can collide with nothing. It never moves UP: a column whose
- * foot it cannot reach - the first column on a multi-storey building, where
- * the stairwell holds the bottom corner - leaves it where the packer put it,
- * and its kerb is then the road tile in its door's column as before.
+ * moving it down can collide with nothing. It never moves UP.
+ *
+ * IN THE FIRST COLUMN OF A MULTI-STOREY BUILDING IT CLEARS THE WELL SIDEWAYS
+ * RATHER THAN GIVING UP THE ROAD. The stairwell holds that column's bottom
+ * corner, and this used to leave the infirmary where the packer put it - two
+ * rows short of the road, with `kerbOnRoad` still taking its door's column, so
+ * the kerb measured 3 on every storey but the last. That was part A's stopgap
+ * outliving the contract that replaced it: the kerb PROMISES distance 1, and a
+ * ward whose door cannot reach the road cannot keep that promise by arithmetic.
+ *
+ * So the room steps left by `STAIRS_TILES` and anchors to `lastRow` like every
+ * other column. The reserved band stays for every OTHER first-column room -
+ * the band exists so a room's bottom wall is not cut by the well, and a room
+ * that clears the well's columns needs none of it. Nothing is packed below the
+ * infirmary, which is the same argument that lets it move down at all.
+ *
+ * The column widens by `STAIRS_TILES` only when it has to: the infirmary is
+ * usually its column's widest room, so stepping left needs `STAIRS_TILES` more
+ * width than the column had. `packing.width` feeds `localCols`, so a storey
+ * that needs the room grows by exactly that and no more.
  */
 function anchorInfirmaryToRoad(
   packing: AmenityPacking,
   lastRow: number,
   firstColumnLastRow: number,
+  stairsRows: number,
 ): AmenityPacking {
+  let width = packing.width;
   const placements = packing.placements.map((placement) => {
     if (placement.spec.kind !== "infirmary") return placement;
+    if (placement.rightOffset === 0 && stairsRows > 0) {
+      const rightOffset = STAIRS_TILES;
+      width = Math.max(width, rightOffset + placement.spec.cols);
+      return {
+        ...placement,
+        rightOffset,
+        // `Math.max` for the same reason the plain branch below compares: this
+        // anchors DOWNWARD only, and a column that already packed it lower
+        // keeps what the packer chose.
+        row: Math.max(placement.row, lastRow - placement.spec.rows + 1),
+      };
+    }
     const columnLastRow =
       placement.rightOffset === 0 ? firstColumnLastRow : lastRow;
     const row = columnLastRow - placement.spec.rows + 1;
     return row > placement.row ? { ...placement, row } : placement;
   });
-  return { placements, width: packing.width };
+  return { placements, width };
 }
 
 interface Forest {
@@ -1299,6 +1329,7 @@ function buildFloors(
       ),
       lastRoomRow,
       lastRoomRow - stairsRows,
+      stairsRows,
     );
     const localCols =
       cabins.length === 0
@@ -2997,6 +3028,16 @@ function kerbOnRoad(road: OfficeRoad, col: number): OfficeTilePos {
  * onto it - so it is where a vehicle would pull up. Drawn, never searched: the
  * counter standing on it is furniture a vehicle passes, not a wall it routes
  * around.
+ *
+ * THE STAIRWELL IS THE SECOND SUCH THING, and it is deliberate that the lane
+ * runs under it. On a multi-storey building the well's footprint covers the
+ * lobby row at its last two columns, so the road's final tiles before the exit
+ * are the well's own - measured at every size, always exactly two, always
+ * immediately before `exitTile`. The lane stays end to end anyway: those tiles
+ * are already unwalkable, the road consults no layer that knows about them,
+ * and a vehicle crosses them in a third of a second. Ending the lane one tile
+ * early instead would make a van vanish mid-row, which is a glitch where
+ * driving under the stairs is a shrug. Do not shorten the road to "fix" this.
  */
 function roadAlongLobby(cols: number, row: number): OfficeRoad {
   const tiles: OfficeTilePos[] = [];
