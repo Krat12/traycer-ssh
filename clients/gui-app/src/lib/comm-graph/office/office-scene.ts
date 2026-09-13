@@ -664,8 +664,23 @@ interface OfficeVehicle {
   /** Everyone this trip serves. Coalescing appends; it never queues a second. */
   readonly forAgentIds: string[];
   phase: "arrive" | "wait" | "depart";
-  /** Within the phase, not within the trip. */
+  /**
+   * Within the phase, not within the trip - and in `wait`, NEVER reset by a
+   * join. This is the clock the twelve second ceiling reads, and it has to be
+   * one a newcomer cannot push out or the ceiling is not a ceiling: riders
+   * arriving less than four seconds apart held the car at the kerb forever.
+   */
   elapsedMs: number;
+  /**
+   * Time since the last rider joined, which is what the four second FLOOR
+   * reads.
+   *
+   * Two clocks because the floor and the ceiling measure different things. The
+   * floor is a courtesy to whoever just arrived - a visit that ends the
+   * instant somebody is added reads as the car ignoring them - so a join
+   * restarts it. The ceiling is a promise to the road, so nothing restarts it.
+   */
+  sinceJoinMs: number;
   /**
    * Which way it points, carried rather than recomputed so that a WAITING
    * vehicle keeps the facing it arrived on - there is no segment under it to
@@ -3550,6 +3565,23 @@ export class OfficeScene {
       this.summonFireEngine(ward, ward.kerbTile, agentId);
       return;
     }
+    // WHILE THE ENGINE STANDS, IT SPEAKS FOR THE WARD. The threshold above is
+    // this sync's crash count, which falls again as agents recover - so a
+    // fresh crash arriving under a still-standing engine would otherwise be
+    // answered by a van parked beside it, against the engine having replaced
+    // that room's vans for as long as it is there. It joins the engine
+    // instead, and vans resume once the engine has gone.
+    const engine = this.standingFor("fire-engine", ward.civicRoomId);
+    if (engine !== undefined) {
+      this.summon({
+        kind: "fire-engine",
+        room: ward,
+        kerbTile: ward.kerbTile,
+        agentId,
+        replaces: NO_VEHICLES,
+      });
+      return;
+    }
     // AN AMBULANCE COMES FOR AN AGENT THAT GOT A BED. The claim is readable
     // here only because dispatch runs after `updateCivicClaims`: a sync
     // earlier this agent holds nothing, and the van would come for a crash
@@ -3581,10 +3613,16 @@ export class OfficeScene {
     // NAMES what it supersedes and removes nothing itself. `summon` owns the
     // order, because the order is the contract: the van comes off the road
     // only once the trip replacing it is certain to happen.
+    // ONLY THE VANS THAT ARE STILL COMING. A departing van is past the kerb
+    // and on its way out; pulling it off the road mid-exit is the same vanish
+    // the viewport gate above exists to prevent, and it has nothing left to
+    // hand over - its riders were served. So it finishes, and the engine
+    // supersedes only what is still arriving or standing.
     const vans = this.vehicles.filter(
       (vehicle) =>
         vehicle.kind === "ambulance" &&
-        vehicle.civicRoomId === room.civicRoomId,
+        vehicle.civicRoomId === room.civicRoomId &&
+        vehicle.phase !== "depart",
     );
     this.summon({
       kind: "fire-engine",
@@ -3645,17 +3683,6 @@ export class OfficeScene {
     readonly replaces: ReadonlyArray<OfficeVehicle>;
   }): void {
     const { agentId, kerbTile, kind, replaces, room } = args;
-    const standing = this.vehicles.find(
-      (vehicle) =>
-        vehicle.kind === kind && vehicle.civicRoomId === room.civicRoomId,
-    );
-    if (standing !== undefined) {
-      // Joins the trip and extends its wait rather than queuing a second van.
-      // A join cannot be refused, so the superseded trips go here too.
-      this.absorb(standing, agentId, replaces);
-      if (standing.phase === "wait") standing.elapsedMs = 0;
-      return;
-    }
     // The floor whose ROAD this is, which is the room's floor and not the
     // rider's - the two differ exactly where the fallback above found a room
     // on another storey.
@@ -3666,7 +3693,23 @@ export class OfficeScene {
     // - INCLUDING a van an escalation would otherwise have replaced. Refusing
     // here after having already removed it is how a standing trip disappears
     // with nothing sent in its place.
+    //
+    // THE VIEWPORT COMES BEFORE THE COALESCE, which is the rules' own
+    // precedence and not a detail: a join is a dispatch that happens to land
+    // on a trip already running, so an offscreen one has to be refused like
+    // any other. Behind this gate, a newcomer nobody can see was restarting a
+    // surviving trip's wait from offscreen.
     if (!this.tileInLastViewRect(kerbTile)) return;
+    const standing = this.standingFor(kind, room.civicRoomId);
+    if (standing !== undefined) {
+      // Joins the trip and extends its wait rather than queuing a second van.
+      // A join cannot be refused once it is past the gates, so the superseded
+      // trips go here too. Only the FLOOR's clock restarts; the ceiling's does
+      // not, or a steady trickle of joiners would hold the kerb forever.
+      this.absorb(standing, agentId, replaces);
+      if (standing.phase === "wait") standing.sinceJoinMs = 0;
+      return;
+    }
     // NOTHING IS DESTROYED ABOVE THIS LINE. Every refusal is behind us, so
     // what follows cannot leave the road emptier than it found it.
     const inherited = this.clearReplaced(replaces);
@@ -3684,8 +3727,31 @@ export class OfficeScene {
       forAgentIds: [agentId, ...inherited.filter((id) => id !== agentId)],
       phase: "arrive",
       elapsedMs: 0,
+      sinceJoinMs: 0,
       facing: this.roadFacingAt(floor.road, 0, 1),
     });
+  }
+
+  /**
+   * The trip of this kind serving this room that can still take a newcomer.
+   *
+   * A DEPARTING TRIP IS NOT ONE. It is past the kerb and never comes back, so
+   * appending an id to it is a visit that silently never happens - and the
+   * agent's status cannot trigger again, because entering is a transition and
+   * it has already entered. The newcomer dispatches under the ordinary gates
+   * instead, which is why a departing van and an arriving van for one room can
+   * briefly share the road. That is legal, and the cap is what bounds it.
+   */
+  private standingFor(
+    kind: OfficeVehicleKind,
+    civicRoomId: string,
+  ): OfficeVehicle | undefined {
+    return this.vehicles.find(
+      (vehicle) =>
+        vehicle.kind === kind &&
+        vehicle.civicRoomId === civicRoomId &&
+        vehicle.phase !== "depart",
+    );
   }
 
   /**
@@ -3763,6 +3829,7 @@ export class OfficeScene {
     const live: OfficeVehicle[] = [];
     for (const vehicle of this.vehicles) {
       vehicle.elapsedMs += dtMs;
+      vehicle.sinceJoinMs += dtMs;
       if (this.advanceVehicle(vehicle)) live.push(vehicle);
     }
     this.vehicles = live;
@@ -3783,10 +3850,20 @@ export class OfficeScene {
       }
       vehicle.phase = "wait";
       vehicle.elapsedMs = 0;
+      vehicle.sinceJoinMs = 0;
       return true;
     }
     if (vehicle.phase === "wait") {
-      if (vehicle.elapsedMs < VEHICLE_WAIT_MIN_MS) return true;
+      // THE CEILING IS READ FIRST, and off the clock a join cannot touch. Put
+      // the floor first and a stream of riders arriving inside four seconds of
+      // each other parks the vehicle at the kerb for the rest of the session,
+      // each one restarting the only clock there was.
+      if (vehicle.elapsedMs >= VEHICLE_WAIT_MAX_MS) {
+        vehicle.phase = "depart";
+        vehicle.elapsedMs = 0;
+        return true;
+      }
+      if (vehicle.sinceJoinMs < VEHICLE_WAIT_MIN_MS) return true;
       if (
         vehicle.elapsedMs < VEHICLE_WAIT_MAX_MS &&
         !this.everyRiderSettled(vehicle)
