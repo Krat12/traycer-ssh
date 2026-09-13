@@ -3176,6 +3176,15 @@ export class OfficeScene {
     for (const character of this.characters.values()) {
       const target = character.errandTarget;
       if (target === null || target.seatId === null) continue;
+      // ALREADY GOING HOME, AND ITS TARGET IS NOT DEBRIS. This rule reads the
+      // book, so its answer does not change while an evicted stroller walks -
+      // the bench still belongs to its claimant - and the retained target is
+      // deliberate: `claimedSpotKeys` RESERVES the spot of somebody walking back
+      // from it, so clearing it on the return would hand that spot to the next
+      // bored agent while the last one is still crossing the floor. The sweep
+      // asks the other question instead, and asking it is what makes running
+      // every sync idempotent.
+      if (this.walkingToOwnChair(character)) continue;
       // `occupant` is the INJECTIVE reading - one agent per seat - and a held
       // civic claim puts its holder there. A bench with only a stroller on it
       // has no occupant at all, which is the whole defect this rule answers, so
@@ -3346,10 +3355,31 @@ export class OfficeScene {
     // floor - which is what tying it to the flight did - reads as a stutter.
     character.hurrying = true;
     // Already headed for the chair: a re-path would only restart the walk.
-    if (character.errand === "arriving") return;
-    if (character.errand === "returning") return;
-    if (character.errand === "errand-return") return;
+    if (this.walkingToOwnChair(character)) return;
     this.returnToDesk(character);
+  }
+
+  /**
+   * ALREADY WALKING TO ITS OWN CHAIR - the one state nobody may call
+   * `returnToDesk` on twice.
+   *
+   * `walkTo` starts from `startTileOf`, the ROUNDED tile, so a second call
+   * throws away the fraction of a tile the walk has earned; at three tiles a
+   * second a 100ms tick earns 0.3 of one, and a caller that runs on every sync
+   * never lets the walk finish at all. `startHurry` has kept this since it was
+   * written - "a re-path would only restart the walk" - and the bench eviction
+   * is the second caller that has to, so the three modes are named here once
+   * instead of in two lists that can drift.
+   *
+   * `arriving` sits with the two returns because it is the same walk, from the
+   * floor's door rather than from an errand.
+   */
+  private walkingToOwnChair(character: OfficeCharacter): boolean {
+    return (
+      character.errand === "arriving" ||
+      character.errand === "returning" ||
+      character.errand === "errand-return"
+    );
   }
 
   /**
