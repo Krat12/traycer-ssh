@@ -11,6 +11,7 @@ import {
   OFFICE_TILE,
   type OfficeSeat,
   type OfficeSize,
+  type OfficeWorldDrawable,
 } from "@/lib/comm-graph/office/office-types";
 import type { OfficeDeskState, OfficePlanInput } from "../office-view";
 import { planFloor } from "../floor/floor-plan";
@@ -53,7 +54,7 @@ function idleDeskState(agentId: string | null): OfficeDeskState {
 }
 
 function spriteNames(
-  drawables: ReturnType<typeof floorPainter.seatProps>,
+  drawables: ReadonlyArray<OfficeWorldDrawable>,
 ): ReadonlyArray<string> {
   return drawables
     .filter((item) => item.drawable.kind === "sprite")

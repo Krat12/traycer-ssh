@@ -48,6 +48,7 @@ import {
   type OfficeAgentStatus,
   type OfficeCharacterPose,
   type OfficeCivicRoom,
+  type OfficeCivicTally,
   type OfficeDrawable,
   type OfficeErrandSpot,
   type OfficeFloor,
@@ -2557,7 +2558,7 @@ describe("mission-control cold review: one hall for every host", () => {
   function drawnCivic(args: {
     readonly layout: OfficeLayout;
     readonly epic: OfficeTestEpic;
-    readonly tally: ReturnType<OfficeScene["civicTally"]>;
+    readonly tally: OfficeCivicTally;
     readonly zoom: number;
     readonly widthOverride: number | null;
   }): ReadonlyArray<OfficeSignToDraw> {
