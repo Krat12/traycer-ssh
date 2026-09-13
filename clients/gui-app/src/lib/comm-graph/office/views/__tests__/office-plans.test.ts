@@ -12,6 +12,7 @@ import { findOfficePath } from "@/lib/comm-graph/office/office-path";
 import { officeSpriteSize } from "@/lib/comm-graph/office/office-pixel-art";
 import { partitionOfficePopulation } from "@/lib/comm-graph/office/office-population";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
+import { civicCapacityFor } from "@/lib/comm-graph/office/office-layout";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import {
   OFFICE_CHARACTER_HEIGHT,
@@ -22,6 +23,7 @@ import {
   type OfficeFloor,
   type OfficeFrame,
   type OfficeLayout,
+  type OfficeCivicKind,
   type OfficeRect,
   type OfficeSceneInput,
   type OfficeSpriteName,
@@ -148,6 +150,11 @@ function sceneInputFor(args: {
   };
 }
 
+import {
+  CIVIC_KINDS,
+  CIVIC_ROOMS_EXPECTED,
+} from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
+
 const TRIAGE_SCALES: ReadonlyArray<number> = [12, 309, 1000];
 
 describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
@@ -163,6 +170,105 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
       }),
     );
     const agentIds = new Set(epic.agents.map((agent) => agent.id));
+
+    it("plans civic rooms exactly where the table says it should", () => {
+      const enrolled = CIVIC_ROOMS_EXPECTED[viewId];
+      const withRooms = layout.floors.filter((floor) => floor.civic.length > 0);
+
+      if (!enrolled) {
+        // The only way into the civic layer is the table. A view that started
+        // planning rooms without being enrolled reddens here rather than
+        // shipping half a layer in silence.
+        expect(withRooms).toEqual([]);
+        for (const floor of layout.floors) expect(floor.road).toBeNull();
+        return;
+      }
+
+      // PER BUILDING, not per storey. A view may keep one set of rooms for a
+      // whole host - the oblique views put them on the plaza storey and give
+      // every other storey `civic: []` - so what is owed is that each host has
+      // a storey carrying the four rooms, and that every agent's host is one
+      // of them.
+      expect(withRooms.length).toBeGreaterThan(0);
+      const hostsWithRooms = new Set<string | null>();
+      for (const floor of withRooms) {
+        expect([...floor.civic].map((room) => room.kind).sort()).toEqual(
+          [...CIVIC_KINDS].sort(),
+        );
+        hostsWithRooms.add(floor.hostId);
+        expect(floor.road).not.toBeNull();
+      }
+      for (const floor of layout.floors) {
+        expect(hostsWithRooms.has(floor.hostId)).toBe(true);
+      }
+
+      // Capacity is the contract's, from the one exported formula, so a view
+      // that sized its own ward differently is a view that disagrees with the
+      // seat book about how many people fit.
+      for (const floor of withRooms) {
+        const here = epic.agents.filter(
+          (agent) => agent.hostId === floor.hostId,
+        ).length;
+        const bounds = civicCapacityFor(here);
+        const seatsOf = (kind: OfficeCivicKind): number => {
+          const room = floor.civic.find((entry) => entry.kind === kind);
+          return room === undefined ? 0 : room.seatIds.length;
+        };
+        expect(seatsOf("infirmary")).toBe(bounds.beds);
+        expect(seatsOf("waiting-room")).toBe(bounds.chairs);
+        // C5 and C7: a door with a counter and a counter with a queue. Neither
+        // is a room anybody sits down in.
+        expect(seatsOf("archive")).toBe(0);
+        expect(seatsOf("help-desk")).toBe(0);
+      }
+
+      // Every civic seat is a real registered seat, of the kind its room
+      // implies, naming its own room back.
+      for (const floor of withRooms) {
+        for (const room of floor.civic) {
+          for (const seatId of room.seatIds) {
+            const seat = layout.seats.get(seatId);
+            expect(seat).toBeDefined();
+            if (seat === undefined) continue;
+            expect(seat.civicRoomId).toBe(room.civicRoomId);
+            expect(seat.kind).toBe(
+              room.kind === "infirmary" ? "bed" : "lounge",
+            );
+          }
+        }
+      }
+    });
+
+    it("walks to every civic seat, its archive door and its kerbs", () => {
+      if (!CIVIC_ROOMS_EXPECTED[viewId]) return;
+      for (const floor of layout.floors) {
+        if (floor.civic.length === 0) continue;
+        const road = floor.road;
+        if (road === null) throw new Error("an enrolled storey owes a road");
+        const roadTiles = new Set(
+          road.tiles.map((tile) => `${tile.col},${tile.row}`),
+        );
+        for (const room of floor.civic) {
+          // NOT A TELEPORT. A room an agent cannot walk to is a room the scene
+          // would have to drop somebody into, which is the one thing the civic
+          // walk must never do.
+          expect(
+            findOfficePath(layout, floor.lobbyTile, room.doorTile),
+          ).not.toBeNull();
+          for (const seatId of room.seatIds) {
+            const seat = layout.seats.get(seatId);
+            if (seat === undefined) continue;
+            expect(
+              findOfficePath(layout, floor.lobbyTile, seat.chairTile),
+            ).not.toBeNull();
+          }
+          const kerb = room.kerbTile;
+          if (kerb === null) continue;
+          // A kerb off the road is a vehicle parked in the flowerbed.
+          expect(roadTiles.has(`${kerb.col},${kerb.row}`)).toBe(true);
+        }
+      }
+    });
 
     // Folded from office-layout-contract.test.ts: "seats every agent exactly
     // once, with every seat id unique".
@@ -777,6 +883,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
       // Archived agents get a dust-sheeted desk, not a live character - there
       // is nothing drawn to check them against, on EITHER side of growth.
       if (seatAgent.archivedAt !== null) continue;
+      // Nor are the agents the CIVIC layer moved. A crashed or waiting agent
+      // is drawn in a bed or a lounge chair rather than at the desk it still
+      // owns, so its drawn position answers a question about its status and
+      // not about growth - `seatUnchanged` below reads `desks`, which is the
+      // desk it kept the whole time. This case is about what a re-layout does
+      // to a settled office, and a second, independent reason to be away from
+      // a desk is not that.
+      const status = epic.statusById.get(seatAgent.id);
+      if (status === "failure" || status === "awaiting") continue;
       const beforeRect = beforeRects.get(seatAgent.id);
       if (beforeRect === undefined) continue;
       if (beforeRect === null) {

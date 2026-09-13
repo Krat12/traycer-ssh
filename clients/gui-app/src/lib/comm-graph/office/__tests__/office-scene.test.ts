@@ -9,8 +9,14 @@ import {
   OFFICE_CULL_MARGIN_PX,
   OfficeScene,
 } from "@/lib/comm-graph/office/office-scene";
+import { CIVIC_ROOMS_EXPECTED } from "@/lib/comm-graph/office/__tests__/civic-rooms-expected";
 import { OfficeSeatBook } from "@/lib/comm-graph/office/office-seat-book";
-import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
+import {
+  makeTestEpic,
+  outbreakScript,
+  waitingScript,
+  type OfficeTestEpic,
+} from "@/lib/comm-graph/office/office-test-epic";
 import { obliqueReserveLabelSeatId } from "@/lib/comm-graph/office/views/oblique/oblique-plan";
 import {
   OFFICE_VIEW_IDS,
@@ -37,6 +43,7 @@ import {
   type OfficeRect,
   type OfficeSceneInput,
   type OfficeSeat,
+  type OfficeSeatKind,
   type OfficeSign,
   type OfficeSpriteName,
   type OfficeSpriteRef,
@@ -2256,7 +2263,10 @@ describe("OfficeScene", () => {
     }
   });
 
-  it("crashes the screen of a failing agent and sends it to reception", () => {
+  /** Measured: alpha's desk to its infirmary bed is 163 ticks on this floor. */
+  const CRASH_WALK_TICKS = 400;
+
+  it("crashes the screen of a failing agent, sends it to a bed, and KEEPS the crashed screen on the desk it left", () => {
     const scene = new OfficeScene(testView(layoutOffice), null);
     scene.sync(
       sceneInput({
@@ -2265,10 +2275,7 @@ describe("OfficeScene", () => {
         statusById: new Map<string, OfficeAgentStatus>([["alpha", "failure"]]),
       }),
     );
-    // Long enough to cross a furnished storey at a walk: the lobby is at the
-    // bottom of the building and the desks are at the top of it.
-    for (let step = 0; step < 150; step += 1) scene.tick(100);
-
+    // THE SCREEN, while the agent is still at the desk it crashed at.
     const frame = frameOf(scene);
     const crashed = sprites(frame.props, "monitor-crash");
     expect(crashed).toHaveLength(1);
@@ -2280,18 +2287,40 @@ describe("OfficeScene", () => {
     scene.tick(260);
     expect(sprites(frameOf(scene).props, "monitor-crash")).toHaveLength(1);
 
-    // A failure needs a person, so it queues at reception with the same
-    // bubble an interview raises.
-    const floor = layoutOf(scene).floors[0];
-    const standing = characterRect(frameOf(scene), "alpha");
-    expect(standing.x).toBe(floor.receptionQueueTiles[0].col * OFFICE_TILE);
-    expect(
-      frameOf(scene).overlay.some(
-        (drawable) =>
-          drawable.kind === "sprite" &&
-          drawable.sprite.name === "bubble-attention",
-      ),
-    ).toBe(true);
+    // Long enough to cross a furnished storey at a walk AND lie down at the
+    // end of it. Measured at 163 ticks from alpha's desk to its bed on this
+    // fixture; the old 150 was enough only to reach the lobby counter.
+    for (let step = 0; step < CRASH_WALK_TICKS; step += 1) scene.tick(100);
+
+    // C4: A CRASH GOES TO THE INFIRMARY, NOT TO THE COUNTER. This asserted
+    // `receptionQueueTiles[0]` until there was a bed to send it to; a failing
+    // agent now walks to one and lies down in it, and `attention` is the only
+    // status the front desk still answers for. The crashed SCREEN stays behind
+    // at the desk, which is the other half of what this case says.
+    // `whereabouts` reads the EFFECTIVE seat's own `civicRoomId`, so naming
+    // the room is the same statement as "it is in one of that room's seats" -
+    // its desk would answer with its cabin.
+    expect(scene.whereabouts("alpha")).toBe("Infirmary");
+    const lying = characterRect(frameOf(scene), "alpha");
+    // In the bed it is drawn as the nap room draws a sleeper rather than
+    // slumped at a monitor it is nowhere near - the status is the glyph above
+    // it, not the body.
+    expect(characterSpriteAt(frameOf(scene), lying)?.pose).toBe("sit");
+
+    // THE DESK IS STILL THERE, AND STILL CRASHED, with its owner two rooms
+    // away in a bed. This is the visible half of the vanishing-desk fix, and
+    // the reason it is asserted rather than left implied: `seatsIn` drops a
+    // seat that is assigned but unoccupied, on the reasoning that an empty
+    // assigned desk belongs to somebody who has not arrived at this cursor. A
+    // civic claim is the other way to be assigned-and-empty - the owner exists
+    // and is lying down elsewhere - so the whole desk VANISHED, furniture,
+    // monitor and all, the moment its owner walked to the infirmary.
+    // `occupantToPaint` answers the assignee for exactly this, as it already
+    // did for an open handover. A desk that disappears when somebody crashes
+    // is what this line catches.
+    const afterWalk = sprites(frameOf(scene).props, "monitor-crash");
+    expect(afterWalk).toHaveLength(1);
+    expect(afterWalk[0].x).toBe(desk.deskTile.col * OFFICE_TILE + 3);
   });
 
   it("clears the crash and walks the agent back when the failure resolves", () => {
@@ -2923,9 +2952,14 @@ describe("OfficeScene", () => {
       sceneInput({
         agents: crew,
         visibleAgentIds: BOTH,
+        // Both `attention`, and beta was `failure` until the infirmary
+        // existed: C4 sends a crash to a bed rather than to the counter, so a
+        // failing agent no longer queues anywhere. The claim here is about
+        // which RECEPTION a queueing agent uses, and it needs two agents that
+        // queue - not two different reasons for queueing.
         statusById: new Map<string, OfficeAgentStatus>([
           ["alpha", "attention"],
-          ["beta", "failure"],
+          ["beta", "attention"],
         ]),
         reducedMotion: true,
       }),
@@ -3934,6 +3968,7 @@ describe("OfficeScene amenities", () => {
  * for the overflow past the reception queue's small fixed capacity, which is
  * exactly when the office is busiest and the pose matters most.
  */
+
 /**
  * The behaviour core, run once per registered view. Today that is Floor
  * alone, which is the point: T3 to T5 register Towers, Building, Mission
@@ -4011,6 +4046,73 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
 
   function newScene(): OfficeScene {
     return new OfficeScene(view, null);
+  }
+
+  /**
+   * The scene's book, captured from a frame build rather than through a
+   * private field. `civicClaimOf` is what `poseFor` reads for every seated
+   * civic holder, so a frame is enough to get the instance.
+   */
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function idleStatusById(
+    epic: OfficeTestEpic,
+  ): Map<string, OfficeAgentStatus> {
+    const next = new Map<string, OfficeAgentStatus>();
+    for (const person of epic.agents) {
+      next.set(person.id, person.archived ? "archived" : "idle");
+    }
+    return next;
+  }
+
+  function visibleIdsOf(epic: OfficeTestEpic): Set<string> {
+    return new Set(
+      epic.agents
+        .filter((person) => !person.archived)
+        .map((person) => person.id),
+    );
+  }
+
+  function failureIds(
+    statusById: ReadonlyMap<string, OfficeAgentStatus>,
+  ): string[] {
+    const ids: string[] = [];
+    for (const [id, status] of statusById) {
+      if (status === "failure") ids.push(id);
+    }
+    return ids;
+  }
+
+  function infirmarySeatCount(
+    layout: OfficeLayout,
+    floorIndex: number,
+  ): number {
+    const floor = layout.floors[floorIndex];
+    const room = floor.civic.find((entry) => entry.kind === "infirmary");
+    return room === undefined ? 0 : room.seatIds.length;
+  }
+
+  function civicSeatCountOnFloor(
+    layout: OfficeLayout,
+    floorIndex: number,
+  ): number {
+    let count = 0;
+    for (const room of layout.floors[floorIndex].civic) {
+      count += room.seatIds.length;
+    }
+    return count;
   }
 
   it("walks a newcomer in from the door, ending in its own chair", () => {
@@ -4967,6 +5069,740 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       findOfficePath({ ...layout, walkable }, plazaA.doorTile, plazaB.doorTile),
     ).toBeNull();
   });
+
+  /**
+   * Measured: alpha's desk to its infirmary bed is 163 ticks of `tick(100)`
+   * on the 2-agent Floor fixture. A 60-agent storey is a longer crossing;
+   * 800 ticks is ~240 tiles at 3 tiles/s, past any storey these fixtures
+   * draw, and still fails a teleport (which never leaves the chair).
+   */
+  const CIVIC_WALK_TICKS = 800;
+
+  /**
+   * Ticks until one of `ids` is SITTING in a seat of that kind, and says which.
+   *
+   * Holding the claim is not the same as being in it - the walk is the whole
+   * point of C1 - so this waits for the claim AND for the agent to stop being
+   * away, which together are "it has arrived".
+   */
+  function tickUntilSeatedIn(
+    scene: OfficeScene,
+    ids: ReadonlyArray<string>,
+    want: OfficeSeatKind,
+  ): string | undefined {
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      const book = bookOf(scene);
+      const frame = frameOf(scene);
+      const seated = ids.find(
+        (id) => book.civicClaimOf(id) === want && !frame.awayAgentIds.has(id),
+      );
+      if (seated !== undefined) return seated;
+    }
+    return undefined;
+  }
+
+  /**
+   * Ticks until this agent is back in its OWN chair with no civic claim left.
+   *
+   * The claim going is not enough: `endClaim` happens on the sync that heals
+   * the agent, and the walk home happens over the ticks after it. Checking the
+   * painted position against the desk's own chair is what makes this "home"
+   * rather than "no longer claiming a bed".
+   */
+  function tickUntilHome(
+    scene: OfficeScene,
+    agentId: string,
+    chairTile: OfficeTilePos,
+  ): boolean {
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      if (frameOf(scene).awayAgentIds.has(agentId)) continue;
+      if (bookOf(scene).civicClaimOf(agentId) !== null) continue;
+      const at = characterRect(frameOf(scene), agentId);
+      const seat = footRect(layoutOf(scene), chairTile);
+      if (at.x === seat.x && at.y === seat.y) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Ticks a civic walk to its end and reports what it SAW on the way.
+   *
+   * The anti-teleport control, and the reason it is a watch rather than an
+   * assertion about the destination: `startCivicWalk` seats an agent where it
+   * stands when no path exists, so a case that only checked where everybody
+   * ended up would pass against that fallback with nobody having walked at
+   * all. An agent that was ever `away` while holding its seat walked; one
+   * whose painted rect ever differed from where it started moved.
+   */
+  function watchCivicWalk(
+    scene: OfficeScene,
+    ids: ReadonlyArray<string>,
+    starts: ReadonlyMap<string, OfficeRect>,
+    want: OfficeSeatKind,
+  ): {
+    readonly sawAway: ReadonlySet<string>;
+    readonly moved: ReadonlySet<string>;
+  } {
+    const room = want === "bed" ? "Infirmary" : "Lounge";
+    const sawAway = new Set<string>();
+    const moved = new Set<string>();
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      const frame = frameOf(scene);
+      const book = bookOf(scene);
+      for (const id of ids) {
+        if (frame.awayAgentIds.has(id) && book.civicClaimOf(id) === want) {
+          // `civic-out` is not a public reader: away, holding the seat, and
+          // named by the room it is walking TO is exactly what
+          // `awayWhereabouts` answers for one.
+          sawAway.add(id);
+          expect(scene.whereabouts(id)).toBe(room);
+        }
+        const was = starts.get(id);
+        if (was === undefined) continue;
+        const now = characterRect(frame, id);
+        if (now.x !== was.x || now.y !== was.y) moved.add(id);
+      }
+      const allSeated = ids.every(
+        (id) => book.civicClaimOf(id) === want && !frame.awayAgentIds.has(id),
+      );
+      if (allSeated) break;
+    }
+    return { sawAway, moved };
+  }
+
+  it("walks an outbreak of three to beds by path, never by teleport", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // 60 agents → civicCapacityFor beds = 3, so three crashers all fit.
+    // A 12-agent floor only holds 2, and this case would then be the
+    // overflow case wearing an outbreak(3) name.
+    const epic = makeTestEpic("one-team", 60, 1);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const script = outbreakScript({ ...epic, statusById: idle }, 3);
+    const crashed = failureIds(script[0]);
+    expect(crashed).toHaveLength(3);
+
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const starts = new Map<string, OfficeRect>();
+    const startTiles = new Map<string, OfficeTilePos>();
+    for (const id of crashed) {
+      starts.set(id, characterRect(frameOf(scene), id));
+      const desk = layout.desks.get(id);
+      if (desk === undefined) throw new Error(`no desk for ${id}`);
+      startTiles.set(id, desk.chairTile);
+    }
+
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: script[0],
+      }),
+    );
+
+    const { sawAway, moved } = watchCivicWalk(scene, crashed, starts, "bed");
+
+    const book = bookOf(scene);
+    const frame = frameOf(scene);
+    for (const id of crashed) {
+      expect(sawAway.has(id), `${id} never walked (teleport fallback)`).toBe(
+        true,
+      );
+      expect(moved.has(id), `${id} never changed position`).toBe(true);
+      expect(book.civicClaimOf(id)).toBe("bed");
+      expect(frame.awayAgentIds.has(id)).toBe(false);
+      expect(scene.whereabouts(id)).toBe("Infirmary");
+      const bed = book.effectiveSeat(id);
+      if (bed === null || bed.kind !== "bed") {
+        throw new Error(`expected ${id} in a bed`);
+      }
+      const from = startTiles.get(id);
+      if (from === undefined) throw new Error(`no start tile for ${id}`);
+      const path = findOfficePath(layout, from, bed.chairTile);
+      // A null path is the teleport fallback `startCivicWalk` takes. The
+      // walk we just watched would then have been a lie.
+      expect(path).not.toBeNull();
+      expect(path === null ? 0 : path.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("leaves outbreak overflow at its desk with its glyph when the ward is full", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const script = outbreakScript({ ...epic, statusById: idle }, 12);
+    const crashed = failureIds(script[0]);
+
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: script[0],
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const floorIndex = layout.desks.get(crashed[0])?.floorIndex ?? 0;
+    const beds = infirmarySeatCount(layout, floorIndex);
+    expect(beds).toBeGreaterThan(0);
+    expect(crashed.length).toBeGreaterThan(beds);
+
+    const book = bookOf(scene);
+    const bedded: string[] = [];
+    const overflow: string[] = [];
+    for (const id of crashed) {
+      if (book.civicClaimOf(id) === "bed") bedded.push(id);
+      else overflow.push(id);
+    }
+    expect(bedded).toHaveLength(beds);
+    expect(overflow).toHaveLength(crashed.length - beds);
+
+    const frame = frameOf(scene);
+    for (const id of overflow) {
+      expect(book.civicClaimOf(id)).toBeNull();
+      expect(frame.awayAgentIds.has(id)).toBe(false);
+      const desk = layout.desks.get(id);
+      if (desk === undefined) throw new Error(`no desk for ${id}`);
+      expect(characterRect(frame, id)).toEqual(
+        footRect(layout, desk.chairTile),
+      );
+      // The glyph stays at the desk: a crash with no bed is still a crash,
+      // not a walk to nowhere and not a quiet sit.
+      expect(characterSpriteAt(frame, characterRect(frame, id))?.pose).toBe(
+        "crash",
+      );
+    }
+  });
+
+  it("gives a freed bed to the earliest overflow agent, not whoever sorts first by id", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    // outbreakScript crashes everyone in ONE sync, and newcomers in a
+    // sync break their tie by id, so arrival order WOULD equal id order
+    // and this case would pass vacuously. Three waves on the same
+    // subjects make them disagree: later ids take the beds, a still-later
+    // id is the first overflow, a low id arrives last.
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const script = outbreakScript({ ...epic, statusById: idle }, 12);
+    const subjects = failureIds(script[0]).slice().sort();
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const floorIndex = layout.desks.get(subjects[0])?.floorIndex ?? 0;
+    const beds = infirmarySeatCount(layout, floorIndex);
+    expect(subjects.length).toBeGreaterThan(beds + 1);
+
+    const firstWave = subjects.slice(subjects.length - beds);
+    const earlyOverflow = subjects[subjects.length - beds - 1];
+    const lateOverflow = subjects[0];
+    expect(earlyOverflow > lateOverflow).toBe(true);
+
+    const failing = (
+      ids: ReadonlyArray<string>,
+    ): Map<string, OfficeAgentStatus> => {
+      const next = new Map(idle);
+      for (const id of ids) next.set(id, "failure");
+      return next;
+    };
+
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: failing(firstWave),
+        reducedMotion: true,
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: failing([...firstWave, earlyOverflow]),
+        reducedMotion: true,
+      }),
+    );
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: failing([...firstWave, earlyOverflow, lateOverflow]),
+        reducedMotion: true,
+      }),
+    );
+
+    const before = bookOf(scene);
+    for (const id of firstWave) expect(before.civicClaimOf(id)).toBe("bed");
+    expect(before.civicClaimOf(earlyOverflow)).toBeNull();
+    expect(before.civicClaimOf(lateOverflow)).toBeNull();
+
+    const healed = firstWave[0];
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: failing([
+          ...firstWave.filter((id) => id !== healed),
+          earlyOverflow,
+          lateOverflow,
+        ]),
+        reducedMotion: true,
+      }),
+    );
+
+    const after = bookOf(scene);
+    expect(after.civicClaimOf(healed)).toBeNull();
+    // C3: the bed goes to the agent that has been waiting longest, not
+    // to `lateOverflow` who sorts first by id among the remaining
+    // unbedded crashes.
+    expect(after.civicClaimOf(earlyOverflow)).toBe("bed");
+    expect(after.civicClaimOf(lateOverflow)).toBeNull();
+  });
+
+  it("walks a recovered crash home, and an awaiting agent to the lounge and home", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
+    const crashed = failureIds(outbreak[0]);
+
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+      }),
+    );
+    const bedded = tickUntilSeatedIn(scene, crashed, "bed");
+    if (bedded === undefined) throw new Error("expected a bedded agent");
+    const home = layoutOf(scene).desks.get(bedded);
+    if (home === undefined) throw new Error(`no desk for ${bedded}`);
+
+    // Heal THIS sitter, not outbreak[1]'s first subject: on a 12-agent
+    // floor only two of the three crashers fit, and subjects[0] may be
+    // the overflow still at its desk.
+    const healedCrash = new Map(outbreak[0]);
+    healedCrash.set(bedded, "idle");
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: healedCrash,
+      }),
+    );
+    expect(tickUntilHome(scene, bedded, home.chairTile)).toBe(true);
+
+    const waiting = waitingScript({ ...epic, statusById: idle }, 6);
+    const waiters = [...waiting[0].entries()]
+      .filter(([, status]) => status === "awaiting")
+      .map(([id]) => id);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: waiting[0],
+      }),
+    );
+    const inLounge = tickUntilSeatedIn(scene, waiters, "lounge");
+    if (inLounge === undefined)
+      throw new Error("expected someone in the lounge");
+    expect(scene.whereabouts(inLounge)).toBe("Lounge");
+
+    const loungeHome = layoutOf(scene).desks.get(inLounge);
+    if (loungeHome === undefined) throw new Error(`no desk for ${inLounge}`);
+    const cleared = waiting[1].get(inLounge);
+    // waitingScript step 1 clears subjects[0], which may not be the one
+    // we saw sit. Drive a heal of THIS sitter so the walk home is the
+    // one we can name.
+    const healOne = new Map(waiting[0]);
+    healOne.set(inLounge, "idle");
+    expect(cleared === "idle" || healOne.get(inLounge) === "idle").toBe(true);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: healOne,
+      }),
+    );
+    let loungeHomeAgain = false;
+    for (let step = 0; step < CIVIC_WALK_TICKS && !loungeHomeAgain; step += 1) {
+      scene.tick(100);
+      loungeHomeAgain =
+        bookOf(scene).civicClaimOf(inLounge) === null &&
+        !frameOf(scene).awayAgentIds.has(inLounge) &&
+        characterRect(frameOf(scene), inLounge).x ===
+          footRect(layoutOf(scene), loungeHome.chairTile).x &&
+        characterRect(frameOf(scene), inLounge).y ===
+          footRect(layoutOf(scene), loungeHome.chairTile).y;
+    }
+    expect(loungeHomeAgain).toBe(true);
+  });
+
+  it("walks an archived agent to the archive door and then off the floor", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const leaver = agent({ id: "alpha", createdAt: 1, archivedAt: 500 });
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: [leaver, BETA],
+        visibleAgentIds: BOTH,
+        cursorMs: 100,
+      }),
+    );
+    const layout = layoutOf(scene);
+    const floor = layout.floors[0];
+    const archive = floor.civic.find((room) => room.kind === "archive");
+    if (archive === undefined) throw new Error("expected an archive room");
+    const desk = layout.desks.get("alpha");
+    if (desk === undefined) throw new Error("expected a desk for alpha");
+    const path = findOfficePath(layout, desk.chairTile, archive.doorTile);
+    expect(path).not.toBeNull();
+
+    scene.sync(
+      sceneInput({
+        agents: [leaver, BETA],
+        visibleAgentIds: BOTH,
+        cursorMs: 900,
+      }),
+    );
+    let lastRect: OfficeRect | undefined;
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      if (!hasCharacter(frameOf(scene), "alpha")) break;
+      lastRect = characterRect(frameOf(scene), "alpha");
+      scene.tick(100);
+    }
+    expect(hasCharacter(frameOf(scene), "alpha")).toBe(false);
+    if (lastRect === undefined)
+      throw new Error("alpha vanished without walking");
+    if (path === null) throw new Error("expected a path to the archive door");
+    // Last seen on the walk to the ARCHIVE door, not the building
+    // entrance: C5 is a records door, and a walk to the lobby instead
+    // would be the pre-civic departure still in force.
+    expect(rectOnProjectedPath(layout, path, lastRect)).toBe(true);
+  });
+
+  it("never re-plans on a status flip", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const planSpy = vi.spyOn(view, "plan");
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    const afterFirst = planSpy.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+      }),
+    );
+    expect(planSpy.mock.calls.length).toBe(afterFirst);
+
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+      }),
+    );
+    expect(planSpy.mock.calls.length).toBe(afterFirst);
+    planSpy.mockRestore();
+  });
+
+  it("reproduces a fresh scene's civic claims after a scrub back and forward", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
+    const agents = epic.agents;
+
+    const claimsOf = (scene: OfficeScene): string => {
+      const book = bookOf(scene);
+      const rows = book
+        .knownAgentIds()
+        .map(
+          (id) =>
+            `${id}:${book.civicClaimOf(id) ?? "-"}:${book.effectiveSeat(id)?.seatId ?? "-"}`,
+        );
+      return rows.join("|");
+    };
+
+    const freshAt = (
+      statusById: ReadonlyMap<string, OfficeAgentStatus>,
+      cursorMs: number,
+    ): string => {
+      const fresh = newScene();
+      fresh.sync(
+        sceneInput({
+          agents,
+          visibleAgentIds: visible,
+          statusById,
+          cursorMs,
+          reducedMotion: true,
+        }),
+      );
+      return claimsOf(fresh);
+    };
+
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        cursorMs: 1000,
+        reducedMotion: true,
+      }),
+    );
+    expect(claimsOf(scene)).toBe(freshAt(outbreak[0], 1000));
+
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        cursorMs: 100,
+        reducedMotion: true,
+      }),
+    );
+    expect(claimsOf(scene)).toBe(freshAt(idle, 100));
+
+    scene.sync(
+      sceneInput({
+        agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        cursorMs: 1000,
+        reducedMotion: true,
+      }),
+    );
+    expect(claimsOf(scene)).toBe(freshAt(outbreak[0], 1000));
+  });
+
+  it("seats civic claims instantly during playback and never walks civic-out", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
+    const scene = newScene();
+    // First sync at a cursor, playing: claims recompute before characters
+    // spawn, so they sit in the beds the as-of statuses name. A civic-out
+    // walk here would be the live summons playing through a photograph.
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        cursorMs: 1000,
+        playing: true,
+      }),
+    );
+    const crashed = failureIds(outbreak[0]);
+    const assertNoCivicWalk = (): void => {
+      const book = bookOf(scene);
+      const frame = frameOf(scene);
+      for (const id of crashed) {
+        if (book.civicClaimOf(id) === null) continue;
+        expect(frame.awayAgentIds.has(id)).toBe(false);
+      }
+    };
+    assertNoCivicWalk();
+    for (let step = 0; step < 40; step += 1) {
+      scene.tick(100);
+      assertNoCivicWalk();
+    }
+  });
+
+  it("keeps civic walkers per floor within that floor's civic seats, and errands at 32 independently", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+      }),
+    );
+    const layout = layoutOf(scene);
+
+    // A BOUND IS SATISFIED BY AN EMPTY FLOOR, which is the way this case could
+    // pass while saying nothing: with no civic walkers the per-floor loop below
+    // never runs a single assertion. So the walk is witnessed as well as
+    // bounded - `peakWalkers` has to reach at least one before the bound it
+    // clears means anything.
+    let peakWalkers = 0;
+
+    const assertBudgets = (): void => {
+      const book = bookOf(scene);
+      const frame = frameOf(scene);
+      const civicWalkers = new Map<number, number>();
+      let errands = 0;
+      for (const id of book.knownAgentIds()) {
+        if (!frame.awayAgentIds.has(id)) continue;
+        const civic = book.civicClaimOf(id);
+        if (civic !== null) {
+          const floorIndex = book.effectiveSeat(id)?.floorIndex ?? 0;
+          civicWalkers.set(floorIndex, (civicWalkers.get(floorIndex) ?? 0) + 1);
+          continue;
+        }
+        const where = scene.whereabouts(id);
+        // Help desk / lobby / leaving are summonses, not errands, and
+        // are uncapped the same way civic-out is. Counting them against
+        // 32 would make a full reception queue look like a cap breach.
+        if (where === "Help desk" || where === "Lobby") continue;
+        errands += 1;
+      }
+      for (const [floorIndex, walking] of civicWalkers) {
+        peakWalkers = Math.max(peakWalkers, walking);
+        expect(walking).toBeLessThanOrEqual(
+          civicSeatCountOnFloor(layout, floorIndex),
+        );
+      }
+      expect(errands).toBeLessThanOrEqual(MAX_CONCURRENT_ERRANDS);
+    };
+
+    assertBudgets();
+    for (let step = 0; step < CIVIC_WALK_TICKS; step += 1) {
+      scene.tick(100);
+      assertBudgets();
+    }
+    // Twelve agents crash at once into a ward with fewer beds than that, so
+    // somebody walked: a run where nobody did would have cleared every bound
+    // above without testing one of them.
+    expect(peakWalkers).toBeGreaterThan(0);
+  });
+
+  it("names Infirmary and Lounge from whereabouts, and Help desk from the queue", (context) => {
+    if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+      context.skip(`${viewId} plans no civic rooms`);
+      return;
+    }
+    const epic = makeTestEpic("one-team", 12, 9);
+    const idle = idleStatusById(epic);
+    const visible = visibleIdsOf(epic);
+    const scene = newScene();
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: idle,
+        reducedMotion: true,
+      }),
+    );
+
+    const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: outbreak[0],
+        reducedMotion: true,
+      }),
+    );
+    const bedded = failureIds(outbreak[0]).find(
+      (id) => bookOf(scene).civicClaimOf(id) === "bed",
+    );
+    if (bedded === undefined) throw new Error("expected a bedded agent");
+    expect(scene.whereabouts(bedded)).toBe("Infirmary");
+
+    const waiting = waitingScript({ ...epic, statusById: idle }, 6);
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: waiting[0],
+        reducedMotion: true,
+      }),
+    );
+    const seatedLounge = [...waiting[0].entries()]
+      .filter(([, status]) => status === "awaiting")
+      .map(([id]) => id)
+      .find((id) => bookOf(scene).civicClaimOf(id) === "lounge");
+    if (seatedLounge === undefined) throw new Error("expected a lounge sitter");
+    expect(scene.whereabouts(seatedLounge)).toBe("Lounge");
+
+    const queuedId = epic.agents.find(
+      (person) =>
+        !person.archived && person.id !== bedded && person.id !== seatedLounge,
+    )?.id;
+    if (queuedId === undefined) throw new Error("expected a third agent");
+    const attention = new Map(idle);
+    attention.set(queuedId, "attention");
+    scene.sync(
+      sceneInput({
+        agents: epic.agents,
+        visibleAgentIds: visible,
+        statusById: attention,
+        reducedMotion: true,
+      }),
+    );
+    expect(scene.whereabouts(queuedId)).toBe("Help desk");
+  });
 });
 
 describe("OfficeScene poses", () => {
@@ -5012,19 +5848,27 @@ describe("OfficeScene poses", () => {
     expect(poseOfSeatedOverflow("attention")).toBe("hand-up");
   });
 
-  it("leans back on awaiting, a status that never queues for reception", () => {
+  it("sits an awaiting agent down in the waiting room, not at its own desk", () => {
     const scene = new OfficeScene(testView(layoutOffice), null);
     scene.sync(
       sceneInput({
         agents: AGENTS,
         visibleAgentIds: BOTH,
         statusById: new Map<string, OfficeAgentStatus>([["alpha", "awaiting"]]),
+        // Settled in the chair rather than halfway to it: the pose is what
+        // this case is about, and a walker's pose is `walk1`.
+        reducedMotion: true,
       }),
     );
+    // This asserted `lean` at the agent's own desk, and `awayAgentIds` not
+    // holding it, until the waiting room existed. An `awaiting` agent now
+    // takes a chair there - the `lean` pose is still what a seated awaiting
+    // agent is drawn with on a floor that plans no civic rooms, which every
+    // view but this one is until K2.
     const frame = frameOf(scene);
-    expect(frame.awayAgentIds.has("alpha")).toBe(false);
+    expect(scene.whereabouts("alpha")).toBe("Lounge");
     const sprite = characterSpriteAt(frame, characterRect(frame, "alpha"));
-    expect(sprite?.pose).toBe("lean");
+    expect(sprite?.pose).toBe("sit");
   });
 
   it("wears headphones while seated and working in the background, without replacing the typing pose", () => {
