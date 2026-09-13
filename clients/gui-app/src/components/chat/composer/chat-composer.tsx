@@ -20,8 +20,9 @@ import type { ProviderId } from "@traycer/protocol/host/provider-schemas";
 
 import {
   isAttachmentIngestPending,
-  useComposerPaste,
+  useComposerHashPaste,
 } from "@/hooks/composer/use-composer-paste";
+import { useComposerPendingImageIngest } from "@/hooks/composer/use-composer-pending-image-ingest";
 import { useComposerDictation } from "@/hooks/composer/use-composer-dictation";
 import { useWorkspaceMentionRoots } from "@/hooks/composer/use-workspace-mention-roots";
 import { useRunnerHost } from "@/providers/use-runner-host";
@@ -69,6 +70,7 @@ import {
 } from "./use-profile-eligibility-gate";
 import { ChatComposerBannerPortal } from "./chat-composer-banner-portal";
 import { useChatComposerDraft } from "./use-chat-composer-draft";
+import { useComposerReingestOnReplacement } from "./use-composer-reingest-on-replacement";
 import {
   useChatComposerSubmit,
   type ChatComposerSideChatInput,
@@ -502,7 +504,32 @@ function ChatComposerImpl(props: ChatComposerProps) {
     dragOverlayVariant,
     isIngestingImages,
     isResolvingFilePaths,
-  } = useComposerPaste(editorRef, runnerHost.fileDrops, resolvedMentionRoots);
+    runPendingImageJob,
+  } = useComposerHashPaste(
+    editorRef,
+    runnerHost.fileDrops,
+    resolvedMentionRoots,
+  );
+  // The rich-clipboard channel and the mount-time restart. A file paste is
+  // already hashed before insertion; these two cover the HTML paste (whose
+  // nodes must keep their positions, so they go in with bytes and flip in
+  // place) and every draft that still holds inline bytes - including ones
+  // written by a build that had no rewrite at all.
+  const { ingestPastedComposerImages, reingestPendingImages } =
+    useComposerPendingImageIngest({
+      editorRef,
+      runPendingImageJob,
+      draftId: null,
+    });
+  // Restarts the rewrite on editor readiness AND on every host-document
+  // replacement; see the hook for why readiness alone left a dead end. Called
+  // AFTER `useChatComposerDraft` so the reset bridge has already installed the
+  // replacement by the time it runs in the same commit.
+  useComposerReingestOnReplacement({
+    chatId: taskId,
+    editorReadyTick,
+    reingestPendingImages,
+  });
   const pastePending = isAttachmentIngestPending({
     isIngestingImages,
     isResolvingFilePaths,
@@ -742,7 +769,7 @@ function ChatComposerImpl(props: ChatComposerProps) {
                     initialSelection={initialSelection}
                     slashProviderId={harnessId}
                     hasPastedImageBytes={hasPastedImageBytes}
-                    ingestPastedComposerImages={null}
+                    ingestPastedComposerImages={ingestPastedComposerImages}
                     isActive={focused}
                     disabled={authority.readOnly}
                     onDocumentChange={handleDocumentChange}

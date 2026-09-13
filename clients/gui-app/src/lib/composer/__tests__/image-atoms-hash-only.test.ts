@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 
 import {
+  containsPendingInlineImageNode,
   hashOnlyImageHashes,
   inlineHashOnlyImageBytes,
 } from "@/lib/composer/image-atoms";
@@ -36,6 +37,28 @@ function inlineImageNode(hash: string, b64content: string): JsonContent {
       size: 128,
       hash,
       b64content,
+    },
+  };
+}
+
+/**
+ * An inline node carrying bytes under an explicit `mimeType`, or none at all
+ * when `mimeType` is `undefined` - `containsPendingInlineImageNode` and
+ * `collectImageAtoms` must default a missing type identically, or a node with
+ * no declared type is withheld by one and ignored by the other.
+ */
+function inlineImageNodeWithMime(
+  b64content: string,
+  mimeType: string | undefined,
+): JsonContent {
+  return {
+    type: "imageAttachment",
+    attrs: {
+      id: "img-inline",
+      fileName: "screenshot.img",
+      size: 128,
+      b64content,
+      ...(mimeType === undefined ? {} : { mimeType }),
     },
   };
 }
@@ -124,5 +147,49 @@ describe("inlineHashOnlyImageBytes", () => {
     const node = rewritten.content?.[0]?.content?.[0];
     expect(node?.attrs?.hash).toBe(HASH_A);
     expect(node?.attrs?.b64content).toBeUndefined();
+  });
+});
+
+describe("containsPendingInlineImageNode (F2 - the format verdict)", () => {
+  it("a declared BMP inline node is NOT pending - no job will ever claim it", () => {
+    // Pre-fix (e1bdceff5): this asked only "does the node carry bytes", so a
+    // declared BMP - left inline on purpose, forever - read as a rewrite still
+    // in flight and withheld the ENTIRE draft (text and settings included) for
+    // the life of the composer.
+    const content = docWith(inlineImageNodeWithMime("bmp-bytes", "image/bmp"));
+
+    expect(containsPendingInlineImageNode(content)).toBe(false);
+  });
+
+  it("a declared PNG inline node IS pending - a rewrite job is genuinely in flight", () => {
+    const content = docWith(inlineImageNodeWithMime("png-bytes", "image/png"));
+
+    expect(containsPendingInlineImageNode(content)).toBe(true);
+  });
+
+  it("a node with no declared mimeType defaults to PNG - the same default collectImageAtoms applies", () => {
+    // The two functions must agree: if one defaulted the missing type to
+    // "storable" and the other to something else, a node with no declared
+    // type would be withheld by one and ignored by the other.
+    const content = docWith(
+      inlineImageNodeWithMime("no-mime-bytes", undefined),
+    );
+
+    expect(containsPendingInlineImageNode(content)).toBe(true);
+  });
+
+  it("a hash-only node (no inline bytes) is never pending, regardless of format", () => {
+    const content = docWith(hashOnlyImageNode(HASH_A));
+
+    expect(containsPendingInlineImageNode(content)).toBe(false);
+  });
+
+  it("a mixed document is pending if ANY node carries a storable inline format", () => {
+    const content = docWith(
+      inlineImageNodeWithMime("bmp-bytes", "image/bmp"),
+      inlineImageNodeWithMime("png-bytes", "image/png"),
+    );
+
+    expect(containsPendingInlineImageNode(content)).toBe(true);
   });
 });

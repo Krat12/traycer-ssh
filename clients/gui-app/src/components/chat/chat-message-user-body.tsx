@@ -106,8 +106,9 @@ import type { ProviderId } from "@/components/home/data/landing-options";
 import { reportableErrorToast } from "@/lib/reportable-error-toast";
 import {
   isAttachmentIngestPending,
-  useComposerPaste,
+  useComposerHashPaste,
 } from "@/hooks/composer/use-composer-paste";
+import { useComposerPendingImageIngest } from "@/hooks/composer/use-composer-pending-image-ingest";
 import { useWorkspaceMentionRoots } from "@/hooks/composer/use-workspace-mention-roots";
 import { useEpicAttachmentBytesPresence } from "@/lib/attachments/use-attachment-blob-src";
 import { hasLandingImageBytes } from "@/lib/composer/landing-image-store";
@@ -719,7 +720,18 @@ function InlineUserMessageEditor({
     attachImageFiles,
     isIngestingImages,
     isResolvingFilePaths,
-  } = useComposerPaste(editorRef, runnerHost.fileDrops, resolvedMentionRoots);
+    runPendingImageJob,
+  } = useComposerHashPaste(
+    editorRef,
+    runnerHost.fileDrops,
+    resolvedMentionRoots,
+  );
+  const { ingestPastedComposerImages, reingestPendingImages } =
+    useComposerPendingImageIngest({
+      editorRef,
+      runPendingImageJob,
+      draftId: null,
+    });
   const attachmentPending = isAttachmentIngestPending({
     isIngestingImages,
     isResolvingFilePaths,
@@ -840,7 +852,7 @@ function InlineUserMessageEditor({
         initialSelection={null}
         slashProviderId={editing.slashProviderId}
         hasPastedImageBytes={hasPastedImageBytes}
-        ingestPastedComposerImages={null}
+        ingestPastedComposerImages={ingestPastedComposerImages}
         isActive
         disabled={editing.pending}
         placeholder="Edit message"
@@ -855,12 +867,13 @@ function InlineUserMessageEditor({
         onKeyDown={handleEditorKeyDown}
         onFocus={NOOP}
         onBlur={NOOP}
-        onEditorReady={null}
+        onEditorReady={reingestPendingImages}
       />
     ),
     [
       editing,
       handleEditorKeyDown,
+      ingestPastedComposerImages,
       onDragOver,
       onDrop,
       onPaste,
@@ -868,6 +881,7 @@ function InlineUserMessageEditor({
       onSelectionChange,
       pickerStore,
       hasPastedImageBytes,
+      reingestPendingImages,
       submit,
     ],
   );

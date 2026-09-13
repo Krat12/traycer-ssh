@@ -59,8 +59,9 @@ import { useLeaderScopeAbsorber } from "@/hooks/keybindings/use-leader-scope-abs
 import { usePrimaryActionShortcut } from "@/hooks/use-primary-action-shortcut";
 import {
   isAttachmentIngestPending,
-  useComposerPaste,
+  useComposerHashPaste,
 } from "@/hooks/composer/use-composer-paste";
+import { useComposerPendingImageIngest } from "@/hooks/composer/use-composer-pending-image-ingest";
 import {
   mentionRootsFromWorktreeIntent,
   useWorkspaceMentionRoots,
@@ -733,7 +734,17 @@ export function NewConversationModalBody(props: {
   const workspaceCanStart = workspaceComposerCanStart(workspaceAvailability);
   const draftWorkspaceFolderCount = draftWorkspace.folders.length;
   const runnerHost = useRunnerHost();
-  const paste = useComposerPaste(editorRef, runnerHost.fileDrops, mentionRoots);
+  const paste = useComposerHashPaste(
+    editorRef,
+    runnerHost.fileDrops,
+    mentionRoots,
+  );
+  const { ingestPastedComposerImages, reingestPendingImages } =
+    useComposerPendingImageIngest({
+      editorRef,
+      runPendingImageJob: paste.runPendingImageJob,
+      draftId: null,
+    });
   const attachmentPending = isAttachmentIngestPending(paste);
   const canSubmit =
     canMutate &&
@@ -1299,8 +1310,8 @@ export function NewConversationModalBody(props: {
       dictationPreparing={dictationPreparing}
       paste={paste}
       hasPastedImageBytes={hasPastedImageBytes}
-      ingestPastedComposerImages={null}
-      onEditorReady={null}
+      ingestPastedComposerImages={ingestPastedComposerImages}
+      onEditorReady={reingestPendingImages}
       // No terminal surface: a sign-in terminal tile is bound to the TAB's
       // host, while this composer creates on a placement-resolved host that
       // may be another machine, and this modal sits above the canvas the tile
