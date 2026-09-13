@@ -220,6 +220,17 @@ const HOVER_LABEL_FONT_PX = 11;
 const LABEL_FONT = `${LABEL_FONT_PX}px ${OFFICE_SIGN_MONOSPACE_STACK}`;
 const SIGN_PADDING_Y = 2;
 const SIGN_PLATE_RADIUS = 3;
+/**
+ * The gap between the ward's beacon and the plate below it, in screen pixels.
+ *
+ * ONE PIXEL, and it is the plate's own outline that asks for it: `drawSignPlate`
+ * strokes at `lineWidth = 1` centred on the box's path, so the ink reaches half
+ * a pixel ABOVE `top`. A lamp flush to that edge would have its bottom row
+ * grazed by the stroke at every zoom - not enough to hide the lens, but enough
+ * that "the beacon is clear of the plate" would stop being exactly true, which
+ * is the property the seam case measures.
+ */
+const SIREN_PLATE_GAP_PX = 1;
 const CLOCK_HOUR_HAND = 3;
 const CLOCK_MINUTE_HAND = 4;
 const CLOCK_HUB_RADIUS = 1.5;
@@ -1205,6 +1216,30 @@ function signPlateMeasure(ctx: CanvasRenderingContext2D): OfficePlateMeasure {
   };
 }
 
+/**
+ * THE OPAQUE BOX A PLATE FILLS, in screen pixels.
+ *
+ * Factored out because two things need it and they must not measure it twice:
+ * the plate paints it, and the ward's beacon hangs off its top edge. A second
+ * copy of this arithmetic is a copy that drifts, and the drift would be the
+ * lamp creeping back under the fill it is meant to sit clear of.
+ */
+function signPlateBox(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  screenX: number,
+  screenY: number,
+): { left: number; top: number; width: number; height: number } {
+  const width = ctx.measureText(text).width + OFFICE_SIGN_PADDING_X * 2;
+  const height = OFFICE_SIGN_FONT_PX + SIGN_PADDING_Y * 2;
+  return {
+    left: screenX - width / 2,
+    top: screenY - OFFICE_SIGN_FONT_PX - SIGN_PADDING_Y,
+    width,
+    height,
+  };
+}
+
 function drawSignPlate(
   ctx: CanvasRenderingContext2D,
   sign: {
@@ -1219,10 +1254,12 @@ function drawSignPlate(
   applySignPlateFont(ctx);
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  const width = ctx.measureText(text).width + OFFICE_SIGN_PADDING_X * 2;
-  const height = OFFICE_SIGN_FONT_PX + SIGN_PADDING_Y * 2;
-  const left = screenX - width / 2;
-  const top = screenY - OFFICE_SIGN_FONT_PX - SIGN_PADDING_Y;
+  const { height, left, top, width } = signPlateBox(
+    ctx,
+    text,
+    screenX,
+    screenY,
+  );
   ctx.beginPath();
   if (typeof ctx.roundRect === "function") {
     ctx.roundRect(left, top, width, height, SIGN_PLATE_RADIUS);
@@ -1591,19 +1628,33 @@ function signBoardX(entry: OfficeSignToDraw, name: OfficeSpriteName): number {
 }
 
 /**
- * Where the beacon hangs: ON the sign's own board, at its right end, standing
- * clear above it.
+ * WHERE THE BEACON HANGS: on the PLATE's top edge, at its right end, in screen
+ * pixels.
  *
- * Derived from the two sprites rather than written down, so a wider board or a
- * bigger lamp moves it instead of leaving it overlapping the lettering. In
- * SPRITE space, added to the board's own left edge exactly as
- * `signArtOverhang` is added to its top - "on the right end of the board" is a
- * fact about the art, not about which way an isometric view happens to point.
+ * It used to hang off the board, in world space, and that was wrong in two
+ * ways at once. The board is under the camera and the plate is not, so the lamp
+ * shrank with zoom while the opaque plate kept its fixed height; and the plate
+ * is painted second. At office zoom (0.7) the 8px lamp came down to 5.6 screen
+ * px above the anchor while the plate's top reached 4.3 px above it - so the
+ * plate covered all but a sliver of the lens, and the alarm this whole pass
+ * exists to show thinned out exactly as the view got wide enough to need it.
+ *
+ * So the lamp is CHROME, like the lettering it sits on: screen-space, fixed
+ * size, drawn after the fill it must not disappear under. Anchored to the
+ * plate's own box rather than to the board, because the plate is the thing it
+ * has to stay clear of - the two cannot drift apart if only one of them
+ * decides where both are.
  */
-function sirenOffset(): OfficePoint {
-  const board = officeSpriteSize({ name: "sign" });
+function sirenPlacement(box: {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+}): OfficePoint {
   const lamp = officeSpriteSize({ name: SIREN_FRAME_SPRITES[0] });
-  return { x: board.width - lamp.width, y: -lamp.height };
+  return {
+    x: box.left + box.width - lamp.width,
+    y: box.top - lamp.height - SIREN_PLATE_GAP_PX,
+  };
 }
 
 /**
@@ -1620,7 +1671,6 @@ function drawSignArt(args: {
   readonly theme: OfficeTheme;
 }): void {
   const { ctx, signs, theme } = args;
-  const lamp = sirenOffset();
   for (const entry of signs) {
     const name = signSpriteFor(entry.sign);
     if (name === null) continue;
@@ -1629,18 +1679,6 @@ function drawSignArt(args: {
       ctx,
       { name },
       { x: boardX, y: entry.anchor.y + signArtOverhang(name) },
-      theme,
-    );
-    // THE WARD'S BEACON, where a ward has one: Mission control's medbay, which
-    // has no street for an ambulance to come down (C6). Which frame is up is
-    // the resolver's answer - it is the one place the room's occupancy and the
-    // clock meet - and a sign that carries no beacon says `null`.
-    const frame = entry.sirenFrame;
-    if (frame === null) continue;
-    drawOfficeSprite(
-      ctx,
-      { name: SIREN_FRAME_SPRITES[frame] },
-      { x: boardX + lamp.x, y: entry.anchor.y + lamp.y },
       theme,
     );
   }
@@ -1652,8 +1690,10 @@ function drawSignLabels(args: {
   readonly camera: OfficeCamera;
   readonly palette: OfficePalette;
   readonly lod: OfficeLod;
+  /** For the one sign that carries art in this pass: the ward's beacon. */
+  readonly theme: OfficeTheme;
 }): void {
-  const { camera, ctx, lod, palette, signs } = args;
+  const { camera, ctx, lod, palette, signs, theme } = args;
   for (const entry of signs) {
     const name = signSpriteFor(entry.sign);
     const baseline =
@@ -1661,12 +1701,27 @@ function drawSignLabels(args: {
       (name === null ? 0 : signArtOverhang(name)) +
       SIGN_LABEL_BASELINE;
     const screenX = officeSignCenterX(entry) * camera.zoom + camera.x;
-    drawSignPlate(ctx, {
-      text: signPlateText(entry).toUpperCase(),
-      screenX,
-      screenY: baseline * camera.zoom + camera.y,
-      palette,
-    });
+    const plateText = signPlateText(entry).toUpperCase();
+    const screenY = baseline * camera.zoom + camera.y;
+    drawSignPlate(ctx, { text: plateText, screenX, screenY, palette });
+    // THE WARD'S BEACON, where a ward has one: Mission control's medbay, which
+    // has no street for an ambulance to come down (C6). Which frame is up is
+    // the resolver's answer - it is the one place the room's occupancy and the
+    // clock meet - and a sign that carries no beacon says `null`.
+    //
+    // AFTER the plate, and measured from it, so the fill cannot paint over it.
+    if (entry.sirenFrame !== null) {
+      ctx.save();
+      applySignPlateFont(ctx);
+      const box = signPlateBox(ctx, plateText, screenX, screenY);
+      ctx.restore();
+      drawOfficeSprite(
+        ctx,
+        { name: SIREN_FRAME_SPRITES[entry.sirenFrame] },
+        sirenPlacement(box),
+        theme,
+      );
+    }
     // THE CLAIM ONLY AT CLOSE-UP. The name is what a plate is for; the role
     // under it is a second plate's worth of pixels, and at office zoom it
     // would double the signage on a floor that is already mostly signage.
@@ -2064,7 +2119,7 @@ function drawOfficeFrame(args: DrawFrameArgs): void {
   // which is the palette's own background and not the app's.
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  drawSignLabels({ ctx, signs, camera, palette, lod });
+  drawSignLabels({ ctx, signs, camera, palette, lod, theme });
   const alreadyNamed = drawNameTags({
     ctx,
     labels,
