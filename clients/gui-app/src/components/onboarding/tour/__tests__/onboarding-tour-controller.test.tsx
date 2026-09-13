@@ -31,6 +31,7 @@ import {
   registerPresentedModal,
   resetModalPresenceForTests,
 } from "@/components/ui/modal-presence";
+import { useAuthStore } from "@/stores/auth/auth-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import {
@@ -73,7 +74,13 @@ vi.mock("@/lib/analytics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/analytics")>();
   return {
     ...actual,
-    Analytics: { getInstance: () => ({ track: analyticsTrack }) },
+    Analytics: {
+      getInstance: () => ({
+        track: analyticsTrack,
+        identify: () => undefined,
+        reset: () => undefined,
+      }),
+    },
   };
 });
 const analyticsTrack = vi.hoisted(() => vi.fn());
@@ -140,6 +147,13 @@ beforeEach(() => {
       },
     });
   }
+  useAuthStore
+    .getState()
+    .setSignedIn(
+      { userId: "user-a", userName: "A", email: "a@example.com" },
+      { userId: "user-a", username: "A" },
+      [],
+    );
   useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
   focusDraftTab(DRAFT_ID);
 });
@@ -147,6 +161,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   for (const surface of surfaces.splice(0)) surface.remove();
+  useAuthStore.getState().setSignedOut();
 });
 
 describe("run gating and controlled props", () => {
@@ -782,6 +797,42 @@ describe("lesson predicates", () => {
     // The replay's own Next still works.
     next();
     expect(flow().chain).toBe("completed");
+  });
+
+  it("a same-tour replay of an UNANCHORED lesson (context already null) still invalidates the old renderer's callback", () => {
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().replayTour("task-panels");
+    });
+    expect(flow().context).toBeNull();
+    const oldRenderer = currentProps();
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    expect(flow().context).toBeNull();
+    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    expect(flow().chain).toBe("active");
+    next();
+    expect(flow().chain).toBe("completed");
+  });
+
+  it("a user switch with the auth status unchanged (A out, B in) invalidates the old renderer's callback", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    const oldRenderer = currentProps();
+    act(() => {
+      useAuthStore
+        .getState()
+        .setSignedIn(
+          { userId: "user-b", userName: "B", email: "b@example.com" },
+          { userId: "user-b", username: "B" },
+          [],
+        );
+    });
+    emit({ type: "step:after", action: "next", origin: "button_primary" }, oldRenderer);
+    expect(flow().activeTourId).toBe("add-folder");
   });
 
   it("history: unrelated rows do not anchor the lesson; the first imported row mounting does, and scrolls to it", async () => {

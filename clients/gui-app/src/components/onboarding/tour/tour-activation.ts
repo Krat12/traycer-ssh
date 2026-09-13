@@ -5,16 +5,18 @@ import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-stor
 /**
  * The tour's ACTIVATION TOKEN: a counter that moves, synchronously with the
  * store write, whenever the thing the tour is doing changes identity - the
- * chain starts, pauses, ends or is replayed (a replay of the very same tour
- * included: it resets the context), or the signed-in identity changes.
+ * flow store's `activationRevision` (a chain start, pause, resume, end or
+ * replay, a replay of the very same unanchored tour included) or the
+ * signed-in user (status OR user id: A signing out and B signing in keeps
+ * the status).
  *
  * Everything that closes over "the current attempt" checks it: a Joyride
  * callback from before a replay, a receipt for an attempt announced under
- * the previous activation, an entry baseline taken for the previous one.
- * DOM epochs and lesson ids cannot do this job - a same-tour replay keeps
- * both - and an effect would be one render late, which is exactly the gap
- * an old callback lands in. Pending receipts are dropped on every move for
- * the same reason.
+ * the previous activation, an entry baseline taken for the previous one,
+ * the once-per-activation entry navigation. DOM epochs and lesson ids
+ * cannot do this job, and an effect would be one render late, which is
+ * exactly the gap an old callback lands in. Pending receipts are dropped on
+ * every move for the same reason.
  *
  * A singleton: there is one tour host per window, and the card needs to
  * read the token without a hook of its own (`focus intent` below).
@@ -47,16 +49,16 @@ export function startActivationWatch(): () => void {
   watchers += 1;
   if (stopWatching === null) {
     const unsubscribeFlow = useOnboardingFlowStore.subscribe((next, previous) => {
+      if (next.activationRevision !== previous.activationRevision) bump();
+    });
+    const unsubscribeAuth = useAuthStore.subscribe((next, previous) => {
       if (
-        next.chain !== previous.chain ||
-        next.chainScope !== previous.chainScope ||
-        (previous.context !== null && next.context === null)
+        next.status !== previous.status ||
+        (next.contextMetadata?.userId ?? null) !==
+          (previous.contextMetadata?.userId ?? null)
       ) {
         bump();
       }
-    });
-    const unsubscribeAuth = useAuthStore.subscribe((next, previous) => {
-      if (next.status !== previous.status) bump();
     });
     stopWatching = () => {
       unsubscribeFlow();

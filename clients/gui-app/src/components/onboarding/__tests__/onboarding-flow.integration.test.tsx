@@ -6,6 +6,7 @@ import { OnboardingFlowHost } from "@/components/onboarding/onboarding-flow-host
 import { ONBOARDING_COMPLETION_TOAST_ID } from "@/components/onboarding/tour/onboarding-completion-toast";
 import { resetActivationForTests } from "@/components/onboarding/tour/tour-activation";
 import { resetTourDismissalForTests } from "@/components/onboarding/tour/use-onboarding-tour-controller";
+import { resetTourNavigationForTests } from "@/components/onboarding/tour/use-onboarding-tour-navigation";
 import { resetModalPresenceForTests } from "@/components/ui/modal-presence";
 import { TRAYCER_GITHUB_URL } from "@/lib/onboarding-links";
 import { useAuthStore } from "@/stores/auth/auth-store";
@@ -158,6 +159,7 @@ beforeEach(() => {
   joyride.props = null;
   joyride.mounts = 0;
   resetTourDismissalForTests();
+  resetTourNavigationForTests();
   resetActivationForTests();
   resetModalPresenceForTests();
   setSystemTabModalApi(null);
@@ -324,6 +326,59 @@ describe("entry navigation", () => {
     expect(flow().context?.draftId).toBeNull();
   });
 
+  it("the history lesson waits on the current surface too - activating it with an epic focused opens no draft", () => {
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("sessions");
+    });
+    expect(flow().activeTourId).toBe("history");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+  });
+
+  it("a host remount (readiness drop) during a pending terminal Start does not redirect the prompt lesson back to a draft", () => {
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    const view = render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().advance("add-folder", "add-folder", "next");
+      flow().advance("terminal-mode", "terminal-mode", "next");
+    });
+    expect(flow().activeTourId).toBe("submit-prompt");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    // Start dispatched: the optimistic navigation focuses the new epic tab
+    // while the create is still in flight.
+    act(() => {
+      useLandingReceiptsStore.getState().announce({
+        kind: "tui-accepted",
+        attemptId: "start-pending",
+        draftId: DRAFT_ID,
+        hostId: "host-flow",
+      });
+    });
+    expect(flow().context?.attemptId).toBe("start-pending");
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    view.unmount();
+    render(<OnboardingFlowHost />);
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(flow().context?.attemptId).toBe("start-pending");
+  });
+
   it("the panels lesson waits for its surface rather than navigating", () => {
     act(() => {
       flow().finishModal("no-sessions");
@@ -419,7 +474,8 @@ describe("completion toast", () => {
     });
     render(<OnboardingFlowHost />);
     expect(seam.toast).not.toHaveBeenCalled();
-    // ...but a deliberate replay that ends here does qualify.
+    // ...but a deliberate replay that ends here does qualify - even when
+    // the toast is held (no Settings bridge) across a host remount.
     keep(mountEpicSurface(EPIC_TAB_ID, false));
     const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
     useEpicCanvasStore.setState({
@@ -435,11 +491,20 @@ describe("completion toast", () => {
       stripOrder: [ref],
     });
     act(() => {
+      setSystemTabModalApi(null);
       flow().replayTour("task-panels");
     });
     next();
     expect(flow().chain).toBe("completed");
+    expect(flow().completionPending).toBe(true);
+    expect(seam.toast).not.toHaveBeenCalled();
+    cleanup();
+    render(<OnboardingFlowHost />);
+    act(() => {
+      setSystemTabModalApi(fakeSettingsApi());
+    });
     expect(seam.toast).toHaveBeenCalledTimes(1);
+    expect(flow().completionPending).toBe(false);
   });
 
   it("Star on GitHub opens the repo through openLink(url, 'app', null) exactly once; Learn more opens Settings > Onboarding", () => {

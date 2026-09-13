@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   getActivationToken,
@@ -30,15 +30,24 @@ import { useTabsStore } from "@/stores/tabs/store";
  *
  * Once, and only on activation: this is entry/resume work, never an effect
  * that pulls a user back to the draft every time they navigate away. The
- * history and panels lessons WAIT for their surfaces instead.
+ * history and panels lessons WAIT for their surfaces instead (contract 9),
+ * so history is deliberately not a landing lesson here. "Once" is kept
+ * module-level, keyed by the activation token: the host remounts on every
+ * readiness drop, and a remount must not redirect a lesson already under
+ * way (a pending terminal Start mid-flight) back to the draft.
  */
 
 const LANDING_TOURS: ReadonlyArray<TourId> = [
   "add-folder",
   "terminal-mode",
   "submit-prompt",
-  "history",
 ];
+
+let navigatedForActivation: number | null = null;
+
+export function resetTourNavigationForTests(): void {
+  navigatedForActivation = null;
+}
 
 export function useOnboardingTourNavigation(): void {
   const navigate = useNavigate();
@@ -51,14 +60,13 @@ export function useOnboardingTourNavigation(): void {
     getActivationToken,
     getActivationToken,
   );
-  const navigatedForRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!chainActive || navigatedForRef.current === activation) return;
+    if (!chainActive || navigatedForActivation === activation) return;
     const flow = useOnboardingFlowStore.getState();
     const active = selectActiveStep(flow);
     if (active === null || !LANDING_TOURS.includes(active.tourId)) return;
-    navigatedForRef.current = activation;
+    navigatedForActivation = activation;
 
     const focused = selectHostFocusedRef(useTabsStore.getState());
     const drafts = useLandingDraftStore.getState().drafts;

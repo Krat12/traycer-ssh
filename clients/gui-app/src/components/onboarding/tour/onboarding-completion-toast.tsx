@@ -5,10 +5,7 @@ import { useOpenLink } from "@/lib/links/open-link";
 import { TRAYCER_GITHUB_URL } from "@/lib/onboarding-links";
 import { navigateToSettingsSection } from "@/lib/settings-navigation";
 import { useAuthStore } from "@/stores/auth/auth-store";
-import {
-  useOnboardingFlowStore,
-  type ChainStatus,
-} from "@/stores/onboarding/onboarding-flow-store";
+import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-store";
 import {
   selectOnboardingBusy,
   useOnboardingPresenceStore,
@@ -30,13 +27,12 @@ export const ONBOARDING_COMPLETION_TOAST_ID = "traycer-onboarding-completion";
  *
  * Eligibility, all of which HOLD the toast rather than drop it:
  * - signed in and mounted under the flow host's desktop / host gates;
- * - the chain is `completed` or `skipped`. For an install that finished the
- *   OLD tour the migration writes a synthetic `skipped` chain
- *   (`legacyCompleted`), which must not toast on upgrade - and its persisted
- *   shape is indistinguishable from a real single replay that was skipped.
- *   So a legacy install qualifies only through an end this window SAW (the
- *   chain was `active` here first); every other install qualifies from the
- *   persisted state too, so a toast held across a reload still fires;
+ * - a REAL chain end is pending (`completionPending`, set by the flow store
+ *   when an active or paused chain completes or is skipped and persisted
+ *   until acknowledged here). The legacy migration writes a synthetic
+ *   `skipped` chain without it, so an old-tour completer never toasts on
+ *   upgrade, while their deliberate later replay ending here does - even
+ *   if the toast had to be held across a remount or a reload;
  * - nothing of the flow has the screen (`selectOnboardingBusy`);
  * - the system-tab modal API is published, so "Learn more" has a Settings
  *   to open (`navigateToSettingsSection` no-ops without it).
@@ -48,9 +44,11 @@ export const ONBOARDING_COMPLETION_TOAST_ID = "traycer-onboarding-completion";
  */
 export function OnboardingCompletionToast(): ReactNode {
   const signedIn = useAuthStore((state) => state.status === "signed-in");
-  const chain = useOnboardingFlowStore((state) => state.chain);
-  const legacyCompleted = useOnboardingFlowStore(
-    (state) => state.legacyCompleted,
+  const completionPending = useOnboardingFlowStore(
+    (state) => state.completionPending,
+  );
+  const acknowledgeCompletion = useOnboardingFlowStore(
+    (state) => state.acknowledgeCompletion,
   );
   const onboardingBusy = useOnboardingPresenceStore(selectOnboardingBusy);
   const apiPublished = useSystemTabModalApiPublished();
@@ -60,24 +58,17 @@ export function OnboardingCompletionToast(): ReactNode {
   const claim = useFeatureAnnouncementsStore((state) => state.claim);
   const openLink = useOpenLink();
 
-  // Whether this window saw the chain end (active -> completed/skipped).
-  const previousChainRef = useRef<ChainStatus>(chain);
-  const endedHereRef = useRef(false);
   useEffect(() => {
-    const before = previousChainRef.current;
-    previousChainRef.current = chain;
-    if (before === "active" && (chain === "completed" || chain === "skipped")) {
-      endedHereRef.current = true;
-    } else if (chain === "active" || chain === "pending") {
-      endedHereRef.current = false;
+    if (!completionPending || !signedIn) return;
+    if (consumed) {
+      // Claimed already (an earlier chain end, or another window): nothing
+      // to show, and the pending end is settled.
+      acknowledgeCompletion();
+      return;
     }
-  }, [chain]);
-
-  useEffect(() => {
-    if (consumed || !signedIn || onboardingBusy || !apiPublished) return;
-    if (chain !== "completed" && chain !== "skipped") return;
-    if (legacyCompleted && !endedHereRef.current) return;
+    if (onboardingBusy || !apiPublished) return;
     if (!claim("onboarding-completion")) return;
+    acknowledgeCompletion();
     toast(
       <OnboardingCompletionToastContent
         toastId={ONBOARDING_COMPLETION_TOAST_ID}
@@ -93,11 +84,11 @@ export function OnboardingCompletionToast(): ReactNode {
       },
     );
   }, [
+    acknowledgeCompletion,
     apiPublished,
-    chain,
     claim,
+    completionPending,
     consumed,
-    legacyCompleted,
     onboardingBusy,
     openLink,
     signedIn,
@@ -128,8 +119,8 @@ export function OnboardingCompletionToastContent(props: {
     if (handledRef.current) return;
     handledRef.current = true;
     setHandled(true);
-    toast.dismiss(props.toastId);
     action();
+    toast.dismiss(props.toastId);
   };
 
   return (
