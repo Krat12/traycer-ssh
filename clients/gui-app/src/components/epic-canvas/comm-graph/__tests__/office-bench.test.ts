@@ -430,7 +430,24 @@ describe("officeBench", () => {
     expect(hosts.size).toBe(1);
   });
 
-  it("sends waiting's freed chair to somebody who queued, not a fixture bystander", () => {
+  /**
+   * NAMED FOR WHAT IT ASSERTS, which is a status sequence and not a chair.
+   *
+   * This suite builds status maps; it mounts no scene, so it cannot watch
+   * anybody hold a seat or receive one. The title used to promise a freed
+   * chair passing to somebody who queued, and a reader who believed it would
+   * have thought the handoff was covered here.
+   *
+   * The nearest thing that DOES observe an arrival-ordered handoff is
+   * `office-scene.test.ts`'s "gives a freed bed to the earliest overflow
+   * agent, not whoever sorts first by id" - but that is the INFIRMARY's beds,
+   * driven by `outbreakScript`. No scene case observes the earliest overflow
+   * waiter receiving a freed lounge CHAIR: the two `waitingScript` scene cases
+   * walk one agent to the lounge and home again and name the room, which is a
+   * different claim. Said plainly here rather than pointed at a case that
+   * would not bear the weight.
+   */
+  it("queues two past the lounge's chairs, then frees exactly one, every change landing on awaiting", () => {
     const request: OfficeBenchRequest = {
       shape: "triage",
       agents: 60,
@@ -446,7 +463,16 @@ describe("officeBench", () => {
     const chairs = civicCapacityFor(request.agents).chairs;
     expect(chairs).toBeGreaterThan(0);
     const overflow = statusCount(bench.steps[1], "awaiting");
-    expect(overflow).toBeGreaterThan(chairs);
+    // EXACTLY two past the chairs, measured: `chairs` is 5 at 60 agents and
+    // the step queues 7. The 2 is the module's own `OFFICE_BENCH_WAITING_
+    // OVERFLOW`, which is not exported, so it is written out here with the
+    // numbers it produces rather than imported. The exact count is only
+    // meaningful because the fixture can supply it - `scriptSubjects` takes
+    // the first `count` unarchived agents on ONE host, and triage/60 puts all
+    // 60 on one, so a queue of 7 is never truncated. A `> chairs` alone would
+    // also hold if the script silently queued three, or thirty.
+    expect(overflow).toBe(chairs + 2);
+    expect(bench.agents.length).toBeGreaterThan(overflow);
     expect(statusCount(bench.steps[2], "awaiting")).toBe(overflow - 1);
 
     const queued: string[] = [];
