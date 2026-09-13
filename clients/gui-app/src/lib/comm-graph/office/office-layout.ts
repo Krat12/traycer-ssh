@@ -2936,13 +2936,21 @@ function addWallFittings(
   return clockTile;
 }
 
-/** Stands in a civic room's id for the host a floor does not have. */
-function civicRoomIdOf(
-  hostId: string | null,
-  floorIndex: number,
-  kind: OfficeCivicKind,
-): string {
-  return [hostId ?? SEAT_ID_NONE, floorIndex, "civic", kind].join("/");
+/**
+ * `<host>/civic/<kind>`; `SEAT_ID_NONE` stands in for the host a floor does not
+ * have.
+ *
+ * NO FLOOR ORDINAL, which this carried until read X. A floor's index is its
+ * position in the partition's host-id ordering, so a lexically earlier host
+ * renamed every later floor's civic rooms and seats, and the book dropped the
+ * claims held in them. Measured on the Floor view: host-b's four rooms and six
+ * seats all ten ids lost, its civic floor index going 0 -> 1, with or without a
+ * previous layout to carry. A host owns one room of each kind - measured, no
+ * `(hostId, kind)` collision in any view at 12, 309 or 1,000 - so the ordinal
+ * was instability with nothing to show for it.
+ */
+function civicRoomIdOf(hostId: string | null, kind: OfficeCivicKind): string {
+  return [hostId ?? SEAT_ID_NONE, "civic", kind].join("/");
 }
 
 /** One civic room and the seats inside it, ready to go onto the storey. */
@@ -2972,7 +2980,7 @@ function buildCivicRecord(request: CivicRoomRequest): CivicBuild {
   const { floorIndex, hostId, plan, road } = request;
   const { spec } = plan;
   const kind: OfficeCivicKind = spec.kind;
-  const civicRoomId = civicRoomIdOf(hostId, floorIndex, kind);
+  const civicRoomId = civicRoomIdOf(hostId, kind);
   const placed =
     spec.kind === "infirmary"
       ? infirmaryBedTiles(spec, plan.bounds)
@@ -3156,7 +3164,7 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
     // untouched, and it carries no seats because standing at a counter is not
     // sitting down.
     {
-      civicRoomId: civicRoomIdOf(build.hostId, floorIndex, "help-desk"),
+      civicRoomId: civicRoomIdOf(build.hostId, "help-desk"),
       kind: "help-desk",
       bounds: {
         col: receptionTile.col,
@@ -3197,7 +3205,7 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       kerbTile: kerbOnRoad(road, helpDeskBellCol),
     },
     {
-      civicRoomId: civicRoomIdOf(build.hostId, floorIndex, "archive"),
+      civicRoomId: civicRoomIdOf(build.hostId, "archive"),
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,

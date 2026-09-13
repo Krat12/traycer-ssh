@@ -1113,7 +1113,7 @@ function buildCityCivic(args: CityCivicArgs): CityCivic {
     isoFurnitureBox(isoProjectAt(origin, tile.col, tile.row), { name: sprite });
 
   // ---- Hospital: a wall with a cross on it, beds behind, aisle open ----- //
-  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  const wardId = civicRoomIdOf(hostId, "infirmary");
   const wardCols = hospitalCols(args.beds);
   const wardRow = bands.hospitalRow;
   for (let col = firstCol; col < firstCol + wardCols; col += 1) {
@@ -1157,7 +1157,7 @@ function buildCityCivic(args: CityCivicArgs): CityCivic {
   }
 
   // ---- Bus stop: a shelter at the lane, its seats in front of it ------- //
-  const stopId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const stopId = civicRoomIdOf(hostId, "waiting-room");
   const shelterRow = bands.shelterRow;
   for (let col = firstCol; col < firstCol + SHELTER_COLS; col += 1) {
     blocked.push({ col, row: shelterRow });
@@ -1186,7 +1186,7 @@ function buildCityCivic(args: CityCivicArgs): CityCivic {
   }
 
   // ---- Warehouse: the archive's door, at the quarter's foot ------------- //
-  const recordsId = civicRoomIdOf(hostId, floorIndex, "archive");
+  const recordsId = civicRoomIdOf(hostId, "archive");
   const shed: OfficeTileRect = {
     col: firstCol,
     row: bands.shedRow,
@@ -1203,7 +1203,7 @@ function buildCityCivic(args: CityCivicArgs): CityCivic {
   props.push({ sprite: { name: "warehouse-door-iso" }, tile: recordsDoor });
 
   // ---- Police station: the reception, re-read as a civic room (C7) ------ //
-  const deskId = civicRoomIdOf(hostId, floorIndex, "help-desk");
+  const deskId = civicRoomIdOf(hostId, "help-desk");
   const counter = args.courtyard.receptionTile;
   // ONE STEP OFF THE ENTRANCE, the way Campus's is: the district's entrance
   // stands ON the lane and no civic door may be a road tile, so the door is the

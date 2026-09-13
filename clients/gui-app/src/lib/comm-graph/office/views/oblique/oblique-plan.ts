@@ -1025,12 +1025,20 @@ function kerbBelow(road: OfficeRoad, col: number): OfficeTilePos {
   return road.tiles.find((tile) => tile.col === col) ?? road.entryTile;
 }
 
-function civicRoomIdOf(
-  hostId: string | null,
-  floorIndex: number,
-  kind: OfficeCivicKind,
-): string {
-  return [hostKey(hostId), floorIndex, "civic", kind].join("/");
+/**
+ * `<host>/civic/<kind>`, for both storeyed views.
+ *
+ * THE STOREY ORDINAL IS GONE, and Towers and Building were the near miss that
+ * shows why it had to go rather than be pinned: with a previous layout to carry,
+ * a new host's storeys are appended and a known host keeps its band, so the ids
+ * held - measured, 0 of 10 lost. Planned WITHOUT a previous - a fresh scene, the
+ * first sync after a reload - the same arrival moved host-b's civic storey from
+ * index 0 to 3 and lost all ten, in both views. So their stability was a
+ * property of the carry, not of the id, and a session's first plan is exactly
+ * the plan that has no carry.
+ */
+function civicRoomIdOf(hostId: string | null, kind: OfficeCivicKind): string {
+  return [hostKey(hostId), "civic", kind].join("/");
 }
 
 interface CivicSeatRun {
@@ -1117,7 +1125,7 @@ function buildPlazaCivic(
     }
   }
   const wardDoor: OfficeTilePos = { col: bay.col, row: walkRow };
-  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  const wardId = civicRoomIdOf(hostId, "infirmary");
   // The cross goes ON the doorway rather than beside it. Beside it would be the
   // one tile the way in leads to, and a blocking prop there would seal the ward.
   prop(geometry, "cross-sign", wardDoor.col, wardDoor.row);
@@ -1132,7 +1140,7 @@ function buildPlazaCivic(
   // The chair run waits along the plaza's front, between the pingpong and the
   // ward, facing the lane the way the reception queue does.
   const loungeCol = building.col + PLAZA_LOUNGE_COL;
-  const loungeId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const loungeId = civicRoomIdOf(hostId, "waiting-room");
   const chairCount = Math.min(
     capacity.chairs,
     Math.max(0, bay.col - loungeCol),
@@ -1212,7 +1220,7 @@ function buildPlazaCivic(
       kerbTile: null,
     },
     {
-      civicRoomId: civicRoomIdOf(hostId, floorIndex, "help-desk"),
+      civicRoomId: civicRoomIdOf(hostId, "help-desk"),
       kind: "help-desk",
       // THE COUNTER'S OWN ROW AND NOTHING ABOVE IT. The row above is where the
       // plaza's amenities put the tiles they are used FROM, so a room that
@@ -1238,7 +1246,7 @@ function buildPlazaCivic(
       kerbTile: kerbBelow(road, deskDoor.col),
     },
     {
-      civicRoomId: civicRoomIdOf(hostId, floorIndex, "archive"),
+      civicRoomId: civicRoomIdOf(hostId, "archive"),
       kind: "archive",
       bounds: { col: archiveDoor.col, row: archiveDoor.row, cols: 1, rows: 1 },
       doorTile: archiveDoor,

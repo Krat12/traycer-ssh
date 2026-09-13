@@ -2001,8 +2001,17 @@ function podByTileOf(
   return out;
 }
 
+/**
+ * `-/civic/<kind>`, the hall's four rooms.
+ *
+ * This producer already took the kind alone and was the one read X found
+ * stable - a single hall, `every-host` scope, one room of each kind for the
+ * whole world. The `FLOOR_INDEX` constant is dropped from the SPELLING so all
+ * four producers agree that an id is what the room is; the hall still reports
+ * that index on the room and its seats, which is where a consumer reads it.
+ */
 function civicRoomIdOf(kind: OfficeCivicKind): string {
-  return [SEAT_ID_NONE, FLOOR_INDEX, "civic", kind].join("/");
+  return [SEAT_ID_NONE, "civic", kind].join("/");
 }
 
 interface CivicSeatRun {

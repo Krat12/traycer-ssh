@@ -688,19 +688,34 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
 // ---- Districts -------------------------------------------------------- //
 
 /**
- * `<host>/<floor>/civic/<kind>`, the id every seat in the room carries back.
+ * `<host>/civic/<kind>`, the id every seat in the room carries back.
  *
  * SHARED, because a civic room id is a promise across syncs and not a plan's
  * private spelling: the seat book matches claims by it, so two isometric views
  * spelling it two ways would be two views the book cannot compare. Lifted here
  * from Campus when City needed the same ids.
+ *
+ * WHAT THE ROOM IS, NEVER WHERE IT CAME IN THE ORDER. This carried the FLOOR
+ * INDEX until read X: a district's index is its position in the partition's
+ * host-id ordering, so a host arriving lexically earlier moved every later
+ * district to a new index and renamed its four rooms and all their seats -
+ * while the district's own geometry stayed frozen. The book then adopted
+ * nothing, dropped the held claims and swapped the beds under the patients
+ * still in them. `seatIdOf` in `city-plan.ts` had the identical defect for
+ * DESKS and its doc already states the rule: name a seat after identities that
+ * outlive the plan. A host and a kind are two of those; an ordinal is not.
+ *
+ * The ordinal was never carrying uniqueness either - measured over all six
+ * views at 12, 309 and 1,000 agents on a two-host epic, `(hostId, kind)`
+ * collides nowhere: a host owns exactly one room of each kind, and Mission
+ * control's hall - whose producer has always taken the kind alone - owns one of
+ * each for every host.
  */
 export function civicRoomIdOf(
   hostId: string | null,
-  floorIndex: number,
   kind: OfficeCivicKind,
 ): string {
-  return [hostId ?? ISO_SEAT_ID_NONE, floorIndex, "civic", kind].join("/");
+  return [hostId ?? ISO_SEAT_ID_NONE, "civic", kind].join("/");
 }
 
 /**

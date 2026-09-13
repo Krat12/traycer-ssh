@@ -2693,14 +2693,19 @@ export class OfficeScene {
     character.queueTile = null;
     character.waitMs = 0;
     character.hurrying = false;
-    // AND THE ERRAND IT WAS ON IS OVER, which every other route starter here
-    // already says: `returnToDesk`, both queue branches and `startCivicWalk`
-    // all null this out, and leaving was the one that did not. A retained
-    // target is a destination this character is no longer walking to, and
-    // anything that reads targets to find a walker then finds the wrong one -
-    // measured: an archived agent that had strolled to a bench was sent BACK TO
-    // ITS DESK by the bench's new claimant, replacing its walk to the door, and
-    // with no further sync the body never left.
+    // AND THE STROLL IT WAS ON IS OVER, which is a claim about THIS route and
+    // not about the class. There is no invariant that a route change nulls the
+    // target: of the six creators that lay a path - `spawnAtDoor`,
+    // `walkTo`, `startLeaving`, `startQueueWalk`, `startCivicWalk` and
+    // `startErrand` - `walkTo` touches it on neither exit, its caller
+    // `returnToDesk` keeps it through a successful walk BY DESIGN (see
+    // `claimedSpotKeys`), and `startErrand` sets one. What is true here is
+    // narrower: a departure is not an errand return, so the bench it strolled
+    // to is nothing it will ever reach, and a reader looking for walkers by
+    // their targets must not find this one - measured: an archived agent that
+    // had strolled to a bench was sent BACK TO ITS DESK by the bench's new
+    // claimant, replacing its walk to the door, and with no further sync the
+    // body never left.
     character.errandTarget = null;
   }
 

@@ -675,7 +675,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
   const seats: OfficeSeat[] = [];
 
   // ---- Sick bay: a wall along the top, an aisle down the left ---------- //
-  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  const wardId = civicRoomIdOf(hostId, "infirmary");
   const ward = args.sickbay;
   for (let col = ward.col; col < ward.col + ward.cols; col += 1) {
     blocked.push({ col, row: ward.row });
@@ -708,7 +708,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
   }
 
   // ---- Records: a hut whose door is the whole room (C5) ---------------- //
-  const recordsId = civicRoomIdOf(hostId, floorIndex, "archive");
+  const recordsId = civicRoomIdOf(hostId, "archive");
   const hut = args.records;
   for (let col = hut.col; col < hut.col + hut.cols; col += 1) {
     blocked.push({ col, row: hut.row });
@@ -730,7 +730,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
   // waiting agent sits on is exactly the tile a stroll stands on to use the same
   // bench, and the two are one place two systems can put somebody. That is what
   // `OfficeErrandSpot.seatId` is for, and why the courtyard is handed these ids.
-  const benchesId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const benchesId = civicRoomIdOf(hostId, "waiting-room");
   const benchRow = courtyard.rect.row + 2;
   const seatRow = benchRow + 1;
   const benchCol = courtyard.rect.col + 1;
@@ -754,7 +754,7 @@ function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
   }
 
   // ---- Front desk: the reception, re-read as a civic room (C7) --------- //
-  const deskId = civicRoomIdOf(hostId, floorIndex, "help-desk");
+  const deskId = civicRoomIdOf(hostId, "help-desk");
   const counter = courtyard.receptionTile;
   // THE DOOR IS ONE STEP OFF THE ENTRANCE, not the entrance itself. The
   // district's own entrance stands ON the lane, and no civic door may be a road
@@ -928,7 +928,7 @@ function buildDistrict(
   // on it. The seat ids are the room's, computed the same way twice rather than
   // threaded back out of the build - a bench and its seat have to agree, and the
   // shared formula is what makes them.
-  const benchesId = civicRoomIdOf(plan.hostId, floorIndex, "waiting-room");
+  const benchesId = civicRoomIdOf(plan.hostId, "waiting-room");
   const courtyard = buildIsoCourtyard({
     col: courtyardAt.col,
     row: courtyardAt.row,
