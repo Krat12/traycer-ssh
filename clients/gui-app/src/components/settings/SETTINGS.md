@@ -1074,16 +1074,51 @@ means the drain UI renders NOTHING - never a zero, which would offer to end
     markup.
 - `Onboarding` (`panels/onboarding-settings-panel.tsx`,
   `/settings/onboarding`, second in the Application group, directly after
-  General) The desktop learning page: tour progress, replays and the inline
-  lesson demos (`panels/onboarding/lesson-diorama.tsx`). Registered across
-  every seam - section table, route, modal table, `SETTINGS_PATHS`, analytics
-  section allowlist, report-issue label - and indexed by a page-only
-  collection (`onboarding-settings.definitions.ts`); card anchors are added
-  with the cards. **Omitted in the mobile app** (see "Two different mobile
-  questions"): every lesson teaches the desktop shell, so the route redirects
-  to General and the panel itself renders no lesson surface where the section
-  is not offered, for the retained-`SettingsSurface` path that mounts a panel
-  from a remembered route without going through the loader.
+  General) The desktop learning page. Registered across every seam - section
+  table, route, modal table, `SETTINGS_PATHS`, analytics section allowlist,
+  report-issue label. **Omitted in the mobile app** (see "Two different
+  mobile questions"): every lesson teaches the desktop shell, so the route
+  redirects to General and the panel itself renders no lesson surface where
+  the section is not offered, for the retained-`SettingsSurface` path that
+  mounts a panel from a remembered route without going through the loader.
+  Three groups, all copy in `onboarding-settings.definitions.ts`:
+  - **Your progress** (anchor `onboarding-progress`): a summary READ from the
+    onboarding flow store (`stores/onboarding/onboarding-flow-store.ts`) -
+    done / 5 tours with a meter, the four tour statuses counted separately
+    (`bypassed` is never done), the welcome modal's state and the chain's,
+    and an existing-user note for an install that finished the old tour
+    (`legacyCompleted`) - plus the **Welcome** row (`onboarding-welcome`)
+    whose action is the store's `showWelcomeModalAgain()`. The page is
+    never a second authority over the flow: it writes through the store's
+    fixed actions only, and it plays nothing - the tour host watches the
+    store and takes the screen. Both writes first close an OPEN Settings
+    overlay through the published `SystemTabModalApi` (a tour under a modal
+    dialog would wait forever), so both actions hold until that API is
+    published rather than let the close silently no-op; a Settings tab
+    stays open.
+  - **Guided tours**: five `LessonCard`s (`panels/onboarding/lesson-card.tsx`
+    - a `SettingsRow` inside an anchored container, so a card with a demo
+    beneath it is one search target), one per `TourId`, each showing the
+    tour's status beside its title and a Start / Replay / Restart button
+    that calls `replayTour(tourId)` - a `single`-scope chain that ends after
+    that one tour.
+  - **More to explore**: the two salvaged demos (`Split screen`, `Task tabs
+    & navigation`), which expand `panels/onboarding/lesson-diorama.tsx`
+    inline - at most one open at a time, so at most one demo's timers run,
+    with `aria-expanded` / `aria-controls` on the toggle; **Agent selection
+    guide**, whose action is `navigateToSettingsSection("agents")` (the
+    Agents page owns the editor, its host scope and autosave); and **Browser
+    login import**, which mounts the existing `ImportLoginsDialog` on an
+    enabled click and is otherwise disabled with the reason (no bridge,
+    saving off, saving unreadable) so its search target stays honest.
+    Nothing scans on page render.
+  - Anchors are `onboarding-lesson-<LessonId>` on the card containers, all
+    gated on the build (`isOnboardingLessonsAvailable`), so the mobile shell
+    promises none and the desktop shell every one; the search fixture
+    registry mounts both. `onboarding_lesson_opened { lesson }` is emitted
+    once per action taken - a replay, a demo opened, the editor or the import
+    opened - never on render, on a demo's tick, on collapse, on a disabled
+    click or on reopening the welcome modal.
 - `Opening behavior` (`panels/opening-behavior-panel.tsx`,
   `/settings/opening-behavior`, fourth in the Application group) Where a click
   LANDS. TWO `SettingsGroup`s - Links and Tile placement - each one enum

@@ -78,6 +78,42 @@ export const BRANCH_TOUR_ORDER: Readonly<
   sessions: ["history", "task-panels"],
 };
 
+/**
+ * What each tour is called and what it teaches, in one place: the Settings
+ * card's label and description, the progress summary's "Paused at …", and
+ * the tour host's own chrome all read from here, so a tour is named the same
+ * way everywhere it appears.
+ */
+export const TOUR_COPY: Readonly<
+  Record<TourId, { readonly title: string; readonly summary: string }>
+> = {
+  "add-folder": {
+    title: "Add a workspace folder",
+    summary:
+      "Point an agent at a project on this machine, so it can read and change files there.",
+  },
+  "terminal-mode": {
+    title: "Start a terminal agent",
+    summary:
+      "Run a coding agent in its own terminal, the way you would on the command line.",
+  },
+  "submit-prompt": {
+    title: "Send your first prompt",
+    summary:
+      "Write to an agent and watch the task open around the conversation.",
+  },
+  "task-panels": {
+    title: "Explore task panels",
+    summary:
+      "The agents, artifacts and diff that a task collects, and where each one lives.",
+  },
+  history: {
+    title: "Find imported sessions",
+    summary:
+      "Where the sessions you brought over from other agents end up, and how to pick one up.",
+  },
+};
+
 export function isTourId(value: string): value is TourId {
   return TOUR_IDS.some((id) => id === value);
 }

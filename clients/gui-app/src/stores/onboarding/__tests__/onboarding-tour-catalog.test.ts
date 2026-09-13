@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  TOUR_COPY,
   BRANCH_TOUR_ORDER,
   firstStepOf,
   isTourId,
@@ -75,5 +76,14 @@ describe("onboarding-tour-catalog", () => {
         );
       },
     );
+  });
+
+  it("names every tour with a non-empty title and summary, all distinct", () => {
+    const titles = TOUR_IDS.map((tour) => TOUR_COPY[tour].title);
+    for (const tour of TOUR_IDS) {
+      expect(TOUR_COPY[tour].title.length).toBeGreaterThan(0);
+      expect(TOUR_COPY[tour].summary.length).toBeGreaterThan(0);
+    }
+    expect(new Set(titles).size).toBe(titles.length);
   });
 });

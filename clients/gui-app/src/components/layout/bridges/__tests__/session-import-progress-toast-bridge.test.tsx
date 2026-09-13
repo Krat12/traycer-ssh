@@ -226,13 +226,19 @@ describe("<SessionImportProgressToastBridge />", () => {
     );
   });
 
-  it("holds a completed run's summary while busy, then shows it once busy clears", () => {
+  it("takes an up progress toast down while busy and shows exactly one summary on release", () => {
     render(<SessionImportProgressToastBridge />);
 
     startRun({ total: 1 });
+    expect(progressToastMock).toHaveBeenCalledTimes(1);
     act(() => {
       useOnboardingPresenceStore.getState().setTourBusy(true);
     });
+    // Already-visible, `duration: Infinity`: it would otherwise sit frozen
+    // over the tour.
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      `session-import-progress:${HOST}`,
+    );
 
     act(() => {
       useSessionImportRunStore.getState().applyComplete(HOST, {
@@ -245,6 +251,10 @@ describe("<SessionImportProgressToastBridge />", () => {
     act(() => {
       useOnboardingPresenceStore.getState().setTourBusy(false);
     });
+    // Our own dismiss was not read as the user closing the run's toast: the
+    // summary still shows, once, and no progress toast reappears for a run
+    // that has finished.
+    expect(progressToastMock).toHaveBeenCalledTimes(1);
     expect(progressSuccessToastMock).toHaveBeenCalledTimes(1);
     expect(progressSuccessToastMock).toHaveBeenCalledWith(
       "Imported 1 session",

@@ -348,28 +348,6 @@ export type AnalyticsSetting =
   | "voiceInputEnabled"
   | "voiceLanguage";
 
-export type AnalyticsTheme =
-  | "mode:dark"
-  | "mode:light"
-  | "mode:system"
-  | "preset:amoled"
-  | "preset:ayu"
-  | "preset:blue"
-  | "preset:catppuccin"
-  | "preset:dracula"
-  | "preset:everforest"
-  | "preset:github"
-  | "preset:green"
-  | "preset:gruvbox"
-  | "preset:neutral"
-  | "preset:nord"
-  | "preset:orange"
-  | "preset:pink"
-  | "preset:rose"
-  | "preset:tokyo-night"
-  | "preset:traycer-green"
-  | "preset:violet";
-
 export enum AnalyticsEvent {
   AppOpened = "app_opened",
   SignInStarted = "sign_in_started",
@@ -1291,29 +1269,6 @@ const ANALYTICS_SETTINGS = new Set<string>(
   } satisfies Record<AnalyticsSetting, true>),
 );
 
-const ANALYTICS_THEMES = new Set<string>([
-  "mode:dark",
-  "mode:light",
-  "mode:system",
-  "preset:amoled",
-  "preset:ayu",
-  "preset:blue",
-  "preset:catppuccin",
-  "preset:dracula",
-  "preset:everforest",
-  "preset:github",
-  "preset:green",
-  "preset:gruvbox",
-  "preset:neutral",
-  "preset:nord",
-  "preset:orange",
-  "preset:pink",
-  "preset:rose",
-  "preset:tokyo-night",
-  "preset:traycer-green",
-  "preset:violet",
-]);
-
 /**
  * Built from the tour catalogue rather than written out, so a tour, step or
  * lesson added there is accepted here without a second edit - and one that
@@ -1786,7 +1741,6 @@ const EXACT_PROPERTY_VALUES: {
   setting: ANALYTICS_SETTINGS,
   source: ANALYTICS_SOURCES,
   surface: new Set(["chat", "draft"]),
-  theme: ANALYTICS_THEMES,
   to: ANALYTICS_HARNESSES,
   unread_bucket: ANALYTICS_COUNT_BUCKETS,
   workspace_kind: new Set(["local", "unknown", "worktree"]),
