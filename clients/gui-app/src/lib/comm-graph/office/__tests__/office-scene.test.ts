@@ -46,6 +46,7 @@ import {
   type OfficeLayout,
   type OfficePoint,
   type OfficeRect,
+  type OfficeRoad,
   type OfficeSceneInput,
   type OfficeSeat,
   type OfficeSeatKind,
@@ -67,6 +68,38 @@ function testView(
   plan: (agents: ReadonlyArray<OfficeAgentInput>) => OfficeLayout,
 ): OfficeView {
   return { ...OFFICE_VIEWS.floor, plan: (input) => plan(input.agents) };
+}
+
+function leftThenVerticalRoad(
+  floor: OfficeFloor,
+  kerb: OfficeTilePos,
+): OfficeRoad | null {
+  // `OfficeTileRect` counts TILES - `cols` and `rows` - rather than pixels.
+  const { col, row, cols, rows } = floor.bounds;
+  const startCol = kerb.col + 2;
+  const startRow = kerb.row >= row + 2 ? kerb.row - 2 : kerb.row + 2;
+  if (
+    kerb.col < col ||
+    kerb.col >= col + cols ||
+    kerb.row < row ||
+    kerb.row >= row + rows ||
+    startCol >= col + cols ||
+    startRow < row ||
+    startRow >= row + rows
+  ) {
+    return null;
+  }
+  const direction = startRow < kerb.row ? 1 : -1;
+  const tiles: OfficeTilePos[] = [
+    { col: startCol, row: startRow },
+    { col: startCol - 1, row: startRow },
+    { col: kerb.col, row: startRow },
+  ];
+  const verticalDistance = Math.abs(startRow - kerb.row);
+  for (let step = 1; step <= verticalDistance; step += 1) {
+    tiles.push({ col: kerb.col, row: startRow + direction * step });
+  }
+  return { entryTile: tiles[0], tiles, exitTile: kerb };
 }
 
 /**
@@ -8099,6 +8132,83 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     }
     expect(queued, "beta never reached a reception queue tile").toBe(true);
     expect(vehicleDrawables(scene.frame(1, WHOLE_WORLD)).length).toBe(0);
+  });
+});
+
+describe("OfficeScene vehicle facing on a road with a vertical leg", () => {
+  it("keeps its left facing through a vertical leg and while waiting", (context) => {
+    const roadView: OfficeView = {
+      ...OFFICE_VIEWS.floor,
+      plan: (input) => {
+        const planned = OFFICE_VIEWS.floor.plan(input);
+        const floor = planned.floors[0];
+        const helpDesk = floor.civic.find((room) => room.kind === "help-desk");
+        const kerb = helpDesk?.kerbTile;
+        if (kerb === undefined || kerb === null) return planned;
+        const road = leftThenVerticalRoad(floor, kerb);
+        if (road === null) return planned;
+        return {
+          ...planned,
+          floors: planned.floors.map((candidate, index) =>
+            index === 0 ? { ...candidate, road } : candidate,
+          ),
+        };
+      },
+    };
+    const scene = new OfficeScene(roadView, null);
+    scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
+    const layout = layoutOf(scene);
+    const floor = layout.floors[0];
+    const helpDesk = floor.civic.find((room) => room.kind === "help-desk");
+    const road = floor.road;
+    const kerb = helpDesk?.kerbTile;
+    if (road === null || kerb === undefined || kerb === null) {
+      context.skip("could not build the left-then-vertical road fixture");
+      return;
+    }
+    const projector = OFFICE_VIEWS.floor.painter.projector(layout);
+    const pointFor = (tile: OfficeTilePos): OfficePoint =>
+      projector.project(tile.col + 0.5, tile.row + 1);
+    const verticalPoints = road.tiles.slice(2, -1).map(pointFor);
+    const kerbPoint = pointFor(kerb);
+    scene.sync(
+      sceneInput({
+        agents: AGENTS,
+        visibleAgentIds: BOTH,
+        statusById: new Map<string, OfficeAgentStatus>([
+          ["alpha", "attention"],
+        ]),
+      }),
+    );
+    let verticalSeen = false;
+    let waitingAtKerb = 0;
+    let waitingFacingLeft = false;
+    for (let step = 0; step < 800; step += 1) {
+      const vehicle = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+        (candidate) => candidate.vehicleKind === "police-car",
+      );
+      if (vehicle !== undefined) {
+        const onVertical = verticalPoints.some(
+          (point) => vehicle.x === point.x && vehicle.y === point.y,
+        );
+        if (onVertical) {
+          verticalSeen = true;
+          expect(vehicle.facing).toBe("left");
+        }
+        if (vehicle.x === kerbPoint.x && vehicle.y === kerbPoint.y) {
+          if (verticalSeen) waitingAtKerb += 1;
+          if (waitingAtKerb >= 2) {
+            waitingFacingLeft = vehicle.facing === "left";
+            break;
+          }
+        } else {
+          waitingAtKerb = 0;
+        }
+      }
+      scene.tick(100);
+    }
+    expect(verticalSeen).toBe(true);
+    expect(waitingFacingLeft).toBe(true);
   });
 });
 
