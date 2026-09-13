@@ -58,7 +58,15 @@ export function useWelcomeScan(input: {
     [enabledProviderIds],
   );
   const eligible = support !== "unsupported" && providers.length > 0;
-  const active = open && support === "supported" && providers.length > 0;
+  // Active on `eligible`, NOT on a negotiated "supported": a transport that
+  // drops and comes back reads "unknown" in between, and if that turned the
+  // scan off the hook would forget what it was scanning and restart FRESH
+  // on the same host, window and roster - re-ticking rows the user had just
+  // unticked. Left active, the hook sees a null client, keeps its key and
+  // treats the returning client as a reconnect. A host that has actually
+  // refused the method is the one case that stays off. (The same rule the
+  // Settings dialog applies through `useSessionImportAvailableFor`.)
+  const active = open && eligible;
   const scan = useSessionImportScan(active, providers);
   const importableCount = useMemo(
     () => countImportable(scan.state),

@@ -5,7 +5,15 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import type {
   ProviderCliState,
@@ -32,7 +40,7 @@ interface ScanClientHarness {
   callbacks: SessionImportScanCallbacks | null;
   providers: ReadonlyArray<GuiHarnessId> | null | undefined;
   constructed: number;
-  readonly close: ReturnType<typeof vi.fn>;
+  readonly close: Mock<() => void>;
 }
 
 const scanClient = vi.hoisted((): ScanClientHarness => ({
@@ -61,14 +69,38 @@ vi.mock(
 
 const providersFixture = vi.hoisted(() => ({
   providers: [] as ProviderCliState[],
+  /** `false` = the list query has not answered yet. */
+  resolved: true,
+  refetch: vi.fn(),
 }));
 
 vi.mock("@/hooks/providers/use-providers-list-query", () => ({
-  useProvidersList: () => ({
-    data: { providers: providersFixture.providers },
+  useProvidersList: () =>
+    providersFixture.resolved
+      ? {
+          data: { providers: providersFixture.providers },
+          isPending: false,
+          isError: false,
+          isFetching: false,
+          fetchStatus: "idle",
+          refetch: providersFixture.refetch,
+        }
+      : {
+          data: undefined,
+          isPending: true,
+          isError: false,
+          isFetching: true,
+          fetchStatus: "fetching",
+          refetch: providersFixture.refetch,
+        },
+}));
+
+const setEnabledMutate = vi.hoisted(() => vi.fn());
+
+vi.mock("@/hooks/providers/use-providers-set-enabled-mutation", () => ({
+  useProvidersSetEnabled: () => ({
+    mutate: setEnabledMutate,
     isPending: false,
-    isError: false,
-    fetchStatus: "idle",
   }),
 }));
 
@@ -199,6 +231,8 @@ const ZERO_TOTALS: SessionImportScanTotals = {
   groups: 0,
   sessions: 0,
   importable: 0,
+  alreadyInTraycer: 0,
+  unreadable: 0,
 };
 
 function callbacks(): SessionImportScanCallbacks {
@@ -225,6 +259,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       providerState("claude-code", true),
       providerState("cursor", false),
     ];
+    providersFixture.resolved = true;
+    providersFixture.refetch.mockReset();
+    setEnabledMutate.mockReset();
     stream.hostId = "host-a";
     stream.support = "supported";
     readinessHarness.readiness = { kind: "ready" };
@@ -377,6 +414,28 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
   });
 
   describe("Continue from page 1", () => {
+    it("is withheld until providers.list resolves, so an unread roster cannot finish the modal", () => {
+      providersFixture.resolved = false;
+      signIn();
+      const view = render(<OnboardingFlowHost />);
+      const continueButton = screen.getByRole("button", { name: "Continue" });
+      expect(continueButton.hasAttribute("disabled")).toBe(true);
+      fireEvent.click(continueButton);
+      expect(flow().modal).toBe("in-progress");
+      expect(flow().modalPage).toBe(1);
+      expect(scanClient.constructed).toBe(0);
+
+      providersFixture.resolved = true;
+      view.rerender(<OnboardingFlowHost />);
+      expect(
+        screen
+          .getByRole("button", { name: "Continue" })
+          .hasAttribute("disabled"),
+      ).toBe(false);
+      // The roster arrived, and the scan it names started.
+      expect(scanClient.providers).toEqual(["claude"]);
+    });
+
     it("finishes as no-sessions when no session-capable provider is enabled (no scan ever starts)", () => {
       providersFixture.providers = [
         providerState("cursor", true),
@@ -452,7 +511,12 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
             importableCandidate("claude", "s2"),
           ]),
         );
-        callbacks().onComplete({ groups: 1, sessions: 2, importable: 2 });
+        callbacks().onComplete({
+          ...ZERO_TOTALS,
+          groups: 1,
+          sessions: 2,
+          importable: 2,
+        });
       });
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(flow().modalPage).toBe(2);

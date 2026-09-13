@@ -110,6 +110,10 @@ export function WelcomeModal(props: {
   };
 
   const continueFromProviders = (): void => {
+    // The page disables Continue until `providers.list` resolves; this is
+    // the same fact read at the moment of the click, so a click that raced
+    // the query cannot finish the modal on an empty roster.
+    if (providers === undefined) return;
     Analytics.getInstance().track(AnalyticsEvent.OnboardingModalContinued, {
       page: "1",
       enabled_provider_count: enabledProviderIds.length,
@@ -140,9 +144,10 @@ export function WelcomeModal(props: {
           event.preventDefault();
         }}
         // An unmodified `max-w-*` displaces the primitive's safe-area cap by
-        // design (see `dialog.tsx`); `sm:max-w-[80vw]` displaces its
-        // `sm:max-w-sm`. Fluid: both axes are viewport fractions.
-        className="flex h-[80vh] w-[80vw] max-w-[80vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[80vw]"
+        // design (see `dialog.tsx`), so the cap is composed back in: the
+        // smaller of 80vw and the safe region, at both breakpoints. Fluid:
+        // both axes are viewport fractions.
+        className="flex h-[80vh] w-[80vw] max-w-[min(80vw,var(--safe-area-width))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(80vw,var(--safe-area-width))]"
       >
         <WelcomeModalHeader page={modalPage} hostReady={hostReady} />
         {hostReady ? (

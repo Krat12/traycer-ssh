@@ -1,7 +1,19 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from "vitest";
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
 import type { ProviderId } from "@traycer/protocol/host/provider-schemas";
+import type {
+  SessionImportCandidate,
+  SessionImportGroup,
+} from "@traycer/protocol/host/session-import/candidate";
 import type {
   SessionImportScanCallbacks,
   SessionImportScanClientOptions,
@@ -15,7 +27,7 @@ import type {
 interface ScanClientHarness {
   readonly opened: Array<ReadonlyArray<GuiHarnessId> | null>;
   callbacks: SessionImportScanCallbacks | null;
-  readonly close: ReturnType<typeof vi.fn>;
+  readonly close: Mock<() => void>;
 }
 
 const scanClient = vi.hoisted((): ScanClientHarness => ({
@@ -53,6 +65,30 @@ vi.mock("@/lib/host/stream-runtime-context", () => ({
 }));
 
 import { useWelcomeScan } from "@/components/onboarding/welcome/use-welcome-scan";
+
+function session(nativeSessionId: string): SessionImportCandidate {
+  return {
+    harness: "claude",
+    nativeSessionId,
+    title: nativeSessionId,
+    firstPrompt: null,
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: null,
+    hasSubagents: false,
+    state: { kind: "importable" },
+  };
+}
+
+function folderGroup(
+  sessions: ReadonlyArray<SessionImportCandidate>,
+): SessionImportGroup {
+  return {
+    location: { kind: "folder", path: "/repo/a", workspaceId: null },
+    gitBacked: true,
+    sessions: [...sessions],
+  };
+}
 
 function renderScan(initial: ReadonlyArray<ProviderId>) {
   return renderHook(
@@ -114,19 +150,63 @@ describe("useWelcomeScan", () => {
     expect(scanClient.opened).toHaveLength(0);
   });
 
-  it("opens no client while support is unknown, but stays eligible", () => {
+  it("subscribes while support is still unknown on a live client, as the Settings dialog does", () => {
     stream.support = "unknown";
     const { result } = renderScan(["claude-code"]);
     expect(result.current.eligible).toBe(true);
-    expect(scanClient.opened).toHaveLength(0);
+    expect(scanClient.opened).toEqual([["claude"]]);
   });
 
-  it("reads a null client as unknown support", () => {
+  it("reads a null client as unknown support and opens nothing until one exists", () => {
     stream.client = null;
     stream.support = null;
     const { result } = renderScan(["claude-code"]);
     expect(result.current.support).toBe("unknown");
     expect(scanClient.opened).toHaveLength(0);
+  });
+
+  it("treats a transport drop as a reconnect: a deselected row stays deselected when the client returns", () => {
+    const { result, rerender } = renderScan(["claude-code"]);
+    const first = scanClient.callbacks;
+    if (first === null) throw new Error("no scan client");
+    act(() => {
+      first.onStarted(["claude"]);
+      first.onGroup(folderGroup([session("s1"), session("s2")]));
+    });
+    expect(result.current.scan.state.selected).toEqual(
+      new Set(["claude:s1", "claude:s2"]),
+    );
+    act(() => {
+      result.current.scan.dispatch({
+        kind: "sessionToggled",
+        selectionKey: "claude:s1",
+      });
+    });
+    expect(result.current.scan.state.selected).toEqual(new Set(["claude:s2"]));
+
+    // The stream closes: no client, support unknown. Nothing is torn down
+    // beyond the client the hook's own cleanup closes, and the picks stay.
+    stream.client = null;
+    stream.support = null;
+    rerender({ enabledProviderIds: ["claude-code"] });
+    expect(scanClient.close).toHaveBeenCalledTimes(1);
+    expect(result.current.scan.state.groups).toHaveLength(1);
+    expect(result.current.scan.state.selected).toEqual(new Set(["claude:s2"]));
+
+    // It comes back on the same host: a reconnect, and the re-delivered
+    // group refreshes without re-ticking the row the user cleared.
+    stream.client = { stream: "replacement" };
+    stream.support = "supported";
+    rerender({ enabledProviderIds: ["claude-code"] });
+    expect(scanClient.opened).toEqual([["claude"], ["claude"]]);
+    expect(result.current.scan.state.groups).toHaveLength(1);
+    const second = scanClient.callbacks;
+    if (second === null) throw new Error("no replacement scan client");
+    act(() => {
+      second.onStarted(["claude"]);
+      second.onGroup(folderGroup([session("s1"), session("s2")]));
+    });
+    expect(result.current.scan.state.selected).toEqual(new Set(["claude:s2"]));
   });
 
   it("never opens a client over an empty roster", () => {

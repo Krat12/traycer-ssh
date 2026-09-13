@@ -1,30 +1,181 @@
-import type { ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
+import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
+import type { ProviderId } from "@traycer/protocol/host/provider-schemas";
+import { Button } from "@/components/ui/button";
 import { WelcomeModalFooter } from "@/components/onboarding/welcome/welcome-modal-footer";
+import { WelcomeProviderTile } from "@/components/onboarding/welcome/welcome-provider-tile";
+import {
+  buildWelcomeTiles,
+  disablingLastEnabledFor,
+  type WelcomeTileModel,
+} from "@/components/onboarding/welcome/welcome-providers-model";
+import { useProvidersList } from "@/hooks/providers/use-providers-list-query";
+import { useProvidersSetEnabled } from "@/hooks/providers/use-providers-set-enabled-mutation";
+import {
+  WELCOME_MAJOR_PROVIDER_IDS,
+  welcomeMinorProviders,
+} from "@/lib/provider-ordering";
+import { cn } from "@/lib/utils";
+
+const MINOR_PROVIDER_IDS: ReadonlyArray<ProviderId> =
+  welcomeMinorProviders().map((provider) => provider.providerId);
 
 /**
- * Page 1 of the welcome modal: the providers grid.
+ * Page 1 of the welcome modal: the six major providers as tiles, the rest
+ * behind a "+N more providers" disclosure, each with an install badge, the
+ * account line when the host has one, and an enable switch that calls the
+ * host. No sign-in flow of any kind lives here (decision 3) - a tooltip
+ * points an unauthenticated provider at Settings ▸ Providers - and no
+ * skills/MCP badges (decision 29: the native list RPC would start MCP
+ * discovery on a cold host).
  *
- * PLACEHOLDER - the signature is final (the modal wires `onContinue` /
- * `onSkip` to its Continue branch and `skipModal`), the body is ticket 2.2's:
- * six major provider tiles with install badge, account line and enable
- * switch, plus a "+N more providers" disclosure. The data hooks
- * (`useProvidersList`, `useProvidersSetEnabled`) belong to that body, not to
- * the modal, so nothing here reads the host yet.
+ * App-wide host on purpose: this is an app-wide surface, not a composer, so
+ * the default-host wrappers are the right ones.
+ *
+ * Continue waits for `providers.list` to RESOLVE. The modal decides the
+ * branch from the enabled roster, and before the list has answered that
+ * roster reads as empty - a Continue then would finish the modal as
+ * `no-sessions` for a user with three providers enabled. An error with no
+ * data is the same gap with a name, so it gets inline copy and a retry
+ * rather than a Continue.
  */
 export function WelcomeProvidersPage(props: {
   readonly onContinue: () => void;
   readonly onSkip: () => void;
 }): ReactNode {
   const { onContinue, onSkip } = props;
+  const providersQuery = useProvidersList({ enabled: true, subscribed: true });
+  const providers = providersQuery.data?.providers;
+  const setEnabled = useProvidersSetEnabled();
+  // A disabled query (no host bound yet) never leaves `pending` with an idle
+  // fetch, and a hard query error leaves no data; surface both honestly as
+  // "Unavailable" instead of an eternal "Detecting…".
+  const hostUnavailable =
+    (providersQuery.isPending && providersQuery.fetchStatus === "idle") ||
+    (providersQuery.isError && providers === undefined);
+  const listFailed = providersQuery.isError && providers === undefined;
+  const enabledProviderCount =
+    providers?.filter((provider) => provider.enabled).length ?? 0;
+
+  const majorTiles = useMemo(
+    () =>
+      buildWelcomeTiles({
+        providers,
+        hostUnavailable,
+        ids: WELCOME_MAJOR_PROVIDER_IDS,
+      }),
+    [providers, hostUnavailable],
+  );
+  const minorTiles = useMemo(
+    () =>
+      buildWelcomeTiles({
+        providers,
+        hostUnavailable,
+        ids: MINOR_PROVIDER_IDS,
+      }),
+    [providers, hostUnavailable],
+  );
+
+  // Tooltips stay inside the dialog: the boundary is the nearest dialog
+  // content, resolved once from the page's own root through a callback ref
+  // (the page is only ever mounted inside the modal).
+  const [collisionBoundary, setCollisionBoundary] = useState<Element | null>(
+    null,
+  );
+  const rootRef = useCallback((node: HTMLDivElement | null) => {
+    setCollisionBoundary(node?.closest('[data-slot="dialog-content"]') ?? null);
+  }, []);
+
+  const [minorsExpanded, setMinorsExpanded] = useState(false);
+  const minorsId = useId();
+
+  const handleSetEnabled = (providerId: ProviderId, enabled: boolean): void => {
+    // No profile management here - this call never renames/removes a profile.
+    setEnabled.mutate({ providerId, enabled, profileAction: null });
+  };
+
+  const renderTile = (
+    model: WelcomeTileModel,
+    layout: "tile" | "row",
+  ): ReactNode => (
+    <WelcomeProviderTile
+      key={model.providerId}
+      model={model}
+      layout={layout}
+      disablingLastEnabled={disablingLastEnabledFor(
+        providers?.find((provider) => provider.providerId === model.providerId),
+        model.enabled,
+        enabledProviderCount,
+      )}
+      settingEnabled={setEnabled.isPending}
+      collisionBoundary={collisionBoundary}
+      onSetEnabled={handleSetEnabled}
+    />
+  );
+
   return (
     <>
       <div
+        ref={rootRef}
         data-testid="welcome-providers-page"
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-6 py-4"
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-6 py-4"
       >
-        <p className="text-ui-sm text-muted-foreground">
-          Your coding agents will appear here.
-        </p>
+        {listFailed ? (
+          <div
+            role="alert"
+            data-testid="welcome-providers-error"
+            className="flex shrink-0 flex-wrap items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-ui-xs text-amber-700 dark:bg-amber-400/10 dark:text-amber-300"
+          >
+            <span className="min-w-0 flex-1">
+              Traycer couldn't read this machine's providers.
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={providersQuery.isFetching}
+              onClick={() => void providersQuery.refetch()}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : null}
+        <ul
+          aria-label="Coding agents"
+          className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3"
+        >
+          {majorTiles.map((model) => renderTile(model, "tile"))}
+        </ul>
+        {minorTiles.length > 0 ? (
+          <div className="flex shrink-0 flex-col gap-1">
+            <button
+              type="button"
+              aria-expanded={minorsExpanded}
+              aria-controls={minorsId}
+              data-testid="welcome-providers-more"
+              onClick={() => setMinorsExpanded((expanded) => !expanded)}
+              className="flex w-fit items-center gap-1 rounded-md py-1 pr-2 text-ui-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              <ChevronRight
+                aria-hidden
+                className={cn(
+                  "size-3.5 shrink-0 transition-transform",
+                  minorsExpanded && "rotate-90",
+                )}
+              />
+              {minorTiles.length.toLocaleString()} more providers
+            </button>
+            {minorsExpanded ? (
+              <ul
+                id={minorsId}
+                aria-label="More coding agents"
+                className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-x-3"
+              >
+                {minorTiles.map((model) => renderTile(model, "row"))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <WelcomeModalFooter
         leading={null}
@@ -32,8 +183,9 @@ export function WelcomeProvidersPage(props: {
         primary={{
           label: "Continue",
           onSelect: onContinue,
-          disabled: false,
-          pending: false,
+          disabled: providers === undefined,
+          // The spinner says why Continue is not yet on offer.
+          pending: providersQuery.isPending && providersQuery.isFetching,
         }}
       />
     </>
