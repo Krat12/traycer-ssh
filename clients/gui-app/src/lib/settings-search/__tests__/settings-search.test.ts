@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createFakeRunnerHost } from "../../../../__tests__/create-fake-runner-host";
 import { FakeBrowserViewBridge } from "@/lib/browser-view/__tests__/fake-browser-view-bridge";
+import { setMobileApp } from "@/lib/mobile-app";
 import type { SettingsAvailabilityContext } from "@/lib/settings/settings-availability";
 import { searchSettings } from "@/lib/settings-search/settings-search";
 
@@ -276,6 +277,45 @@ describe("settings search", () => {
       expect(labelsFor("Footer status bar", DESKTOP)).not.toContain(
         "Footer status bar",
       );
+    });
+  });
+
+  describe("Onboarding", () => {
+    afterEach(() => {
+      setMobileApp(false);
+    });
+
+    it("lands tour vocabulary on the Onboarding page", () => {
+      expect(landingFor("onboarding", DESKTOP)).toBe("onboarding#<top>");
+      // Among the landings rather than first: Fuse ranks "replay" against
+      // "Quote reply" too, and which of the two wins is a tie-break this
+      // suite has no business pinning.
+      for (const query of ["replay tour", "product tour", "first run"]) {
+        expect(landingsFor(query, DESKTOP), query).toContain(
+          "onboarding#<top>",
+        );
+      }
+    });
+
+    it("no longer indexes General's retired replay group", () => {
+      const results = searchSettings("product tour", DESKTOP);
+      expect(
+        results.filter(
+          (result) =>
+            result.entry.section === "general" &&
+            (result.entry.anchor === "general-onboarding" ||
+              result.entry.anchor === "general-product-tour"),
+        ),
+      ).toEqual([]);
+      expect(labelsFor("product tour", DESKTOP)).not.toContain("Product tour");
+    });
+
+    // Section visibility for search comes from the global `isMobileApp()`
+    // flag, not from the context's `mobileApp` field - `MOBILE` alone
+    // wouldn't withhold the page, so the flag is flipped directly here.
+    it("withholds the page in the installed mobile app", () => {
+      setMobileApp(true);
+      expect(labelsFor("onboarding", MOBILE)).not.toContain("Onboarding");
     });
   });
 
