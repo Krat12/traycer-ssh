@@ -1843,13 +1843,19 @@ export class OfficeScene {
     this.clockMs = input.clockMs;
     this.pulse = input.pulse;
     this.partition = input.partition;
-    // The archive's counter, taken here because this is where both halves of
-    // it arrive. Not from the walk-outs (C5): a floor opened at a cursor where
+    // The archive's counter, taken here because this is where every part of it
+    // arrives. Not from the walk-outs (C5): a floor opened at a cursor where
     // three hundred records were already archived has watched nobody leave.
-    this.archivedByHost = officeArchivedByHost(
-      input.partition,
-      input.statusById,
-    );
+    // And not from `statusById` either - that says how a desk is PAINTED, and
+    // an archived agent carrying a failure or an unanswered request is painted
+    // something else. It reads the archive moment, the same predicate
+    // `archivedAsOf` below departs a character on.
+    this.archivedByHost = officeArchivedByHost({
+      partition: input.partition,
+      agents: input.agents,
+      visibleAgentIds: input.visibleAgentIds,
+      cursorMs: input.cursorMs,
+    });
     this.activityById = input.activityById;
     this.viewport = input.viewport;
     this.agentById = new Map(input.agents.map((agent) => [agent.id, agent]));

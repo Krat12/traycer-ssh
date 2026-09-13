@@ -6234,7 +6234,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // non-zero count (3 at seed 1), so a zero would not silently pass
     // as "both sides were empty".
     const epic = makeTestEpic("one-team", 80, 1);
-    const visible = visibleIdsOf(epic);
+    // EVERY record, archived ones included, which is what `visibleAgentIds`
+    // means in production: the projection's set is "agents that exist as of
+    // the cursor", and an archived agent exists - it is drawn as a ghosted
+    // desk. `visibleIdsOf` filters the archived out, so a case built on it
+    // could never witness an archive count at all.
+    const visible = new Set(epic.agents.map((person) => person.id));
     const input = sceneInput({
       agents: epic.agents,
       visibleAgentIds: visible,
@@ -6245,7 +6250,12 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     scene.sync(input);
 
     const reported = scene.civicTally().archivedByHost;
-    const folded = officeArchivedByHost(input.partition, input.statusById);
+    const folded = officeArchivedByHost({
+      partition: input.partition,
+      agents: input.agents,
+      visibleAgentIds: input.visibleAgentIds,
+      cursorMs: input.cursorMs,
+    });
     expect(reported).toEqual(folded);
     let archived = 0;
     for (const count of reported.values()) archived += count;

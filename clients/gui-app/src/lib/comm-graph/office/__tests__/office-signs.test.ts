@@ -1723,7 +1723,12 @@ describe("officeCivicSignText - the civic counter ladder", () => {
       statusById,
       previous: null,
     });
-    const archivedByHost = officeArchivedByHost(partition, statusById);
+    const archivedByHost = officeArchivedByHost({
+      partition,
+      agents: epic.agents,
+      visibleAgentIds: new Set(epic.agents.map((person) => person.id)),
+      cursorMs: null,
+    });
     const layout = OFFICE_VIEWS.floor.plan({
       agents: epic.agents,
       partition,
