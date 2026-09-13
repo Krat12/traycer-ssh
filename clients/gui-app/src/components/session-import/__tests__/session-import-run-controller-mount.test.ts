@@ -48,14 +48,17 @@ const BINDING: StreamRuntimeBinding = {
 };
 
 /**
- * The tour renders through `RootSurface`'s standalone branch - `StandaloneShell`
- * + `OnboardingPage` - and never through `AppShell`. While the run controller
- * was mounted inside `AppShell`, the onboarding act's Import button called a
- * handle nobody had registered, so the import silently never started.
+ * Two surfaces start an import - the Settings dialog and the announcement
+ * dialog - and both render under `AppShell`, while sign-in renders under
+ * `StandaloneShell`. The run controller sits above that split, in
+ * `traycer-app.tsx`, so it is mounted for every surface that can reach the
+ * host stream: a mount inside one shell once left the other shell's Import
+ * button calling a handle nobody had registered, and the import silently
+ * never started.
  *
- * The mount now sits above the router, where no component can render it in
- * isolation, so the topology is asserted against the two files that decide it
- * and the handle is exercised at both ends.
+ * The mount sits above the router, where no component can render it in
+ * isolation, so the topology is asserted against the files that decide it and
+ * the handle is exercised at both ends.
  */
 const SRC_DIR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -79,8 +82,8 @@ describe("SessionImportRunController mount point", () => {
     const providerOpensAt = source.indexOf("<HostStreamProvider>");
     const providerClosesAt = source.indexOf("</HostStreamProvider>");
     const mountAt = source.indexOf("<SessionImportRunController />");
-    // The routed tree: `AppShell` for the signed-in app, `StandaloneShell` +
-    // `OnboardingPage` for the tour. Both inherit whatever sits above it here.
+    // The routed tree: `AppShell` for the signed-in app, `StandaloneShell`
+    // for sign-in. Both inherit whatever sits above it here.
     const routedTreeAt = source.indexOf("<TraycerAppRuntimeSurface");
 
     expect(providerOpensAt).toBeGreaterThanOrEqual(0);
@@ -88,15 +91,18 @@ describe("SessionImportRunController mount point", () => {
     expect(mountAt).toBeLessThan(providerClosesAt);
     expect(routedTreeAt).toBeGreaterThan(providerOpensAt);
     expect(routedTreeAt).toBeLessThan(providerClosesAt);
+    // And before the routed tree, so the handle is registered by the time
+    // any surface under it can mount an Import button.
+    expect(mountAt).toBeLessThan(routedTreeAt);
   });
 
-  it("is not mounted inside AppShell, which the onboarding surface never renders", () => {
+  it("is mounted in neither shell, so no surface depends on which shell it is in", () => {
     expect(sourceOf("components/layout/app-shell.tsx")).not.toContain(
       "SessionImportRunController",
     );
-    const rootSurface = sourceOf("routes/root-route-components.tsx");
-    expect(rootSurface).toContain("<OnboardingPage");
-    expect(rootSurface).not.toContain("SessionImportRunController");
+    expect(sourceOf("routes/root-route-components.tsx")).not.toContain(
+      "SessionImportRunController",
+    );
   });
 });
 

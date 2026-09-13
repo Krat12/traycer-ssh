@@ -130,6 +130,7 @@ describe("analytics", () => {
       "host",
       "keybindings",
       "notifications",
+      "onboarding",
       "providers",
       "shell",
       "usage",
@@ -137,7 +138,7 @@ describe("analytics", () => {
     ];
     // `source` alongside `section`, matching what the sidebars actually emit -
     // the sanitizer requires every expected key to be present, so omitting it
-    // would reject all twelve and prove nothing.
+    // would reject every one of them and prove nothing.
     const rejected = sections.filter(
       (section) =>
         sanitizeAnalyticsProperties(AnalyticsEvent.SettingsOpened, {

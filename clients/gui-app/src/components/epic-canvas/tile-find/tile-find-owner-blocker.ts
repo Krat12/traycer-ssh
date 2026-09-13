@@ -23,8 +23,6 @@ import type { TileFindOwnerBlocker } from "@/stores/tile-find/types";
  */
 function routeOwnsViewport(pathname: string): boolean {
   return (
-    pathname === "/onboarding" ||
-    pathname.startsWith("/onboarding/") ||
     pathname === "/settings" ||
     pathname.startsWith("/settings/")
   );

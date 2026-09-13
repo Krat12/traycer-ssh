@@ -68,18 +68,17 @@ export interface SessionImportSecondaryAction {
 }
 
 /**
- * The one import surface, used by the onboarding act and the Settings dialog
- * alike (spec D3). It hands the user's selection to the app-wide run
- * controller rather than owning the run itself - which is what lets it be
- * closed mid-import.
+ * The one import surface, used by the welcome modal's sessions page and the
+ * Settings dialog alike (spec D3). It hands the user's selection to the
+ * app-wide run controller rather than owning the run itself - which is what
+ * lets it be closed mid-import.
  *
  * The scan is the caller's (`useSessionImportScan`), because the two surfaces
- * start it at different moments: the dialog when it opens, the tour when it
- * begins - several acts before this wizard is on screen (D13, revised).
+ * may start it at different moments: the dialog when it opens, the welcome
+ * modal when it opens - before this wizard is on screen (D13, revised).
  *
- * Both surfaces submit through the wizard's own Import button. The tour used
- * to submit through its Continue instead, which imported the default selection
- * without an explicit ask; an import now starts only when Import is pressed.
+ * Both surfaces submit through the wizard's own Import button; an import
+ * starts only when Import is pressed, never from a default selection.
  */
 export function SessionImportWizard(props: {
   readonly surface: SessionImportSurface;
@@ -106,7 +105,7 @@ export function SessionImportWizard(props: {
   // The controller only probes the app's host on its own. A wizard on any
   // other host checks through Query first and attaches without selections.
   // Submission stays disabled until an idle answer arrives, including when
-  // the onboarding scan was populated before this wizard mounted.
+  // the welcome modal's scan was populated before this wizard mounted.
   useEffect(() => {
     if (!runIdle || !statusQuery.isSuccess || statusQuery.isFetching) return;
     if (activeRun !== null) attachSessionImportRun(streamBinding, activeRun);
@@ -117,13 +116,12 @@ export function SessionImportWizard(props: {
     statusQuery.isSuccess,
     streamBinding,
   ]);
-  // Meeting the wizard on any surface - the tour act, the Settings dialog,
-  // the release toast's own dialog - is the announcement: the id is consumed
-  // on mount so the toast never follows for a user who has already opened
-  // the feature, whether or not they imported anything. Only reaching the
-  // wizard counts; skipping the tour before its act does not, so a skipper
-  // still gets the toast (unlike `login-import`, which the tour's finish
-  // consumes unconditionally).
+  // Meeting the wizard on any surface - the welcome modal's sessions page,
+  // the Settings dialog, the release toast's own dialog - is the
+  // announcement: the id is consumed on mount so the toast never follows for
+  // a user who has already opened the feature, whether or not they imported
+  // anything. Only reaching the wizard counts; dismissing the welcome modal
+  // before its sessions page does not, so a skipper still gets the toast.
   const consumeAnnouncement = useFeatureAnnouncementsStore(
     (state) => state.consume,
   );

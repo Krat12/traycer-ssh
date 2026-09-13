@@ -97,6 +97,7 @@ export type AnalyticsSettingsSection =
   | "layout"
   | "link-phone"
   | "notifications"
+  | "onboarding"
   | "opening-behavior"
   | "providers"
   | "shell"
@@ -234,7 +235,7 @@ export type AnalyticsOnboardingStep =
   | "task-tabs";
 
 /** Which surface opened the import wizard - onboarding act or Settings. */
-export type AnalyticsSessionImportSurface = "dialog" | "onboarding";
+export type AnalyticsSessionImportSurface = "dialog" | "welcome-modal";
 
 export type AnalyticsProviderOperation =
   | "api_key"
@@ -1182,6 +1183,7 @@ const ANALYTICS_SETTINGS_SECTIONS = new Set<string>(
     layout: true,
     "link-phone": true,
     notifications: true,
+    onboarding: true,
     "opening-behavior": true,
     providers: true,
     shell: true,
@@ -1871,7 +1873,7 @@ const EVENT_EXACT_PROPERTY_VALUES = new Map<string, ReadonlySet<string>>([
   ...eventValueEntries(
     [AnalyticsEvent.SessionImportStarted],
     "surface",
-    new Set(["dialog", "onboarding"]),
+    new Set(["dialog", "welcome-modal"]),
   ),
   ...eventValueEntries(
     [

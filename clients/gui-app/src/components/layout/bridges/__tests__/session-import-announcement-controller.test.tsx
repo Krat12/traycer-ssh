@@ -17,8 +17,6 @@ import {
   type SurfaceReadiness,
 } from "@/components/layout/host-readiness-controller-context";
 import { useAuthStore } from "@/stores/auth/auth-store";
-import { useOnboardingStore } from "@/stores/onboarding/onboarding-store";
-import { useOnboardingTourOpenStore } from "@/stores/onboarding/onboarding-tour-open-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
 import { persistKey, STORE_KEYS } from "@/lib/persist";
 
@@ -126,8 +124,6 @@ function renderWithReadiness(
 
 function resetStores(): void {
   useAuthStore.setState({ status: "signed-in" });
-  useOnboardingStore.setState({ completedAt: Date.now(), step: 0 });
-  useOnboardingTourOpenStore.getState().setOpen(false);
   useFeatureAnnouncementsStore.setState({ consumed: {} });
   window.localStorage.clear();
 }
@@ -177,17 +173,11 @@ describe("<SessionImportAnnouncementController />", () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("does not show before onboarding is complete", () => {
-    useOnboardingStore.setState({ completedAt: null, step: 0 });
-    render(<SessionImportAnnouncementController />);
-
-    expect(toastMock).not.toHaveBeenCalled();
-  });
-
-  it("shows for a user who finished onboarding before the feature existed", () => {
-    // The whole point of the toast: an older install has a completion
-    // stamp and no `session-import` record, since the id did not exist.
-    useOnboardingStore.setState({ completedAt: 1, step: 0 });
+  it("shows for any signed-in capable user", () => {
+    // The whole point of the toast: an older install has no
+    // `session-import` record, since the id did not exist.
+    // TODO(onboarding-revamp T3): a fresh user is held behind the welcome
+    // modal's sessions page again once that exists.
     render(<SessionImportAnnouncementController />);
 
     expect(toastMock).toHaveBeenCalledTimes(1);
@@ -198,19 +188,6 @@ describe("<SessionImportAnnouncementController />", () => {
     render(<SessionImportAnnouncementController />);
 
     expect(toastMock).not.toHaveBeenCalled();
-  });
-
-  it("holds while the tour is open, then shows when it closes", () => {
-    useOnboardingTourOpenStore.getState().setOpen(true);
-    render(<SessionImportAnnouncementController />);
-
-    expect(toastMock).not.toHaveBeenCalled();
-
-    act(() => {
-      useOnboardingTourOpenStore.getState().setOpen(false);
-    });
-
-    expect(toastMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not show when signed out", () => {
@@ -324,19 +301,6 @@ describe("<SessionImportAnnouncementController />", () => {
     expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("dismisses the toast once the tour opens after it showed", () => {
-    render(<SessionImportAnnouncementController />);
-    expect(toastMock).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      useOnboardingTourOpenStore.getState().setOpen(true);
-    });
-
-    expect(toastMock.dismiss).toHaveBeenCalledWith(
-      "traycer-session-import-announcement",
-    );
-  });
-
   it("dismisses the toast once availability flips to false after it showed", () => {
     const { rerender } = render(<SessionImportAnnouncementController />);
     expect(toastMock).toHaveBeenCalledTimes(1);
@@ -358,7 +322,7 @@ describe("<SessionImportAnnouncementController />", () => {
 
     // The narrator and a stream drop are transient - a toast under a dialog
     // is inert rather than wrong, and a reconnect brings the host back. They
-    // must not take the toast down the way sign-out and the tour do, since
+    // must not take the toast down the way sign-out does, since
     // the claim is permanent.
     harness.rerenderReadiness(LOADING_HOST_READINESS);
     streamLiveMock.value = false;
@@ -367,7 +331,7 @@ describe("<SessionImportAnnouncementController />", () => {
     expect(toastMock.dismiss).not.toHaveBeenCalled();
   });
 
-  it("does not dismiss on the tour opening when THIS controller never showed the toast", () => {
+  it("does not dismiss on sign-out when THIS controller never showed the toast", () => {
     useFeatureAnnouncementsStore.setState({
       consumed: { "session-import": Date.now() },
     });
@@ -375,7 +339,7 @@ describe("<SessionImportAnnouncementController />", () => {
     expect(toastMock).not.toHaveBeenCalled();
 
     act(() => {
-      useOnboardingTourOpenStore.getState().setOpen(true);
+      useAuthStore.setState({ status: "signed-out" });
     });
 
     expect(toastMock.dismiss).not.toHaveBeenCalled();

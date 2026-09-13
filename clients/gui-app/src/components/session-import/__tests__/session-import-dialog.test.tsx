@@ -26,8 +26,8 @@ import type { SessionImportScanHandle } from "@/components/session-import/use-se
 import { WithTestQueryClient } from "@/__tests__/with-test-query-client";
 
 /**
- * The wizard is stubbed exactly as `onboarding-page.test.tsx` and
- * `session-import-wizard.test.tsx` do it: this suite is about which surface
+ * The wizard is stubbed exactly as `session-import-wizard.test.tsx` does
+ * it: this suite is about which surface
  * (wizard vs. notice) the dialog chooses and what it hands `useSessionImportScan`,
  * not about the wizard's own row/selection behaviour (covered by
  * `session-import-wizard.test.tsx`).
@@ -84,7 +84,7 @@ vi.mock("@/hooks/auth/use-registered-hosts-query", async (importOriginal) => ({
 /**
  * The scope the dialog sees, over the selection the dialog itself owns — so a
  * pick made through the real `HostSwitcher` really does re-point the dialog,
- * the same shape `onboarding-page.test.tsx`'s `tourScope` uses.
+ * the same shape `session-import-wizard.test.tsx`'s scope fixture uses.
  */
 const hostsMock = vi.hoisted(() => ({
   hosts: [{ hostId: "host-a", connectable: true }] as ReadonlyArray<{
