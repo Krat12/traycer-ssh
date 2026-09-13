@@ -4169,12 +4169,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     return next;
   }
 
-  function visibleIdsOf(epic: OfficeTestEpic): Set<string> {
+  function unarchivedIdsOf(epic: OfficeTestEpic): Set<string> {
     return new Set(
       epic.agents
         .filter((person) => !person.archived)
         .map((person) => person.id),
     );
+  }
+
+  /**
+   * Production's `visibleAgentIds`: every agent that exists as of the
+   * cursor, archived included. An archived agent is drawn as a ghosted
+   * desk, so it belongs in the set.
+   */
+  function existingIdsOf(epic: OfficeTestEpic): Set<string> {
+    return new Set(epic.agents.map((person) => person.id));
   }
 
   function failureIds(
@@ -5341,7 +5350,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // overflow case wearing an outbreak(3) name.
     const epic = makeTestEpic("one-team", 60, 1);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const script = outbreakScript({ ...epic, statusById: idle }, 3);
     const crashed = failureIds(script[0]);
     expect(crashed).toHaveLength(3);
@@ -5405,7 +5414,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const script = outbreakScript({ ...epic, statusById: idle }, 12);
     const crashed = failureIds(script[0]);
 
@@ -5462,7 +5471,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // id is the first overflow, a low id arrives last.
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const script = outbreakScript({ ...epic, statusById: idle }, 12);
     const subjects = failureIds(script[0]).slice().sort();
     const scene = newScene();
@@ -5555,7 +5564,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // queue would serve them before the lounge overflow.
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const subjects = epic.agents
       .filter((person) => !person.archived)
       .map((person) => person.id)
@@ -5653,7 +5662,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
     const crashed = failureIds(outbreak[0]);
 
@@ -5917,7 +5926,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const alpha = epic.agents[2].id;
 
     const scene = newScene();
@@ -5960,7 +5969,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const planSpy = vi.spyOn(view, "plan");
     const scene = newScene();
     scene.sync(
@@ -6001,7 +6010,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
     const agents = epic.agents;
 
@@ -6083,7 +6092,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const outbreak = outbreakScript({ ...epic, statusById: idle }, 12);
     const scene = newScene();
     // First sync at a cursor, playing: claims recompute before characters
@@ -6153,7 +6162,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       IDLE_COUNT + CRASHED_COUNT + WAITING_COUNT,
       1,
     );
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const pool = epic.agents.map((person) => person.id);
     const crashed = pool.slice(0, CRASHED_COUNT);
     const waiting = pool.slice(CRASHED_COUNT, CRASHED_COUNT + WAITING_COUNT);
@@ -6241,7 +6250,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const scene = newScene();
     scene.sync(
       sceneInput({
@@ -6344,7 +6353,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const scene = newScene();
     scene.sync(
       sceneInput({
@@ -6384,7 +6393,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const scene = newScene();
     const waiting = waitingScript({ ...epic, statusById: idle }, 6);
     scene.sync(
@@ -6423,7 +6432,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // the seated civic-room word.
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const queuedId = epic.agents.find((person) => !person.archived)?.id;
     if (queuedId === undefined) throw new Error("expected a live agent");
     const attention = new Map(idle);
@@ -6448,7 +6457,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 60, 1);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const script = outbreakScript({ ...epic, statusById: idle }, 3);
     const crashed = failureIds(script[0]);
     expect(crashed.length).toBeGreaterThan(0);
@@ -6502,7 +6511,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     }
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const scene = newScene();
     const outbreak = outbreakScript({ ...epic, statusById: idle }, 3);
     scene.sync(
@@ -6542,7 +6551,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // ward, so a tally that returned `seatIds.length` cannot pass.
     const epic = makeTestEpic("one-team", 12, 9);
     const idle = idleStatusById(epic);
-    const visible = visibleIdsOf(epic);
+    const visible = unarchivedIdsOf(epic);
     const outbreak = outbreakScript({ ...epic, statusById: idle }, 1);
     const scene = newScene();
     scene.sync(
@@ -6613,9 +6622,9 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     // EVERY record, archived ones included, which is what `visibleAgentIds`
     // means in production: the projection's set is "agents that exist as of
     // the cursor", and an archived agent exists - it is drawn as a ghosted
-    // desk. `visibleIdsOf` filters the archived out, so a case built on it
+    // desk. `unarchivedIdsOf` filters the archived out, so a case built on it
     // could never witness an archive count at all.
-    const visible = new Set(epic.agents.map((person) => person.id));
+    const visible = existingIdsOf(epic);
     const input = sceneInput({
       agents: epic.agents,
       visibleAgentIds: visible,
@@ -12050,7 +12059,7 @@ describe("OfficeScene fixup 8 - a seated agent's name tag is fitted to its seat"
  * `OfficeScene` directly off `OFFICE_VIEWS`, following the precedent of
  * "OfficeScene fixup 8c - the book settles with the plan (D66)" above:
  * local helpers, not the `describe.each` closure's `newScene` / `bookOf` /
- * `idleStatusById` / `visibleIdsOf`, none of which are in scope here.
+ * `idleStatusById` / `unarchivedIdsOf`, none of which are in scope here.
  */
 describe("OfficeScene fixup 8d - the queue and the claim answer the right pool", () => {
   /**
