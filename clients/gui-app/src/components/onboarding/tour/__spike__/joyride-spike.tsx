@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useReducedMotion } from "motion/react";
 import { XIcon } from "lucide-react";
 import {
@@ -88,6 +94,62 @@ declare global {
   interface Window {
     __joyrideSpike?: SpikeControls;
   }
+}
+
+interface ResumeGate {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getSnapshot: () => boolean;
+  readonly set: (settled: boolean) => void;
+}
+
+function createResumeGate(): ResumeGate {
+  let settled = true;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: () => settled,
+    set: (next) => {
+      if (next === settled) return;
+      settled = next;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+/**
+ * True once `suspended` has been false for one macrotask (or at once when
+ * `defer` is off) - the same external-store shape as the production
+ * controller's suspension gate, so nothing sets React state from an effect.
+ */
+function useDeferredResume(suspended: boolean, defer: boolean): boolean {
+  const [gate] = useState(createResumeGate);
+  const settled = useSyncExternalStore(
+    gate.subscribe,
+    gate.getSnapshot,
+    gate.getSnapshot,
+  );
+  useEffect(() => {
+    if (suspended) {
+      gate.set(false);
+      return undefined;
+    }
+    if (!defer) {
+      gate.set(true);
+      return undefined;
+    }
+    const id = window.setTimeout(() => {
+      gate.set(true);
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+    };
+  }, [gate, suspended, defer]);
+  return settled;
 }
 
 /**
@@ -251,7 +313,6 @@ export function JoyrideSpike(): React.ReactElement {
   const [targetNotFoundCount, setTargetNotFoundCount] = useState(0);
 
   const [resumeDeferred, setResumeDeferred] = useState(true);
-  const [modalsClear, setModalsClear] = useState(true);
 
   const presentedModalCount = (dialogOpen ? 1 : 0) + (nestedOpen ? 1 : 0);
   // SPIKE FINDING: with `run` derived synchronously from the modal count, the
@@ -261,22 +322,7 @@ export function JoyrideSpike(): React.ReactElement {
   // keydown listener) in the microtask checkpoint between listeners, and the
   // same keydown then bubbles to body. Deferring the resume by one macrotask
   // is enough; the driver measures both arms.
-  useEffect(() => {
-    if (presentedModalCount > 0) {
-      setModalsClear(false);
-      return undefined;
-    }
-    if (!resumeDeferred) {
-      setModalsClear(true);
-      return undefined;
-    }
-    const id = window.setTimeout(() => {
-      setModalsClear(true);
-    }, 0);
-    return () => {
-      window.clearTimeout(id);
-    };
-  }, [presentedModalCount, resumeDeferred]);
+  const modalsClear = useDeferredResume(presentedModalCount > 0, resumeDeferred);
   const run =
     runRequested &&
     tourStatus === "active" &&
@@ -722,22 +768,10 @@ export function JoyrideSpikeInApp(): React.ReactElement {
   // `window.__joyrideSpike.setRun(true)` once the surface is up.
   const [tourStatus, setTourStatus] = useState<SpikeTourStatus>("paused");
   const [stepIndex, setStepIndex] = useState(0);
-  const [pickerClear, setPickerClear] = useState(true);
   const [events, setEvents] = useState<readonly SpikeEventRecord[]>([]);
 
   // Same one-macrotask resume deferral as the page harness (see above).
-  useEffect(() => {
-    if (pickerOpen) {
-      setPickerClear(false);
-      return undefined;
-    }
-    const id = window.setTimeout(() => {
-      setPickerClear(true);
-    }, 0);
-    return () => {
-      window.clearTimeout(id);
-    };
-  }, [pickerOpen]);
+  const pickerClear = useDeferredResume(pickerOpen, true);
 
   const run = tourStatus === "active" && !pickerOpen && pickerClear;
 
