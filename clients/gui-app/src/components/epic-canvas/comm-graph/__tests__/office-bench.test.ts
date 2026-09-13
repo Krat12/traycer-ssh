@@ -465,10 +465,40 @@ describe("officeBench", () => {
     for (const id of queued) {
       expect(bench.steps[0].get(id), id).not.toBe("awaiting");
     }
+
+    // AND THE STEP ADDS NOTHING ELSE, which is the half the line above
+    // cannot see. Building the script from the FIXTURE's map rather than
+    // the rested one puts every bystander's hot status back at step 1
+    // while step 0 stays clean - so "was this waiter idle at rest" is
+    // still true of every waiter, and the count, the one-fewer and the
+    // single leaver all survive, because `waitingScript` carries its
+    // base's non-subject statuses through untouched.
+    //
+    // Asserting the CHANGED set rather than the awaiting set is what
+    // closes it: skipping the waiters would skip a returning bystander
+    // too, since a bystander the fixture left `awaiting` is IN the
+    // awaiting set. Every agent whose status moved between the two steps
+    // must have moved to `awaiting`; a bystander coming back as
+    // `failure` or `attention` moved somewhere else and reddens here.
+    for (const [agentId, rested] of bench.steps[0]) {
+      const atOverflow = bench.steps[1].get(agentId);
+      if (atOverflow === rested) continue;
+      expect(atOverflow, `${agentId} moved from ${rested}`).toBe("awaiting");
+    }
+
     const fixtureAwaiting = [...fixture.statusById.values()].filter(
       (status) => status === "awaiting",
     ).length;
     expect(fixtureAwaiting).toBeGreaterThan(0);
+    // Vacuity for the CHANGED-set assertion specifically: the fixture has
+    // to carry civic-wanting statuses OTHER than `awaiting`, or a script
+    // built from it would differ from one built from the rested map only
+    // in agents the script names, and the check above would hold either
+    // way.
+    const fixtureOtherHot = [...fixture.statusById.values()].filter(
+      (status) => status === "failure" || status === "attention",
+    ).length;
+    expect(fixtureOtherHot).toBeGreaterThan(0);
   });
 
   it("plays waiting so more agents await than the lounge has chairs", () => {
