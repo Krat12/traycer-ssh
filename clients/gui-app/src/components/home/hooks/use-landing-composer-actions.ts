@@ -24,6 +24,7 @@ import { UNKNOWN_HOST_PLACEHOLDER } from "@/lib/host/constants";
 import { useEpicCreateForClient } from "@/hooks/epic/use-epic-create-mutation";
 import { useCreateTuiAgentForClient } from "@/hooks/agent/use-create-tui-agent";
 import { useAuthStore } from "@/stores/auth/auth-store";
+import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
 import {
   selectWorkspaceFoldersBucket,
   useWorkspaceFoldersStore,
@@ -574,6 +575,19 @@ export function useLandingComposerActions(
               editor,
               placement: attempt.placement,
               activate: () => {
+                // The host accepted this exact attempt and the draft is
+                // becoming the epic in the foreground: that is the only
+                // "prompt accepted" the tour may complete on. Refused,
+                // retired and background settlements never reach here. Ids
+                // are the ones captured at dispatch, never re-read.
+                useLandingReceiptsStore.getState().emit({
+                  kind: "prompt-accepted",
+                  attemptId: attempt.id,
+                  draftId: attempt.draftId,
+                  epicId,
+                  tabId,
+                  hostId: activeHostId,
+                });
                 // The create continuation can settle after the user opens
                 // Settings / History. Keep the normal underlying transition
                 // from draft to Epic, but carry that foreground overlay onto
@@ -666,6 +680,15 @@ export function useLandingComposerActions(
         captureSubmissionPlacement(draftId),
       );
       if (attempt === null) return;
+      // Onboarding receipt correlation (contract 5): announce the exact
+      // draft/host this attempt is about BEFORE any await, so the tour can
+      // decide relevance now and match the eventual receipt by these ids.
+      useLandingReceiptsStore.getState().announce({
+        kind: "prompt-accepted",
+        attemptId: attempt.id,
+        draftId,
+        hostId,
+      });
       const exactArgs = { ...args, draftId };
 
       // The live editor content is hash-only (landing pastes hashes, never
@@ -783,6 +806,18 @@ export function useLandingComposerActions(
       const epicId = uuidv4();
       const now = Date.now();
       rememberLandingWorktreeIntent(workspaceContext, epicId, now);
+      // Onboarding receipt correlation (contract 5). A terminal launch has no
+      // `DraftSubmissionAttempt`, so it mints its own attempt id here, before
+      // the optimistic navigation below, and captures the nullable draft plus
+      // the concrete host now - the receipt at the end reuses exactly these.
+      const receiptAttemptId = uuidv4();
+      const receiptDraftId = workspaceContext.draftId;
+      useLandingReceiptsStore.getState().announce({
+        kind: "tui-accepted",
+        attemptId: receiptAttemptId,
+        draftId: receiptDraftId,
+        hostId,
+      });
       // The identity this create belongs to, captured synchronously. The
       // create's continuation outlives this component, and the completion
       // re-anchor below is an INSERT into account-scoped memory - see its own
@@ -916,6 +951,21 @@ export function useLandingComposerActions(
               workspaceMode: workspaceContext.workspaceMode,
               terminalAgentArgs,
               profileId,
+            }).then((tuiAgentId) => {
+              // Chained INSIDE the fulfilled arm, so a refusal (which returns
+              // above) and an `epic.create` rejection (the arm below) can
+              // never reach it; a rejected tui-agent create skips it too. The
+              // hook resolves with the id only after the create RPC AND the
+              // bounded projection wait, which is the "tui accepted" fact.
+              if (typeof tuiAgentId !== "string") return;
+              useLandingReceiptsStore.getState().emit({
+                kind: "tui-accepted",
+                attemptId: receiptAttemptId,
+                draftId: receiptDraftId,
+                epicId,
+                tabId,
+                hostId,
+              });
             });
           },
           // Only `epic.create` rejection reaches this arm (a later tui-agent

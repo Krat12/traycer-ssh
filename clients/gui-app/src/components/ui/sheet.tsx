@@ -2,12 +2,27 @@ import * as React from "react";
 import { Dialog as SheetPrimitive } from "radix-ui";
 
 import { cn } from "@/lib/utils";
+import {
+  ModalRootPresenceContext,
+  PresentedModalRegistration,
+  useModalRootPresence,
+} from "@/components/ui/modal-presence";
 import { usePortalConcealed } from "@/components/ui/portal-concealment-context";
 import { Button } from "@/components/ui/button";
 import { XIcon } from "lucide-react";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />;
+  // Same presence publication as `dialog.tsx` (see `modal-presence.ts`).
+  const { presence, onOpenChange } = useModalRootPresence(props);
+  return (
+    <ModalRootPresenceContext.Provider value={presence}>
+      <SheetPrimitive.Root
+        data-slot="sheet"
+        {...props}
+        onOpenChange={onOpenChange}
+      />
+    </ModalRootPresenceContext.Provider>
+  );
 }
 
 function SheetTrigger({
@@ -50,6 +65,7 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  forceMount,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
@@ -92,8 +108,10 @@ function SheetContent({
           "data-[side=left]:mt-safe-top data-[side=left]:ml-safe-left data-[side=left]:h-safe-dvh data-[side=left]:max-w-safe-dvw data-[side=right]:mt-safe-top data-[side=right]:mr-safe-right data-[side=right]:h-safe-dvh data-[side=right]:max-w-safe-dvw data-[side=top]:mt-safe-top data-[side=top]:ml-safe-left data-[side=top]:mr-safe-right data-[side=bottom]:ml-safe-left data-[side=bottom]:mr-safe-right",
           className,
         )}
+        forceMount={forceMount}
         {...props}
       >
+        <PresentedModalRegistration forceMount={forceMount === true} />
         {children}
         {showCloseButton ? (
           <SheetPrimitive.Close data-slot="sheet-close" asChild>

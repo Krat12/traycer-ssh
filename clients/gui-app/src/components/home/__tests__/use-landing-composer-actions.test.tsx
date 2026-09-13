@@ -15,6 +15,7 @@ import {
   useInitialChatHandoffStore,
 } from "@/stores/epics/initial-chat-handoff-store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
 import { useSelectionAuthorityStore } from "@/stores/host/selection-authority-store";
 import { draftRuntimeRegistry } from "@/stores/home/draft-runtime-registry";
 import { useTabsStore } from "@/stores/tabs/store";
@@ -56,7 +57,7 @@ interface CapturedNavigation {
 
 const landingMocks = vi.hoisted(() => ({
   request: vi.fn<(method: string, payload: unknown) => Promise<unknown>>(),
-  createTerminalAgent: vi.fn<(input: unknown) => Promise<void>>(),
+  createTerminalAgent: vi.fn<(input: unknown) => Promise<string | null>>(),
   navigate: vi.fn<(options: CapturedNavigation) => void>(),
   getActiveHostId: vi.fn(() => "host-landing"),
   getRequestContextUserId: vi.fn<() => string | null>(() => "user-landing"),
@@ -268,7 +269,7 @@ describe("useLandingComposerActions", () => {
     // assertion that has already run; only what precedes it can.
     landingMocks.floorsRequested.length = 0;
     landingMocks.request.mockResolvedValue({ roomInfo: null });
-    landingMocks.createTerminalAgent.mockResolvedValue(undefined);
+    landingMocks.createTerminalAgent.mockResolvedValue(null);
     landingMocks.getActiveHostId.mockReset();
     landingMocks.getActiveHostId.mockReturnValue("host-landing");
     landingMocks.getActiveHost.mockReset();
@@ -288,6 +289,7 @@ describe("useLandingComposerActions", () => {
     imageStoreMocks.getImageBytes.mockResolvedValue(undefined);
     useInitialChatHandoffStore.getState().resetForTests();
     useComposerRunSettingsStore.getState().resetForTests();
+    useLandingReceiptsStore.getState().reset();
     useWorkspaceFoldersStore.setState({ byHost: {} });
     useWorktreeIntentStagingStore.getState().resetForTests();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
@@ -2712,6 +2714,283 @@ describe("useLandingComposerActions", () => {
     expect(typeof refusedEpicId).toBe("string");
     expect(wasEpicCreatedThisSession(refusedEpicId ?? "")).toBe(false);
     queryClient.clear();
+  });
+
+  /**
+   * Onboarding contract 5: a landing create that the host ACCEPTED, and that
+   * lands in the foreground, leaves exactly one receipt keyed by the attempt
+   * announced at dispatch. Sent-but-refused, rejected, retired and
+   * background-only creates leave none - a tour lesson that completed on any
+   * of those would be lying.
+   */
+  describe("landing receipts", () => {
+    function receipts() {
+      return useLandingReceiptsStore.getState();
+    }
+
+    function mountFocusedDraft(id: string): string {
+      const draftId = useLandingDraftStore.getState().createDraftWithId(id, null);
+      const draftRef = { kind: "draft" as const, id: draftId };
+      useTabsStore.setState({
+        items: [{ kind: "tab", id: tabItemId(draftRef), ref: draftRef }],
+        activeItemId: tabItemId(draftRef),
+        systemTabs: { history: null, settings: null },
+        stripOrder: [draftRef],
+      });
+      return draftId;
+    }
+
+    function submitPrompt(
+      result: { current: ReturnType<typeof useLandingComposerActions> },
+      draftId: string | null,
+    ): void {
+      act(() => {
+        result.current.submit({
+          draftId,
+          editor: editorHandleForPrompt(SUBMITTED_PROMPT),
+          slashCatalog: null,
+          toolbar: defaultToolbar(),
+        });
+      });
+    }
+
+    function launchTerminal(result: {
+      current: ReturnType<typeof useLandingComposerActions>;
+    }): void {
+      act(() => {
+        result.current.selectTerminalAgent(
+          {
+            harnessId: "claude",
+            model: null,
+            reasoningEffort: null,
+            terminalAgentArgs: "",
+            profileId: null,
+          },
+          null,
+        );
+      });
+    }
+
+    it("emits one prompt-accepted receipt, keyed by the announced attempt, when the draft becomes the foreground epic", async () => {
+      const draftId = mountFocusedDraft("draft-receipt");
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, draftId);
+      // Announced synchronously at dispatch, with the exact draft and host.
+      const dispatched = Object.values(receipts().dispatchedByAttemptId);
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        kind: "prompt-accepted",
+        draftId,
+        hostId: TEST_HOST_ID,
+      });
+      expect(Object.keys(receipts().byAttemptId)).toHaveLength(0);
+
+      await waitFor(() => {
+        expect(landingMocks.navigate).toHaveBeenCalledTimes(1);
+      });
+      const byAttemptId = receipts().byAttemptId;
+      expect(Object.keys(byAttemptId)).toEqual([dispatched[0].attemptId]);
+      const [epicTab] = useTabsStore.getState().items;
+      if (epicTab === undefined || epicTab.kind !== "tab") {
+        throw new Error("expected the draft tab to become an epic tab");
+      }
+      expect(byAttemptId[dispatched[0].attemptId]).toEqual({
+        kind: "prompt-accepted",
+        attemptId: dispatched[0].attemptId,
+        draftId,
+        epicId: createdEpicIdFromRequests(),
+        tabId: epicTab.ref.id,
+        hostId: TEST_HOST_ID,
+      });
+      queryClient.clear();
+    });
+
+    it("emits nothing for a background-only settlement (no draft tab to replace)", async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, null);
+      await waitFor(() => {
+        expect(useEpicCanvasStore.getState().openTabOrder).toHaveLength(1);
+      });
+      expect(Object.keys(receipts().dispatchedByAttemptId)).toHaveLength(1);
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
+    it("emits nothing for a REFUSED prompt create (a refusal resolves, so the fulfilled arm runs)", async () => {
+      const draftId = mountFocusedDraft("draft-refused");
+      landingMocks.request.mockImplementation((method) =>
+        method === "epic.create"
+          ? Promise.resolve({
+              roomInfo: null,
+              refusal: {
+                kind: "local-store-unavailable",
+                message: "Traycer can't open this device's local store.",
+                remedy: "Quit the other Traycer on this machine, then rebind.",
+              },
+            })
+          : Promise.resolve({}),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, draftId);
+      await waitFor(() => {
+        expect(
+          landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+        ).toBe(true);
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      expect(landingMocks.navigate).not.toHaveBeenCalled();
+      queryClient.clear();
+    });
+
+    it("emits nothing for a REJECTED prompt create", async () => {
+      const draftId = mountFocusedDraft("draft-rejected");
+      landingMocks.request.mockImplementation((method) =>
+        method === "epic.create"
+          ? Promise.reject(new Error("boom"))
+          : Promise.resolve({}),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      submitPrompt(result, draftId);
+      await waitFor(() => {
+        expect(toast.error).toHaveBeenCalled();
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
+    it("emits one tui-accepted receipt only after the tui-agent create resolves with an id", async () => {
+      const createGate = deferred<string | null>();
+      landingMocks.createTerminalAgent.mockReturnValue(createGate.promise);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      launchTerminal(result);
+      // Announced before the optimistic navigation, with a null draft.
+      const dispatched = Object.values(receipts().dispatchedByAttemptId);
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        kind: "tui-accepted",
+        draftId: null,
+        hostId: TEST_HOST_ID,
+      });
+      expect(landingMocks.navigate).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(landingMocks.createTerminalAgent).toHaveBeenCalledTimes(1);
+      });
+      // Epic accepted and navigation done, but the agent is still being
+      // created: optimistic navigation is not acceptance.
+      expect(receipts().byAttemptId).toEqual({});
+      await act(async () => {
+        createGate.resolve("tui-agent-1");
+        await createGate.promise;
+      });
+      await waitFor(() => {
+        expect(Object.keys(receipts().byAttemptId)).toHaveLength(1);
+      });
+      const created = landingMocks.createTerminalAgent.mock.calls[0]?.[0] as {
+        readonly epicId: string;
+        readonly tabId: string;
+      };
+      expect(receipts().byAttemptId[dispatched[0].attemptId]).toEqual({
+        kind: "tui-accepted",
+        attemptId: dispatched[0].attemptId,
+        draftId: null,
+        epicId: created.epicId,
+        tabId: created.tabId,
+        hostId: TEST_HOST_ID,
+      });
+      expect(created.epicId).toBe(createdEpicIdFromRequests());
+      queryClient.clear();
+    });
+
+    it("emits nothing when the tui-agent create rejects", async () => {
+      landingMocks.createTerminalAgent.mockRejectedValue(new Error("no pty"));
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      launchTerminal(result);
+      await waitFor(() => {
+        expect(landingMocks.createTerminalAgent).toHaveBeenCalledTimes(1);
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
+
+    it("emits nothing when the terminal launch's epic create is REFUSED", async () => {
+      landingMocks.request.mockImplementation((method) =>
+        method === "epic.create"
+          ? Promise.resolve({
+              roomInfo: null,
+              refusal: {
+                kind: "local-store-unavailable",
+                message: "Traycer can't open this device's local store.",
+                remedy: "Quit the other Traycer on this machine, then rebind.",
+              },
+            })
+          : Promise.resolve({}),
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      });
+      const { result } = renderHook(
+        () => useLandingComposerActions(useTestPlacementTarget()),
+        { wrapper: queryClientWrapper(queryClient) },
+      );
+      launchTerminal(result);
+      await waitFor(() => {
+        expect(
+          landingMocks.request.mock.calls.some((c) => c[0] === "epic.create"),
+        ).toBe(true);
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(landingMocks.createTerminalAgent).not.toHaveBeenCalled();
+      expect(receipts().byAttemptId).toEqual({});
+      queryClient.clear();
+    });
   });
 
   /**

@@ -2,11 +2,28 @@ import * as React from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 
 import { cn } from "@/lib/utils";
+import {
+  ModalRootPresenceContext,
+  PresentedModalRegistration,
+  useModalRootPresence,
+} from "@/components/ui/modal-presence";
 
 function Drawer({
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Root>) {
-  return <DrawerPrimitive.Root data-slot="drawer" {...props} />;
+  // Same presence publication as `dialog.tsx` (see `modal-presence.ts`).
+  // vaul reports drag-dismissal through `onOpenChange` too, so the observed
+  // open state follows a swipe-to-close without any drawer behaviour change.
+  const { presence, onOpenChange } = useModalRootPresence(props);
+  return (
+    <ModalRootPresenceContext.Provider value={presence}>
+      <DrawerPrimitive.Root
+        data-slot="drawer"
+        {...props}
+        onOpenChange={onOpenChange}
+      />
+    </ModalRootPresenceContext.Provider>
+  );
 }
 
 function DrawerTrigger({
@@ -54,6 +71,7 @@ function DrawerContent({
   ref,
   className,
   children,
+  forceMount,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Content>) {
   return (
@@ -83,8 +101,13 @@ function DrawerContent({
           "data-[vaul-drawer-direction=left]:mt-safe-top data-[vaul-drawer-direction=left]:ml-safe-left data-[vaul-drawer-direction=left]:max-w-safe-dvw data-[vaul-drawer-direction=right]:mt-safe-top data-[vaul-drawer-direction=right]:mr-safe-right data-[vaul-drawer-direction=right]:max-w-safe-dvw",
           className,
         )}
+        forceMount={forceMount}
         {...props}
       >
+        {/* The registration gates itself on concealment and pane focus, so a
+            retained drawer in a hidden region or background split does not
+            count even though this wrapper does not un-present it. */}
+        <PresentedModalRegistration forceMount={forceMount === true} />
         <div className="mx-auto mt-3 hidden h-1.5 w-12 shrink-0 rounded-full bg-border group-data-[vaul-drawer-direction=bottom]/drawer-content:block" />
         {children}
       </DrawerPrimitive.Content>
