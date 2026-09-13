@@ -21,7 +21,9 @@ import {
   type OfficeSpriteName,
   type OfficeSpriteRef,
   type OfficeTheme,
+  type OfficeVehicleKind,
 } from "@/lib/comm-graph/office/office-types";
+import type { OfficeViewId } from "@/lib/comm-graph/office/office-view-vocabulary";
 import {
   BOX_MAP,
   FACE_MAP,
@@ -126,6 +128,18 @@ import {
   LOW_TABLE_MAP,
   RECORDS_DOOR_MAP,
   CROSS_SIGN_MAP,
+  AMBULANCE_MAP,
+  AMBULANCE_B_MAP,
+  AMBULANCE_ISO_MAP,
+  AMBULANCE_ISO_B_MAP,
+  POLICE_CAR_MAP,
+  POLICE_CAR_B_MAP,
+  POLICE_CAR_ISO_MAP,
+  POLICE_CAR_ISO_B_MAP,
+  FIRE_ENGINE_MAP,
+  FIRE_ENGINE_B_MAP,
+  FIRE_ENGINE_ISO_MAP,
+  FIRE_ENGINE_ISO_B_MAP,
 } from "@/lib/comm-graph/office/office-prop-maps";
 import {
   isOfficeSeatedPose,
@@ -404,6 +418,21 @@ const SPRITE_SIZES: Readonly<Record<OfficeSpriteName, OfficeSize>> = {
   "window-dark": { width: 8, height: 8 },
   spire: { width: 8, height: 24 },
 
+  // The civic vehicles: two tiles of road in oblique, a wider three-quarter
+  // box in isometric, each in two light frames.
+  ambulance: { width: 32, height: 16 },
+  "ambulance-b": { width: 32, height: 16 },
+  "ambulance-iso": { width: 40, height: 24 },
+  "ambulance-iso-b": { width: 40, height: 24 },
+  "police-car": { width: 32, height: 16 },
+  "police-car-b": { width: 32, height: 16 },
+  "police-car-iso": { width: 40, height: 24 },
+  "police-car-iso-b": { width: 40, height: 24 },
+  "fire-engine": { width: 32, height: 16 },
+  "fire-engine-b": { width: 32, height: 16 },
+  "fire-engine-iso": { width: 40, height: 24 },
+  "fire-engine-iso-b": { width: 40, height: 24 },
+
   bed: { width: 32, height: 16 },
   "bed-occupied": { width: 32, height: 16 },
   "lounge-chair": { width: 16, height: 16 },
@@ -519,7 +548,88 @@ const PROP_MAPS: Readonly<Record<OfficeSpriteName, SpriteMap>> = {
   "low-table": LOW_TABLE_MAP,
   "records-door": RECORDS_DOOR_MAP,
   "cross-sign": CROSS_SIGN_MAP,
+
+  ambulance: AMBULANCE_MAP,
+  "ambulance-b": AMBULANCE_B_MAP,
+  "ambulance-iso": AMBULANCE_ISO_MAP,
+  "ambulance-iso-b": AMBULANCE_ISO_B_MAP,
+  "police-car": POLICE_CAR_MAP,
+  "police-car-b": POLICE_CAR_B_MAP,
+  "police-car-iso": POLICE_CAR_ISO_MAP,
+  "police-car-iso-b": POLICE_CAR_ISO_B_MAP,
+  "fire-engine": FIRE_ENGINE_MAP,
+  "fire-engine-b": FIRE_ENGINE_B_MAP,
+  "fire-engine-iso": FIRE_ENGINE_ISO_MAP,
+  "fire-engine-iso-b": FIRE_ENGINE_ISO_B_MAP,
 };
+
+/**
+ * The sprites whose `left` facing is drawn by MIRRORING their `right`.
+ *
+ * `character` has always done this (see `selectCharacterMap`); vehicles are the
+ * first props to, because a road runs both ways and authoring a second copy of
+ * each van is the drift `officeHairMap` was built to avoid. Every other prop
+ * ignores a ref's `facing` entirely and resolves `mirror: false`, which is what
+ * keeps this a named exception rather than a new rule for props at large.
+ */
+const MIRRORED_PROP_NAMES: ReadonlySet<string> = new Set<OfficeSpriteName>([
+  "ambulance",
+  "ambulance-b",
+  "ambulance-iso",
+  "ambulance-iso-b",
+  "police-car",
+  "police-car-b",
+  "police-car-iso",
+  "police-car-iso-b",
+  "fire-engine",
+  "fire-engine-b",
+  "fire-engine-iso",
+  "fire-engine-iso-b",
+]);
+
+/**
+ * WHICH VEHICLE ART A VIEW USES.
+ *
+ * A view draws its vans the way it draws everything else, and the two answers
+ * are the two projections the office has: a side view for the views whose
+ * ground is axis-aligned, a three-quarter view for the two that are seen from
+ * the corner. Mission control has no road at all (decision C6) and its entry is
+ * therefore never read - it is here because the record is exhaustive over the
+ * view union, which is what makes adding a seventh view a compile error rather
+ * than a silently missing sprite.
+ */
+export type OfficeVehicleArt = "oblique" | "isometric";
+
+export const OFFICE_VEHICLE_ART: Readonly<
+  Record<OfficeViewId, OfficeVehicleArt>
+> = {
+  floor: "oblique",
+  towers: "oblique",
+  building: "oblique",
+  "mission-control": "oblique",
+  campus: "isometric",
+  city: "isometric",
+};
+
+/**
+ * The sprite one vehicle wears this frame.
+ *
+ * Three facts pick it and the facing is not among them: `left` is the mirror of
+ * `right`, so the ref carries the facing and the rasterizer does the flip.
+ */
+export function officeVehicleSpriteName(args: {
+  readonly kind: OfficeVehicleKind;
+  readonly art: OfficeVehicleArt;
+  readonly lights: 0 | 1;
+}): OfficeSpriteName {
+  const projection = args.art === "isometric" ? "-iso" : "";
+  const frame = args.lights === 1 ? "-b" : "";
+  const name = `${args.kind}${projection}${frame}`;
+  if (!isPropSpriteName(name)) {
+    throw new Error(`office: no vehicle sprite named ${name}`);
+  }
+  return name;
+}
 
 /**
  * Narrows a key of {@link PROP_MAPS} back to its own key type.
@@ -795,7 +905,12 @@ function selectMap(ref: OfficeSpriteRef): SelectedMap {
   if (ref.name === "character") {
     return selectCharacterMap(ref);
   }
-  return { map: PROP_MAPS[ref.name], mirror: false };
+  return {
+    map: PROP_MAPS[ref.name],
+    // A prop that is not in the set ignores `facing` however it is set, so a
+    // stray `facing: "left"` on a desk can never silently flip it.
+    mirror: MIRRORED_PROP_NAMES.has(ref.name) && ref.facing === "left",
+  };
 }
 
 // ---- Draw ------------------------------------------------------------ //

@@ -111,7 +111,10 @@ import {
   drawOfficeSprite,
   officePalette,
   officeSpriteSize,
+  officeVehicleSpriteName,
+  OFFICE_VEHICLE_ART,
   type OfficePalette,
+  type OfficeVehicleArt,
 } from "@/lib/comm-graph/office/office-pixel-art";
 import {
   ENVELOPE_ARC_LIFT,
@@ -899,6 +902,12 @@ function drawScreenLabel(
 interface DrawFrameArgs {
   readonly ctx: CanvasRenderingContext2D;
   readonly frame: OfficeFrame;
+  /**
+   * Which of the two vehicle drawings this view uses. The SCENE cannot answer
+   * it - a vehicle drawable names its kind, not its art - and the painter has
+   * no projection field, so the view's own id resolves it here, once per frame.
+   */
+  readonly vehicleArt: OfficeVehicleArt;
   readonly camera: OfficeCamera;
   /** The zoom band the frame was built for; the signage follows it. */
   readonly lod: OfficeLod;
@@ -1050,6 +1059,34 @@ function drawEnvelope(
     ctx,
     { name: "envelope", tint: OFFICE_ENVELOPE_TINTS[drawable.pulseKind] },
     { x: drawable.x - size.width / 2, y: drawable.y - size.height / 2 },
+    theme,
+  );
+}
+
+/**
+ * One vehicle, standing on the road tile it is crossing.
+ *
+ * BOTTOM-CENTER anchored on its own foot point, the same anchor a character
+ * takes, which is what puts a van's wheels on the ground a walker's feet are on
+ * rather than floating it by the difference between the two sprite heights.
+ * `facing` rides on the ref because `left` is the mirror of `right`.
+ */
+function drawVehicle(
+  ctx: CanvasRenderingContext2D,
+  drawable: Extract<OfficeDrawable, { kind: "vehicle" }>,
+  art: OfficeVehicleArt,
+  theme: OfficeTheme,
+): void {
+  const name = officeVehicleSpriteName({
+    kind: drawable.vehicleKind,
+    art,
+    lights: drawable.lights,
+  });
+  const size = officeSpriteSize({ name });
+  drawOfficeSprite(
+    ctx,
+    { name, facing: drawable.facing },
+    { x: drawable.x - size.width / 2, y: drawable.y - size.height },
     theme,
   );
 }
@@ -1271,6 +1308,7 @@ interface DrawLayerArgs {
    * here, so the blitted floor and the drawn one contain the same things.
    */
   readonly sprites: "draw" | "skip";
+  readonly vehicleArt: OfficeVehicleArt;
 }
 
 /**
@@ -1279,8 +1317,17 @@ interface DrawLayerArgs {
  * - four object literals a frame to say what four call sites already say.
  */
 function drawDrawableLayer(args: DrawLayerArgs): void {
-  const { anchor, clocks, ctx, drawables, labels, palette, sprites, theme } =
-    args;
+  const {
+    anchor,
+    clocks,
+    ctx,
+    drawables,
+    labels,
+    palette,
+    sprites,
+    theme,
+    vehicleArt,
+  } = args;
   for (const drawable of drawables) {
     if (sprites === "skip" && officeBakesIntoStaticFloor(drawable)) continue;
     if (drawable.kind === "label") {
@@ -1289,6 +1336,10 @@ function drawDrawableLayer(args: DrawLayerArgs): void {
     }
     if (drawable.kind === "envelope") {
       drawEnvelope(ctx, drawable, theme, palette.shadow);
+      continue;
+    }
+    if (drawable.kind === "vehicle") {
+      drawVehicle(ctx, drawable, vehicleArt, theme);
       continue;
     }
     if (drawable.kind === "logo") {
@@ -1861,6 +1912,7 @@ function drawOfficeFrame(args: DrawFrameArgs): void {
     labels,
     clocks,
     sprites: "draw",
+    vehicleArt: args.vehicleArt,
   } as const;
   if (staticFloor.length === 0) {
     drawDrawableLayer({ ...layer, drawables: frame.floor, anchor: "top-left" });
@@ -3235,6 +3287,7 @@ export function CommGraphOfficeCanvas(props: CommGraphOfficeCanvasProps) {
         roleClaims: runtime.getRoleClaims(),
         hostNameById: runtime.getHostNames(),
         hoveredAgentId: runtime.getHoveredAgentId(),
+        vehicleArt: OFFICE_VEHICLE_ART[officeView.id],
         ...frameChrome(layout, synced),
       });
       raf = requestAnimationFrame(step);

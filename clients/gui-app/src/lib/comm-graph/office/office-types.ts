@@ -240,7 +240,39 @@ export type OfficeSpriteName =
   /** The archive's door of filing drawers, in the outer wall beside the entrance. */
   | "records-door"
   /** The red cross that marks the infirmary. */
-  | "cross-sign";
+  | "cross-sign"
+  /**
+   * The three civic vehicles, each in two light frames and two projections.
+   *
+   * `-b` is the ALTERNATE LIGHT FRAME, the suffix `monitor-on-b` already uses:
+   * the light is baked into the art rather than composited, so a vehicle is one
+   * sprite per frame and the scene only says which. `-iso` is the isometric
+   * drawing of the same vehicle, the suffix `desk-iso` already uses.
+   *
+   * `left` IS NEVER AUTHORED - it is `right` mirrored, the convention every
+   * character body follows (`office-pixel-art.ts`, `selectMap`). That is why
+   * twelve names cover three kinds times two facings times two frames times two
+   * projections.
+   */
+  | "ambulance"
+  | "ambulance-b"
+  | "ambulance-iso"
+  | "ambulance-iso-b"
+  | "police-car"
+  | "police-car-b"
+  | "police-car-iso"
+  | "police-car-iso-b"
+  | "fire-engine"
+  | "fire-engine-b"
+  | "fire-engine-iso"
+  | "fire-engine-iso-b";
+
+/**
+ * WHICH VEHICLE, which is also which trigger brought it: an ambulance for a
+ * crash, a police car for an agent that needs a person, a fire engine for a
+ * floor with three or more crashes at once.
+ */
+export type OfficeVehicleKind = "ambulance" | "police-car" | "fire-engine";
 
 /**
  * Names one rasterized sprite. `facing`, `pose` and `appearance` only apply to
@@ -1009,6 +1041,25 @@ export type OfficeDrawable =
       readonly progress: number;
       /** The pair edge this message belongs to (`commGraphPairId`), so a click can open its thread. */
       readonly edgeId: string;
+    }
+  | {
+      /**
+       * A civic vehicle on a floor's road, BOTTOM-CENTER anchored on the tile
+       * it is crossing, exactly as a walker is anchored on its foot point.
+       *
+       * The renderer resolves the sprite, because which of the twelve names
+       * this is depends on the projection, and a scene does not know whether
+       * its view draws oblique or isometric - the painter does. What the scene
+       * knows is the three facts that vary per frame: which vehicle, which way
+       * it points, and whether its light is on this instant.
+       */
+      readonly kind: "vehicle";
+      readonly vehicleKind: OfficeVehicleKind;
+      readonly x: number;
+      readonly y: number;
+      readonly facing: OfficeFacing;
+      /** Alternates every 250 ms while the vehicle moves or waits. */
+      readonly lights: 0 | 1;
     }
   | {
       /**
