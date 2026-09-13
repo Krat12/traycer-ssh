@@ -6,7 +6,6 @@ import {
   screen,
   waitFor,
   within,
-  type RenderResult,
 } from "@testing-library/react";
 import type { ReactElement } from "react";
 import {
@@ -191,7 +190,7 @@ function defaultProviders(): ProviderCliState[] {
   ];
 }
 
-let mounted: RenderResult | null = null;
+let rerenderMounted: ((ui: ReactElement) => void) | null = null;
 const onContinueMock = vi.fn();
 const onSkipMock = vi.fn();
 
@@ -204,7 +203,9 @@ function pageElement(): ReactElement {
 }
 
 function renderPage(): { onContinue: Mock; onSkip: Mock } {
-  mounted = render(pageElement(), { wrapper: WithTestQueryClient });
+  rerenderMounted = render(pageElement(), {
+    wrapper: WithTestQueryClient,
+  }).rerender;
   return { onContinue: onContinueMock, onSkip: onSkipMock };
 }
 
@@ -232,8 +233,8 @@ async function settleRequest(outcome: "success" | "failure"): Promise<void> {
 
 /** Re-render with the fixtures' current values (the mocks read them live). */
 function rerenderPage(): void {
-  if (mounted === null) throw new Error("page not rendered");
-  mounted.rerender(pageElement());
+  if (rerenderMounted === null) throw new Error("page not rendered");
+  rerenderMounted(pageElement());
 }
 
 function tile(providerId: ProviderId): HTMLElement {
@@ -264,7 +265,7 @@ describe("<WelcomeProvidersPage />", () => {
 
   afterEach(() => {
     cleanup();
-    mounted = null;
+    rerenderMounted = null;
   });
 
   it("renders the six major tiles in order, then a disclosure for the rest", () => {
