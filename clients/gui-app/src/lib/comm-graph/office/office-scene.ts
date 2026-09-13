@@ -4871,6 +4871,19 @@ export class OfficeScene {
     const seat = this.seats.effectiveSeat(character.agentId);
     if (seat === null) return false;
     if (spot.floorIndex !== seat.floorIndex) return false;
+    // A FIXTURE SOMEBODY IS ALREADY IN IS NOT SOMEWHERE TO GO. Campus's
+    // courtyard bench is both the thing a stroll sits on and a seat its waiting
+    // room lends, and the two are the same tile - so a bench with an agent on it
+    // has to stop being an errand option, or the scene puts a second character
+    // at that tile in a different pose and the seat book believes it seated one
+    // of them. Every other fixture carries `seatId: null` and never reaches here.
+    //
+    // `occupant` and not `occupancy`: the question is who is IN the bench now,
+    // and an agent whose claim is releasing has decided to get up - its effective
+    // seat is its own desk again, so the bench is free for whoever walks over.
+    if (spot.seatId !== null && this.seats.occupant(spot.seatId) !== null) {
+      return false;
+    }
     const audience = spot.audience;
     if (audience.kind === "nobody") return false;
     if (audience.kind === "floor") return true;

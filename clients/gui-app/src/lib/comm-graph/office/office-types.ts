@@ -772,6 +772,24 @@ export interface OfficeErrandSpot {
    */
   readonly actionTile: OfficeTilePos | null;
   readonly floorIndex: number;
+  /**
+   * The SEAT this spot's fixture is, for a fixture that is also somewhere the
+   * seat book can seat somebody - or `null`, which is almost everything.
+   *
+   * A bin, a plant, a whiteboard and a coffee machine are furniture nobody is
+   * ever IN, so their spots are always available and they carry `null`. A BENCH
+   * is not: Campus's courtyard bench is both the fixture a stroll sits on and a
+   * seat the waiting room lends, and the two readings of it are the same tile.
+   * Without this the scene would send somebody to sit on a bench that already
+   * has an agent lying on it - two characters at one tile, in different poses,
+   * and the seat book convinced it seated one of them.
+   *
+   * So the SPOT names the seat and the errand pass asks whether it is taken. The
+   * spot is the right place for it rather than the seat: a seat does not know it
+   * is also a fixture, and a view that furnishes a room with two benches and one
+   * stroll spot would otherwise have to keep the two lists agreeing by hand.
+   */
+  readonly seatId: string | null;
 }
 
 /**

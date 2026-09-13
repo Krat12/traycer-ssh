@@ -27,10 +27,12 @@ import {
 import type {
   OfficeAmenity,
   OfficeAreaSign,
+  OfficeCivicRoom,
   OfficeErrandSpot,
   OfficeFloor,
   OfficeLayout,
   OfficeProp,
+  OfficeRoad,
   OfficeRoom,
   OfficeSign,
   OfficeSpotAudience,
@@ -63,7 +65,38 @@ export const ISO_DISTRICT_GAP = 2;
 /** Even a one-agent district has to hold a courtyard and a cafe side by side. */
 export const ISO_MIN_DISTRICT_WIDTH = 16;
 
-export const ISO_COURTYARD_COLS = 7;
+/**
+ * SITTING PLACES ON THE BENCH ROW, and the courtyard is as wide as it needs to
+ * be for them.
+ *
+ * Two is one bench, which is the park both isometric views have always had: two
+ * tiles, two garden spots, one fixture id so the pair rally with each other.
+ *
+ * THE TWO CALLERS ASK FOR DIFFERENT NUMBERS, on purpose. **City** passes
+ * `ISO_COURTYARD_BENCHES` and its park is unchanged - its waiting room is the
+ * bus shelter at the kerb, because a city is where a vehicle pulls up and a
+ * citizen waits at the street, not inside a district. **Campus** passes
+ * `civicCapacityFor(...).chairs`, because its waiting room IS this bench row:
+ * the courtyard is the campus's public room, and the contract's chair count is
+ * exact, so the row grows until it holds them. A campus bench is therefore two
+ * things at one tile - a stroll's fixture and a seat the waiting room lends -
+ * which is what `OfficeErrandSpot.seatId` exists to keep straight.
+ */
+export const ISO_COURTYARD_BENCHES = 2;
+
+/**
+ * Everything in the courtyard that is not bench: the lobby column, the
+ * reception and its queue, the watered plant past the benches, and the tree at
+ * each end.
+ */
+const COURTYARD_SIDE_COLS = 5;
+
+/** The courtyard's width for a bench row of this many sitting places. */
+export function isoCourtyardCols(benches: number): number {
+  return Math.max(benches, ISO_COURTYARD_BENCHES) + COURTYARD_SIDE_COLS;
+}
+
+export const ISO_COURTYARD_COLS = isoCourtyardCols(ISO_COURTYARD_BENCHES);
 export const ISO_COURTYARD_ROWS = 5;
 export const ISO_CAFE_COLS = 7;
 export const ISO_CAFE_ROWS = 6;
@@ -254,6 +287,21 @@ interface AmenityArgs {
 }
 
 /**
+ * The courtyard takes its bench count from the caller; see
+ * `ISO_COURTYARD_BENCHES` for why the two views ask for different ones. Named
+ * rather than defaulted, so neither caller can forget to have an opinion.
+ */
+interface CourtyardArgs extends AmenityArgs {
+  readonly benches: number;
+  /**
+   * The seat id for the bench tile at index `i`, or `null` from a caller whose
+   * benches are furniture and nothing else. Campus's waiting room answers with
+   * the lounge seat it laid on that tile; City's park answers `null`.
+   */
+  readonly seatIdAt: (index: number) => string | null;
+}
+
+/**
  * A fixture id that names the FIXTURE and not its row.
  *
  * The Floor can get away with `<floor>/<kind>/<row>` because a storey there
@@ -305,6 +353,15 @@ export interface IsoSpotArgs {
   readonly floorIndex: number;
   readonly facing: OfficeErrandSpot["facing"];
   readonly audience: OfficeSpotAudience;
+  /**
+   * The seat this spot's fixture IS, where the fixture is one the seat book can
+   * seat somebody in - Campus's courtyard bench, which its waiting room lends.
+   * `null` for every fixture nobody is ever in: a plant, a cooler, a board.
+   *
+   * Named here rather than defaulted, because a bench that forgot to say so is
+   * a stroller sitting down on top of somebody. See `OfficeErrandSpot.seatId`.
+   */
+  readonly seatId: string | null;
 }
 
 export function isoSpotAt(args: IsoSpotArgs): OfficeErrandSpot {
@@ -323,6 +380,7 @@ export function isoSpotAt(args: IsoSpotArgs): OfficeErrandSpot {
     approachTile: args.stand,
     actionTile: args.action,
     floorIndex: args.floorIndex,
+    seatId: args.seatId,
   };
 }
 
@@ -371,34 +429,45 @@ export function isoFixtureProps(
 
 /**
  * The district's front door: grass, two trees, the reception counter, the
- * queue in front of it, a bench and a plant somebody can water.
+ * queue in front of it, A BENCH ROW as long as the caller asks for, and a plant
+ * somebody can water.
  *
  * Everything a district needs to be ENTERED is here, which is why it is placed
  * first in the shelf: the door hangs on the ring beside it.
+ *
+ * The bench row is the only thing here that varies, and `ISO_COURTYARD_BENCHES`
+ * says why: City asks for its two and gets the park it has always had, Campus
+ * asks for `civicCapacityFor(...).chairs` because this row IS its waiting room.
+ * At two benches every tile below is exactly where it was before the row could
+ * grow, which is what keeps City's park a park.
  */
-export function buildIsoCourtyard(args: AmenityArgs): IsoCourtyardBuild {
+export function buildIsoCourtyard(args: CourtyardArgs): IsoCourtyardBuild {
   const { col, row, floorIndex } = args;
-  const rect: OfficeTileRect = {
-    col,
-    row,
-    cols: ISO_COURTYARD_COLS,
-    rows: ISO_COURTYARD_ROWS,
-  };
+  const benches = Math.max(args.benches, ISO_COURTYARD_BENCHES);
+  const cols = isoCourtyardCols(benches);
+  const rect: OfficeTileRect = { col, row, cols, rows: ISO_COURTYARD_ROWS };
   const receptionTile: OfficeTilePos = { col: col + 2, row };
-  const benchTile: OfficeTilePos = { col: col + 1, row: row + 2 };
-  const plantTile: OfficeTilePos = { col: col + 5, row: row + 2 };
+  // The bench row runs from the second column - the first is the lobby's, and
+  // the way in may not be furniture - and the plant sits past its far end, so
+  // watering it is never a walk through the benches.
+  const benchTiles: ReadonlyArray<OfficeTilePos> = Array.from(
+    { length: benches },
+    (_unused, index) => ({ col: col + 1 + index, row: row + 2 }),
+  );
+  const lastBench = benchTiles[benchTiles.length - 1];
+  const plantTile: OfficeTilePos = { col: lastBench.col + 3, row: row + 2 };
+  const rightCol = col + cols - 1;
   const scenery: ReadonlyArray<OfficeProp> = [
     { sprite: { name: "tree" }, tile: { col, row } },
     { sprite: { name: "reception" }, tile: receptionTile },
-    { sprite: { name: "tree" }, tile: { col: col + 6, row } },
+    { sprite: { name: "tree" }, tile: { col: rightCol, row } },
   ];
   const blocked: OfficeTilePos[] = [
     { col, row },
     receptionTile,
     { col: col + 3, row },
-    { col: col + 6, row },
-    benchTile,
-    { col: col + 2, row: row + 2 },
+    { col: rightCol, row },
+    ...benchTiles,
     plantTile,
   ];
   const queueTiles: ReadonlyArray<OfficeTilePos> = [
@@ -406,33 +475,36 @@ export function buildIsoCourtyard(args: AmenityArgs): IsoCourtyardBuild {
     { col: col + 3, row: row + 1 },
     { col: col + 4, row: row + 1 },
   ];
-  const spots: OfficeErrandSpot[] = [
-    isoSpotAt({
-      kind: "garden",
-      stand: { col: col + 1, row: row + 3 },
-      fixture: benchTile,
-      action: benchTile,
-      floorIndex,
-      facing: "up",
-      audience: ISO_FLOOR_AUDIENCE,
-    }),
-    isoSpotAt({
-      kind: "garden",
-      stand: { col: col + 2, row: row + 3 },
-      fixture: benchTile,
-      action: { col: col + 2, row: row + 2 },
-      floorIndex,
-      facing: "up",
-      audience: ISO_FLOOR_AUDIENCE,
-    }),
+  // ONE FIXTURE ID FOR THE WHOLE ROW, which is what `fixture` means here: every
+  // sitter on the bench row rallies with every other, the way the two-tile bench
+  // always did. A per-tile fixture would turn one bench into N benches nobody
+  // talks across.
+  const benchSpots: ReadonlyArray<OfficeErrandSpot> = benchTiles.map(
+    (tile, index) =>
+      isoSpotAt({
+        kind: "garden",
+        stand: { col: tile.col, row: row + 3 },
+        fixture: benchTiles[0],
+        // Its OWN end of the bench: a sitter sits on the half it stood at, so a
+        // shared anchor would leave every arrival but one standing.
+        action: tile,
+        floorIndex,
+        facing: "up",
+        audience: ISO_FLOOR_AUDIENCE,
+        seatId: args.seatIdAt(index),
+      }),
+  );
+  const spots: ReadonlyArray<OfficeErrandSpot> = [
+    ...benchSpots,
     isoSpotAt({
       kind: "water-plant",
-      stand: { col: col + 5, row: row + 3 },
+      stand: { col: plantTile.col, row: row + 3 },
       fixture: plantTile,
       action: plantTile,
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "garden",
@@ -444,15 +516,17 @@ export function buildIsoCourtyard(args: AmenityArgs): IsoCourtyardBuild {
       floorIndex,
       facing: "down",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "garden",
-      stand: { col: col + 6, row: row + 4 },
+      stand: { col: rightCol, row: row + 4 },
       fixture: null,
       action: null,
       floorIndex,
       facing: "down",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
   ];
   return {
@@ -509,6 +583,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "cooler",
@@ -518,6 +593,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "vending",
@@ -527,6 +603,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "cafe",
@@ -536,6 +613,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "cafe",
@@ -545,6 +623,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "cafe",
@@ -554,6 +633,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "cafe",
@@ -563,6 +643,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "sofa",
@@ -572,6 +653,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
     isoSpotAt({
       kind: "sofa",
@@ -581,6 +663,7 @@ export function buildIsoCafe(args: AmenityArgs): IsoAmenityBuild {
       floorIndex,
       facing: "up",
       audience: ISO_FLOOR_AUDIENCE,
+      seatId: null,
     }),
   ];
   return {
@@ -616,6 +699,14 @@ export interface IsoDistrictBuild {
   readonly blocked: ReadonlyArray<OfficeTilePos>;
   readonly spots: ReadonlyArray<OfficeErrandSpot>;
   readonly signs: ReadonlyArray<OfficeSign>;
+  /**
+   * The district's four civic rooms, and the street they face. A view that has
+   * not enrolled in the civic layer yet answers `[]` and `null`, which is what
+   * `CIVIC_ROOMS_EXPECTED` and `CIVIC_ROADS_EXPECTED` assert of it - so these
+   * being empty is a statement rather than an omission.
+   */
+  readonly civic: ReadonlyArray<OfficeCivicRoom>;
+  readonly road: OfficeRoad | null;
 }
 
 export function isoDistrictDoorTile(build: IsoDistrictBuild): OfficeTilePos {
@@ -675,6 +766,13 @@ export function isoFloorOf(args: IsoFloorArgs): OfficeFloor {
       if (build.rooms.some((room) => isoWithinRect(room.bounds, tile)))
         continue;
       if (amenities.some((room) => isoWithinRect(room.bounds, tile))) continue;
+      // NOR THROUGH A WARD. A corridor tile is somewhere a walker may stroll to
+      // for no reason, and a civic room is not that - somebody lying in a bed is
+      // not scenery to wander past. The rooms are excluded here rather than
+      // trusted to be blocked, because a ward's own walk row is walkable on
+      // purpose and would otherwise read as corridor.
+      if (build.civic.some((room) => isoWithinRect(room.bounds, tile)))
+        continue;
       corridorTiles.push(tile);
     }
   }
@@ -696,9 +794,8 @@ export function isoFloorOf(args: IsoFloorArgs): OfficeFloor {
     gameRoom: null,
     areaSigns: [build.courtyard.areaSign, build.cafe.areaSign],
     amenities,
-    // K2 plans this view's cabins, hut and benches; K3 its corridor ring.
-    civic: [],
-    road: null,
+    civic: build.civic,
+    road: build.road,
   };
 }
 

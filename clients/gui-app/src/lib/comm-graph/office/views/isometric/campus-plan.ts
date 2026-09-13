@@ -34,13 +34,20 @@
  */
 import type { OfficeHostPopulation } from "@/lib/comm-graph/office/office-population";
 import {
+  ARCHIVE_SIGN_WIDTH_TILES,
+  civicCapacityFor,
+} from "@/lib/comm-graph/office/office-layout";
+import {
   OFFICE_CHARACTER_HEIGHT,
   type OfficeAgentInput,
+  type OfficeCivicKind,
+  type OfficeCivicRoom,
   type OfficeDesk,
   type OfficeErrandSpot,
   type OfficeFloor,
   type OfficeLayout,
   type OfficeProp,
+  type OfficeRoad,
   type OfficeRoom,
   type OfficeSeat,
   type OfficeSign,
@@ -70,11 +77,12 @@ import {
   isoNearSquareWidth,
   isoPaintDistrict,
   isoShelfPack,
+  isoCourtyardCols,
   isoShelfStart,
   isoSpotAt,
+  ISO_BLOCK_GAP,
   ISO_CAFE_COLS,
   ISO_CAFE_ROWS,
-  ISO_COURTYARD_COLS,
   ISO_COURTYARD_ROWS,
   ISO_DISTRICT_GAP,
   ISO_DISTRICT_RING,
@@ -82,6 +90,7 @@ import {
   ISO_SEAT_ID_NONE,
   ISO_SIGN_WIDTH_TILES,
   type IsoBlockSpec,
+  type IsoCourtyardBuild,
   type IsoDistrictBuild,
   type IsoGrid,
   type IsoPlacedBlock,
@@ -110,6 +119,59 @@ const PLANT_COL_OFFSET = 2;
 
 /** How many members share one cabin before a team takes a second one. */
 const ROOM_SPLIT = 9;
+
+// ---- The civic quarter ------------------------------------------------- //
+//
+// Four rooms, and only two of them are new furniture. C7 makes the HELP DESK the
+// reception the courtyard already has, and Campus's WAITING ROOM is the
+// courtyard's bench row - the campus's public room is its courtyard, so the
+// bench somebody strolls to is the bench somebody waits on. That leaves a SICK
+// BAY of beds and a RECORDS HUT to build.
+//
+// The sick bay is the one block that is NOT shelf-packed. Its kerb has to be a
+// lane tile one step from its door, and the lane is the district's left ring
+// column, so its door has to be in its own left wall AT the first content
+// column - which a packer that puts blocks where they fit cannot promise. So it
+// is laid as a band under the packed shelves at that column, which is the same
+// shape as Mission control's medbay band under the last tier, and for the same
+// reason: a room whose position is part of a promise is positioned, not packed.
+
+/** A wall row, the row of beds, and the walk in front of them. */
+const SICKBAY_ROWS = 3;
+/** `bed-iso` is two tiles across, exactly as `desk-iso` is. */
+const BED_WIDTH_TILES = 2;
+/**
+ * The records hut, as wide as its OWN PLATE. C5's archive is a door, so its
+ * plate is `ARCHIVE_SIGN_WIDTH_TILES` rather than the room's span - and a hut
+ * narrower than its own label would hang that label over its neighbour.
+ */
+const RECORDS_COLS = ARCHIVE_SIGN_WIDTH_TILES;
+const RECORDS_ROWS = 3;
+
+/** The sick bay's width: its wall column, then two tiles per bed. */
+function sickbayCols(beds: number): number {
+  return WALL_COLS + beds * BED_WIDTH_TILES;
+}
+
+/**
+ * The blocks a district packs, courtyard FIRST.
+ *
+ * First is load-bearing twice over: the district's door hangs on the ring beside
+ * the courtyard, and the help desk's kerb is that door - so the courtyard has to
+ * land at the first content column, which is what being first in the shelf gives
+ * it. The sick bay is absent on purpose; see the note above.
+ */
+function amenityBlocksFor(chairs: number): ReadonlyArray<IsoBlockSpec> {
+  return [
+    {
+      blockId: "courtyard",
+      cols: isoCourtyardCols(chairs),
+      rows: ISO_COURTYARD_ROWS,
+    },
+    { blockId: "cafe", cols: ISO_CAFE_COLS, rows: ISO_CAFE_ROWS },
+    { blockId: "records", cols: RECORDS_COLS, rows: RECORDS_ROWS },
+  ];
+}
 
 /**
  * What Campus puts in `frozen`, which is only ever the painter's index.
@@ -250,12 +312,16 @@ interface CampusDistrictPlan {
   readonly widthBudget: number;
   readonly cols: number;
   readonly rows: number;
+  /** The contract's own numbers for this host, from the one exported formula. */
+  readonly beds: number;
+  readonly chairs: number;
+  /**
+   * Content-relative row where the sick bay's band starts - below every packed
+   * shelf. Carried rather than recomputed so `measure` and `plan` cannot drift:
+   * a measure that guessed would pick a view the plan then contradicts.
+   */
+  readonly sickbayRow: number;
 }
-
-const AMENITY_BLOCKS: ReadonlyArray<IsoBlockSpec> = [
-  { blockId: "courtyard", cols: ISO_COURTYARD_COLS, rows: ISO_COURTYARD_ROWS },
-  { blockId: "cafe", cols: ISO_CAFE_COLS, rows: ISO_CAFE_ROWS },
-];
 
 /**
  * How big one district comes to, without building it.
@@ -269,7 +335,8 @@ function districtPlanFor(
   agents: ReadonlyArray<OfficeAgentInput>,
 ): CampusDistrictPlan {
   const rooms = roomPlansFor(host, agents);
-  const blocks = [...AMENITY_BLOCKS, ...rooms];
+  const { beds, chairs } = civicCapacityFor(agents.length);
+  const blocks = [...amenityBlocksFor(chairs), ...rooms];
   const widthBudget = isoNearSquareWidth(blocks);
   const packed = isoShelfPack(blocks, widthBudget, 0, isoShelfStart(0, 0));
   let contentCols = 0;
@@ -278,12 +345,18 @@ function districtPlanFor(
     contentCols = Math.max(contentCols, block.col + block.cols);
     contentRows = Math.max(contentRows, block.row + block.rows);
   }
+  // The sick bay's band, under everything the packer laid and at the first
+  // content column, so its left wall faces the lane.
+  const sickbayRow = contentRows + ISO_BLOCK_GAP;
   return {
     hostId: host.hostId,
     rooms,
     widthBudget,
-    cols: contentCols + ISO_DISTRICT_RING * 2,
-    rows: contentRows + ISO_DISTRICT_RING * 2,
+    beds,
+    chairs,
+    sickbayRow,
+    cols: Math.max(contentCols, sickbayCols(beds)) + ISO_DISTRICT_RING * 2,
+    rows: sickbayRow + SICKBAY_ROWS + ISO_DISTRICT_RING * 2,
   };
 }
 
@@ -454,6 +527,7 @@ function buildRoom(args: RoomBuildArgs): RoomBuild {
         // back off the kind. `roomId` is the room's synthetic id, which is
         // what a seat's own `roomId` carries.
         audience: { kind: "room", roomId: plan.roomId },
+        seatId: null,
       }),
     );
   }
@@ -503,9 +577,345 @@ function buildRoom(args: RoomBuildArgs): RoomBuild {
   };
 }
 
+// ---- The civic quarter, built ------------------------------------------ //
+
+/** `<host>/<floor>/civic/<kind>`, the id every seat in the room carries back. */
+function civicRoomIdOf(
+  hostId: string | null,
+  floorIndex: number,
+  kind: OfficeCivicKind,
+): string {
+  return [hostId ?? ISO_SEAT_ID_NONE, floorIndex, "civic", kind].join("/");
+}
+
+/**
+ * THE LANE: the district's left ring column, top to bottom.
+ *
+ * A column and not a row, and "lane" is satisfied by it - straight, and never
+ * reversing. Projected isometrically a column is one down-left run, `dy >= 0`
+ * with `dx` constant and negative, so a vehicle driving it faces one way for the
+ * whole trip.
+ *
+ * It has to be this column rather than a row because two kerbs are promises: the
+ * infirmary's and the help desk's have to be road tiles one step from their own
+ * doors, and the ring column is the only line in a shelf-packed district whose
+ * position is known before the packing. The district's own entrance already
+ * stands on it, which is the help desk's kerb.
+ */
+function districtLane(bounds: OfficeTileRect): OfficeRoad {
+  const tiles: OfficeTilePos[] = [];
+  for (let row = bounds.row; row < bounds.row + bounds.rows; row += 1) {
+    tiles.push({ col: bounds.col, row });
+  }
+  return {
+    entryTile: tiles[0],
+    tiles,
+    exitTile: tiles[tiles.length - 1],
+  };
+}
+
+/** A bed or a bench: furniture the occupant's own tile IS. */
+function civicSeat(args: {
+  readonly seatId: string;
+  readonly civicRoomId: string;
+  readonly kind: "bed" | "lounge";
+  readonly tile: OfficeTilePos;
+  readonly widthTiles: number;
+  readonly floorIndex: number;
+  readonly hostId: string | null;
+  readonly origin: IsoOrigin;
+}): OfficeSeat {
+  return {
+    seatId: args.seatId,
+    kind: args.kind,
+    // LAIN ON, or SAT ON: the occupant's tile is the furniture's own, so there
+    // is no chair beside it to walk to - the same shape the hall's beds have.
+    deskTile: args.tile,
+    chairTile: args.tile,
+    // Everything in a district faces the same way its desks do.
+    facing: "up",
+    hitTiles: { width: args.widthTiles, height: 1 },
+    // A REAL BOX, not `null`. An isometric seat is a sprite stack hanging off
+    // its tile's corner, and a region derived from tiles alone misses it - which
+    // is the seam `hitBox` exists to close, so a bed answers clicks like a desk.
+    hitBox: isoCampusSeatBox(
+      isoProjectAt(args.origin, args.tile.col, args.tile.row),
+    ),
+    floorIndex: args.floorIndex,
+    // A bed belongs to no TEAM, which is what `roomId` names.
+    roomId: null,
+    hostId: args.hostId,
+    manager: false,
+    civicRoomId: args.civicRoomId,
+  };
+}
+
+/**
+ * HOW WIDE A ROOM'S PLATE IS: the room's frontage, read from where the plate
+ * hangs.
+ *
+ * ANCHORED INSIDE the room, that is the run from the plate's own tile to the
+ * room's right edge, and the plate must not letter PAST that edge. Sizing by
+ * `bounds.cols` alone did exactly that for the one room whose plate was inset -
+ * the sick bay's hung a column in, past the wall, and measured 5 tiles over a
+ * 4-tile frontage at 12 agents and 17 over 16 at a thousand. Every other room
+ * starts its plate at its own first column, where the two readings agree, which
+ * is why sizing by the room survived until an inset plate arrived.
+ *
+ * ANCHORED OUTSIDE the room, the frontage has no meaning at the anchor and the
+ * plate carries the ROOM'S OWN width there instead. The front desk's plate hangs
+ * at the district's gate, columns away from the counter it names, and the run
+ * from the gate to the counter's right edge is not a frontage - it is five tiles
+ * of open courtyard with a rule's name on it.
+ *
+ * EXPORTED FOR ITS OWN CASE, the way `officeCivicSignText` is. After the sick
+ * bay's plate moved to its wall's corner, no room this view ships hangs a plate
+ * inset from its own bounds - so the inset reading has no witness among the four
+ * rooms, and the case that holds it plants one directly. A rule whose only
+ * evidence is a layout that no longer exercises it is a rule nothing is testing.
+ */
+export function civicPlateWidth(room: OfficeCivicRoom): number {
+  const { col, cols } = room.bounds;
+  const anchor = room.signTile.col;
+  if (anchor < col || anchor >= col + cols) return cols;
+  return col + cols - anchor;
+}
+
+interface CampusCivicArgs {
+  readonly hostId: string | null;
+  readonly floorIndex: number;
+  readonly origin: IsoOrigin;
+  readonly bounds: OfficeTileRect;
+  readonly beds: number;
+  readonly chairs: number;
+  readonly sickbay: OfficeTileRect;
+  readonly records: OfficeTileRect;
+  readonly courtyard: IsoCourtyardBuild;
+}
+
+interface CampusCivic {
+  readonly rooms: ReadonlyArray<OfficeCivicRoom>;
+  readonly seats: ReadonlyArray<OfficeSeat>;
+  readonly props: ReadonlyArray<OfficeProp>;
+  readonly blocked: ReadonlyArray<OfficeTilePos>;
+  readonly signs: ReadonlyArray<OfficeSign>;
+  readonly road: OfficeRoad;
+}
+
+/**
+ * The district's four rooms, in the campus's own words.
+ *
+ * `Sick bay` is a cabin of beds, `Records` a hut with a door, `Benches` the
+ * courtyard's bench row, and `Front desk` the counter that was already there -
+ * C7, which makes the help desk the reception rather than a second counter
+ * beside it.
+ */
+function buildCampusCivic(args: CampusCivicArgs): CampusCivic {
+  const { hostId, floorIndex, origin, courtyard } = args;
+  const road = districtLane(args.bounds);
+  const blocked: OfficeTilePos[] = [];
+  const props: OfficeProp[] = [];
+  const seats: OfficeSeat[] = [];
+
+  // ---- Sick bay: a wall along the top, an aisle down the left ---------- //
+  const wardId = civicRoomIdOf(hostId, floorIndex, "infirmary");
+  const ward = args.sickbay;
+  for (let col = ward.col; col < ward.col + ward.cols; col += 1) {
+    blocked.push({ col, row: ward.row });
+  }
+  // The aisle column stays OPEN, top to bottom: the door is in it, and a wall
+  // there would leave whoever came through facing a bed with nowhere to step.
+  const wardDoor: OfficeTilePos = { col: ward.col, row: ward.row + 1 };
+  const bedRow = ward.row + 1;
+  for (let index = 0; index < args.beds; index += 1) {
+    const tile: OfficeTilePos = {
+      col: ward.col + WALL_COLS + index * BED_WIDTH_TILES,
+      row: bedRow,
+    };
+    for (let offset = 0; offset < BED_WIDTH_TILES; offset += 1) {
+      blocked.push({ col: tile.col + offset, row: tile.row });
+    }
+    props.push({ sprite: { name: "bed-iso" }, tile });
+    seats.push(
+      civicSeat({
+        seatId: `${wardId}/${index}`,
+        civicRoomId: wardId,
+        kind: "bed",
+        tile,
+        widthTiles: BED_WIDTH_TILES,
+        floorIndex,
+        hostId,
+        origin,
+      }),
+    );
+  }
+
+  // ---- Records: a hut whose door is the whole room (C5) ---------------- //
+  const recordsId = civicRoomIdOf(hostId, floorIndex, "archive");
+  const hut = args.records;
+  for (let col = hut.col; col < hut.col + hut.cols; col += 1) {
+    blocked.push({ col, row: hut.row });
+  }
+  for (let row = hut.row + 1; row < hut.row + hut.rows - 1; row += 1) {
+    blocked.push({ col: hut.col, row });
+  }
+  const recordsDoor: OfficeTilePos = {
+    col: hut.col + WALL_COLS,
+    row: hut.row + hut.rows - 1,
+  };
+  props.push({ sprite: { name: "records-door" }, tile: recordsDoor });
+
+  // ---- Benches: the courtyard's bench row IS the waiting room ---------- //
+  //
+  // A SEAT IS THE TILE IN FRONT OF THE BENCH, not the bench's own. That is the
+  // bench sprite's own contract - "two tiles wide; seats are the tiles in front" -
+  // and the bench tile itself is blocked furniture nobody stands on. So the tile a
+  // waiting agent sits on is exactly the tile a stroll stands on to use the same
+  // bench, and the two are one place two systems can put somebody. That is what
+  // `OfficeErrandSpot.seatId` is for, and why the courtyard is handed these ids.
+  const benchesId = civicRoomIdOf(hostId, floorIndex, "waiting-room");
+  const benchRow = courtyard.rect.row + 2;
+  const seatRow = benchRow + 1;
+  const benchCol = courtyard.rect.col + 1;
+  for (let index = 0; index < args.chairs; index += 1) {
+    const tile: OfficeTilePos = { col: benchCol + index, row: seatRow };
+    // NO PROP OF ITS OWN. The bench is already there - `isoFixtureProps` stands
+    // one up per garden fixture tile - and drawing a second seat on it would be
+    // paying twice for the one thing the reuse is for.
+    seats.push(
+      civicSeat({
+        seatId: `${benchesId}/${index}`,
+        civicRoomId: benchesId,
+        kind: "lounge",
+        tile,
+        widthTiles: 1,
+        floorIndex,
+        hostId,
+        origin,
+      }),
+    );
+  }
+
+  // ---- Front desk: the reception, re-read as a civic room (C7) --------- //
+  const deskId = civicRoomIdOf(hostId, floorIndex, "help-desk");
+  const counter = courtyard.receptionTile;
+  // THE DOOR IS ONE STEP OFF THE ENTRANCE, not the entrance itself. The
+  // district's own entrance stands ON the lane, and no civic door may be a road
+  // tile, so the door is the lobby tile inside it and the entrance is the kerb -
+  // the Towers precedent, where the archive's door moved off the lane for the
+  // same reason.
+  const deskDoor = courtyard.lobbyTile;
+  const deskKerb: OfficeTilePos = { col: args.bounds.col, row: deskDoor.row };
+
+  const rooms: ReadonlyArray<OfficeCivicRoom> = [
+    {
+      civicRoomId: wardId,
+      kind: "infirmary",
+      bounds: ward,
+      doorTile: wardDoor,
+      // THE WALL'S CORNER, not the first bed. One column left of where it read
+      // more naturally, and the reason is screen space: the district's host sign
+      // hangs at the bottom-left corner, and `col + row` - which is what an
+      // isometric view separates plates by - differs by a CONSTANT 2 between the
+      // two, at every population. A plate over the first bed therefore collides
+      // with the host sign in every epic whose ward is the minimum two beds
+      // wide; the wide wards above ~176 agents escape only because the plate's
+      // own width carries its centre clear, which is a coincidence and not a
+      // rule. At the corner the difference is 3, which clears the 14px backing
+      // at 0.7 zoom with the row to spare.
+      signTile: { col: ward.col, row: ward.row },
+      name: "Sick bay",
+      seatIds: seats
+        .filter((seat) => seat.civicRoomId === wardId)
+        .map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      // ONE DISTRICT PER HOST. The campus lays a district per host and this
+      // quarter stands inside one of them, so every room here counts that
+      // host's things - the Towers reading, not the hall's.
+      hostScope: "host",
+      kerbTile: { col: args.bounds.col, row: wardDoor.row },
+    },
+    {
+      civicRoomId: benchesId,
+      kind: "waiting-room",
+      bounds: {
+        col: benchCol,
+        row: seatRow,
+        cols: Math.max(args.chairs, 1),
+        rows: 1,
+      },
+      // The lawn below the row: a walkable tile beside the seats, and not one of
+      // them, so the way in is somewhere to step rather than somewhere to sit.
+      doorTile: { col: benchCol, row: seatRow + 1 },
+      // Over the bench art itself, which is what the room looks like.
+      signTile: { col: benchCol, row: benchRow },
+      name: "Benches",
+      seatIds: seats
+        .filter((seat) => seat.civicRoomId === benchesId)
+        .map((seat) => seat.seatId),
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      // Nobody is collected from a bench (C6).
+      kerbTile: null,
+    },
+    {
+      civicRoomId: deskId,
+      kind: "help-desk",
+      bounds: { col: counter.col, row: counter.row, cols: 2, rows: 1 },
+      doorTile: deskDoor,
+      // AT THE GATE, not over the counter. See the placement note above
+      // `buildCampusCivic`: three plates cannot share the courtyard's rows.
+      signTile: deskKerb,
+      name: "Front desk",
+      // Standing at a counter is not sitting down, so it carries no seats.
+      seatIds: [],
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      kerbTile: deskKerb,
+    },
+    {
+      civicRoomId: recordsId,
+      kind: "archive",
+      bounds: hut,
+      doorTile: recordsDoor,
+      // Its plate is four tiles and the hut is four wide, so the label sits
+      // over the room it names and reaches nothing else.
+      signTile: { col: hut.col, row: hut.row },
+      name: "Records",
+      seatIds: [],
+      floorIndex,
+      hostId,
+      hostScope: "host",
+      // Nothing drives to the archive (C6).
+      kerbTile: null,
+    },
+  ];
+
+  const signs: ReadonlyArray<OfficeSign> = rooms.map((room) => ({
+    kind: "civic",
+    tile: room.signTile,
+    widthTiles:
+      room.kind === "archive"
+        ? ARCHIVE_SIGN_WIDTH_TILES
+        : civicPlateWidth(room),
+    text: room.name,
+    ownerAgentId: null,
+    hostId,
+    agentIds: [],
+    civicRoomId: room.civicRoomId,
+  }));
+
+  return { rooms, seats, props, blocked, signs, road };
+}
+
 interface DistrictBuilt {
   readonly build: IsoDistrictBuild;
   readonly desks: ReadonlyArray<OfficeDesk>;
+  /** The civic seats: beds and benches, which belong to no agent. */
+  readonly seats: ReadonlyArray<OfficeSeat>;
 }
 
 function buildDistrict(
@@ -515,7 +925,7 @@ function buildDistrict(
 ): DistrictBuilt {
   const originCol = plan.col + ISO_DISTRICT_RING;
   const originRow = ISO_DISTRICT_RING;
-  const blocks = [...AMENITY_BLOCKS, ...plan.rooms];
+  const blocks = [...amenityBlocksFor(plan.chairs), ...plan.rooms];
   const packed = isoShelfPack(
     blocks,
     plan.widthBudget,
@@ -525,14 +935,27 @@ function buildDistrict(
   const byId = new Map(packed.placed.map((block) => [block.blockId, block]));
   const courtyardAt = byId.get("courtyard");
   const cafeAt = byId.get("cafe");
-  if (courtyardAt === undefined || cafeAt === undefined) {
+  const recordsAt = byId.get("records");
+  if (
+    courtyardAt === undefined ||
+    cafeAt === undefined ||
+    recordsAt === undefined
+  ) {
     throw new Error("campus district lost its amenities");
   }
+  // THE BENCH ROW IS THE WAITING ROOM, so the courtyard is as long as the
+  // contract's chair count and each bench tile answers with the lounge seat laid
+  // on it. The seat ids are the room's, computed the same way twice rather than
+  // threaded back out of the build - a bench and its seat have to agree, and the
+  // shared formula is what makes them.
+  const benchesId = civicRoomIdOf(plan.hostId, floorIndex, "waiting-room");
   const courtyard = buildIsoCourtyard({
     col: courtyardAt.col,
     row: courtyardAt.row,
     floorIndex,
     name: "Courtyard",
+    benches: plan.chairs,
+    seatIdAt: (index) => `${benchesId}/${index}`,
   });
   const cafe = buildIsoCafe({
     col: cafeAt.col,
@@ -574,18 +997,43 @@ function buildDistrict(
     cols: plan.cols,
     rows: plan.rows,
   };
+  const civic = buildCampusCivic({
+    hostId: plan.hostId,
+    floorIndex,
+    origin,
+    bounds,
+    beds: plan.beds,
+    chairs: plan.chairs,
+    // The band under the packed shelves, at the first content column so its
+    // aisle wall faces the lane; `sickbayRow` is content-relative.
+    sickbay: {
+      col: originCol,
+      row: originRow + plan.sickbayRow,
+      cols: sickbayCols(plan.beds),
+      rows: SICKBAY_ROWS,
+    },
+    records: {
+      col: recordsAt.col,
+      row: recordsAt.row,
+      cols: recordsAt.cols,
+      rows: recordsAt.rows,
+    },
+    courtyard,
+  });
   const build: IsoDistrictBuild = {
     hostId: plan.hostId,
     bounds,
     courtyard,
     cafe,
     rooms,
-    props,
-    blocked,
+    props: [...props, ...civic.props],
+    blocked: [...blocked, ...civic.blocked],
     spots,
-    signs,
+    signs: [...signs, ...civic.signs],
+    civic: civic.rooms,
+    road: civic.road,
   };
-  return { build, desks };
+  return { build, desks, seats: civic.seats };
 }
 
 /**
@@ -622,13 +1070,30 @@ export function planCampus(input: OfficePlanInput): OfficeLayout {
       desks.set(desk.agentId, desk);
       seats.set(desk.seatId, desk);
     }
+    // Civic seats are seats with no occupant: registered so the seat book can
+    // lend one, absent from `desks` because nobody lives there.
+    for (const seat of built.seats) seats.set(seat.seatId, seat);
     rooms.push(...built.build.rooms);
     props.push(...built.build.props);
     signs.push(...built.build.signs, isoHostSign(built.build));
     floors.push(isoFloorOf({ build: built.build, floorIndex, grid }));
   }
-  for (const floor of floors) {
+  for (const [floorIndex, floor] of floors.entries()) {
+    // THE COURTYARD IS NOT LETTERED TWICE. Campus's waiting room IS this
+    // courtyard's bench row, and the civic plate already names the place and
+    // carries the live count - so the amenity's own "Courtyard" label is a
+    // second name for one place, and it is the one that gives way. C7's economy
+    // applied to labels rather than to counters. City keeps its park's label,
+    // because there the waiting room is the shelter at the kerb and the park is
+    // only a park.
+    const annexed = builds[floorIndex].build.courtyard.areaSign.signTile;
     for (const sign of floor.areaSigns) {
+      if (
+        sign.signTile.col === annexed.col &&
+        sign.signTile.row === annexed.row
+      ) {
+        continue;
+      }
       signs.push({
         kind: "area",
         tile: sign.signTile,

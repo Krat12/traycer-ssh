@@ -9010,6 +9010,7 @@ function aliasedFloorsLayout(): OfficeLayout {
     fixtureId: "plaza-coffee",
     approachTile: { col: 10, row: 10 },
     actionTile: null,
+    seatId: null,
     floorIndex: 0,
   };
   const floor0 = handBuiltFloor([plazaSpot]);
@@ -9093,6 +9094,7 @@ describe("OfficeScene leads audience", () => {
       fixtureId: "hq-board",
       approachTile: { col: 10, row: 10 },
       actionTile: null,
+      seatId: null,
       floorIndex: 0,
     };
   }
@@ -9190,6 +9192,7 @@ describe("OfficeScene fixup 1 - F1 projected culling", () => {
       fixtureId: "coffee-1",
       approachTile: { col: 4, row: 2 },
       actionTile: null,
+      seatId: null,
       floorIndex: 0,
     };
     const layout: OfficeLayout = {
@@ -9313,6 +9316,7 @@ describe("OfficeScene fixup 1 - F2 uniform shift keeps an errand", () => {
       fixtureId: "coffee-1",
       approachTile: { col: 10, row: 10 },
       actionTile: null,
+      seatId: null,
       floorIndex: 0,
     };
     const floor1: OfficeFloor = {
@@ -10590,6 +10594,7 @@ describe("OfficeScene fixup 2 - F2 a remembered errand tile follows the shift", 
       facing: "down" as const,
       audience: { kind: "floor" as const },
       actionTile: null,
+      seatId: null,
       floorIndex: 0,
     };
     return [
@@ -10961,6 +10966,7 @@ describe("OfficeScene fixup 2 - F9 a walking sender focuses the walker", () => {
       fixtureId: "coffee-1",
       approachTile: { col: 10, row: 10 },
       actionTile: null,
+      seatId: null,
       floorIndex: 0,
     };
     const layout: OfficeLayout = {

@@ -1336,6 +1336,8 @@ function addSpot(sink: SpotSink, spec: SpotSpec): void {
     audience: { kind: "floor" },
     fixtureId: spec.fixtureId,
     approachTile: spec.tile,
+    // The hall's beds and gallery seats carry no errand; see `seatId`.
+    seatId: null,
     actionTile: spec.actionTile,
     floorIndex: FLOOR_INDEX,
   });

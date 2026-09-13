@@ -3506,6 +3506,8 @@ function decorateSpots(
       // On this floor you act from where you stand; an oblique or isometric
       // view can put the approach a tile off the fixture instead.
       approachTile: spot.tile,
+      // The Floor furnishes no fixture anybody sits IN; see `seatId`.
+      seatId: null,
       actionTile:
         sprite === null ? null : propTileAbove(props, spot.tile, sprite),
       floorIndex,

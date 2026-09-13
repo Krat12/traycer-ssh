@@ -57,6 +57,7 @@ import {
   readCityFrozen,
   ISO_CAFE_COLS,
   ISO_CAFE_ROWS,
+  ISO_COURTYARD_BENCHES,
   ISO_COURTYARD_COLS,
   ISO_COURTYARD_ROWS,
   ISO_DISTRICT_GAP,
@@ -787,6 +788,11 @@ function buildDistrict(
     row: park.rect.row,
     floorIndex,
     name: "Park",
+    // THE PARK IS UNCHANGED. City's waiting room is the bus shelter at the
+    // kerb, because a city is where a vehicle pulls up and a citizen waits at
+    // the street - so these benches stay furniture, and stay two.
+    benches: ISO_COURTYARD_BENCHES,
+    seatIdAt: () => null,
   });
   const cafe = buildIsoCafe({
     col: cafeBlock.rect.col,
@@ -894,6 +900,11 @@ function buildDistrict(
     blocked,
     spots: [],
     signs,
+    // NOT ENROLLED YET. `CIVIC_ROOMS_EXPECTED` and `CIVIC_ROADS_EXPECTED` say
+    // `false` for City, and these two empties are what that table asserts of it -
+    // a statement that the layer has not been entered, not an omission.
+    civic: [],
+    road: null,
   };
   return { build, desks, seats };
 }

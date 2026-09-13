@@ -785,6 +785,8 @@ function spot(placement: SpotPlacement): OfficeErrandSpot {
   return {
     ...placement,
     approachTile: placement.tile,
+    // Nothing this view sets an errand at is also a seat; see `seatId`.
+    seatId: null,
     audience: { kind: placement.kind === "whiteboard" ? "leads" : "floor" },
   };
 }
