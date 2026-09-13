@@ -43,6 +43,41 @@ lifecycle, authn, cloud UI, or the dev-slot allocator.
   unregisters via `.../remove` — plain sign-out is local-only and revokes
   nothing server-side.
 
+## Browser
+
+- **The phone is an interactive controller, not a viewer.** There is no
+  read-only tier and no `screencastRoleForShell`: every signed-in shell
+  subscribes as `role: "tile"`. The old `"viewer"` role hid the input surface,
+  made the host refuse input as `viewer-passive`, and disabled the viewport
+  controller so no Fit report was ever sent - which is where the "View only"
+  badge and the landscape letterbox both came from.
+- **Co-equal with sitting at the Mac.** A phone's navigation records the domain
+  grant into the primary-profile store exactly like a desktop click, and it
+  drives the user's live desktop jar and real window. Accepted deliberately:
+  USER AUTHENTICATION is the boundary, not the transport the pixels arrive over,
+  and the phone already drives the tab through the agent RPCs.
+- **Fit follows the phone while its tile is mounted.** The Fit report carries a
+  `pointer` class; `coarse` makes the host lay the page out as a phone
+  (`mobile: true` + touch emulation). That reflows the desktop user's own tile
+  too, which is accepted. A desktop click takes Fit back; a tile that unmounts
+  or a connection that drops releases the claim.
+- **The keyboard follows the PAGE's editable focus**, not the tap - one control
+  round trip late, on purpose, so a tap on a link does not raise the keyboard.
+  `Keyboard.resize: KeyboardResize.None` means iOS overlays the webview instead
+  of resizing it, and the bridge publishes the height as `--keyboard-inset`.
+  The browser tile adds **no** inset of its own: the app shell's `h-safe-dvh`
+  already subtracts `--keyboard-inset`, so the pane shrinks, the viewport
+  `ResizeObserver` reports the smaller box, and the host reflows the page.
+  Padding the tile as well subtracts the keyboard twice.
+- **What a phone still cannot do:** no native `<webview>`, no local host, no
+  `browserView` bridge. Its pixels are always a remote plane, and a MIRRORED
+  native tab is JPEG-only - no WebRTC.
+- **2.2 client frames are gated on the negotiated schema version.** The
+  gestures that need a host answer (long press, double-tap zoom) are not armed
+  at all below `browser.screencast@2.2`, and the transport drops a 2.2 frame
+  whose session did not negotiate it. Against an older host they simply do
+  nothing rather than hanging.
+
 ## Key files
 
 - `src/mobile-runner-host.ts` — `IRunnerHost`, device flow, secure token store.

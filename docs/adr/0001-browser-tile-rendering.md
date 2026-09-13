@@ -82,3 +82,40 @@ Both planes use Chromium's network/session stack.
 
 Historical R2–R10 from the 2026-09-02 native-view record (paint-ack, frame cache, six-frame motion hysteresis, `capturePage` stand-ins) are withdrawn.
 The measured numbers in that record described the deleted native handshake and are not physics of the current plane.
+
+## Addendum — the guest is also a mirror source (2026-09-12)
+
+The accepted decision above is unchanged. For the local user, a co-located tile
+is still a persistent renderer-owned `<webview>` on CSS anchors, and every
+requirement R1–R12 still holds as written.
+
+What changed is who else reads that guest's pixels. A natively placed tab used
+to have no plane a remote viewer could be served on, and the host answered a
+remote open by tearing the tab down and re-opening it headless. That machinery
+is deleted. The guest is now additionally the pixel **source** for remote
+viewers of the same tab: the desktop runs `Page.startScreencast` on it over the
+guest's shared `BrowserDebugSession` and pumps JPEG frames to the host on a
+per-tab `browser.mirror` stream, which fans them out to that tab's
+`browser.screencast` subscribers. The tab never moves, and a desktop too old to
+mirror yields a refusal rather than a relocation. R7's "remote JPEG/WebRTC
+selection unchanged" now reads: a mirrored native tab is JPEG-only; the WebRTC
+plane remains for headless tabs only, since its capture needs a page the host
+itself owns.
+
+Two consequences matter to this ADR's readers.
+
+**The guest keeps rendering while a mirror viewer is attached.** A minimized,
+occluded or locked window must still produce frames, so the desktop holds
+`setBackgroundThrottling(false)` on the mirrored guest for the life of the
+mirror and restores it on every exit path, with a low-rate `capturePage` poller
+behind the screencast for the states a screencast does not survive. This is not
+the withdrawn occlusion handshake returning: nothing is parked, snapshotted or
+substituted for the live guest, and the local user's tile is untouched. The
+`capturePage` here is an out-of-band read of a window nobody is looking at, not
+a stand-in composited in the tile's place.
+
+**A remote viewer's Fit reflows the local user's own tile.** Fit follows the
+last deliberately active viewer and the report now carries a pointer class, so a
+phone holding Fit lays the shared page out as a phone in the desktop window too
+— rendered like the tile's own responsive viewport control. Accepted; a desktop
+click takes Fit back.
