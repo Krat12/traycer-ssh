@@ -379,6 +379,46 @@ describe("entry navigation", () => {
     expect(flow().context?.attemptId).toBe("start-pending");
   });
 
+  it("a replay that lands while the ready host is unmounted is a NEW activation on remount: it navigates again and drops the old attempt", () => {
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    focusDraftTab(DRAFT_ID);
+    const view = render(<OnboardingFlowHost />);
+    act(() => {
+      flow().finishModal("no-sessions");
+    });
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    act(() => {
+      useLandingReceiptsStore.getState().announce({
+        kind: "prompt-accepted",
+        attemptId: "old-attempt",
+        draftId: DRAFT_ID,
+        hostId: "host-flow",
+      });
+    });
+    // Readiness drops; Settings replays while the host is down; the
+    // focused surface is an epic by the time readiness returns.
+    view.unmount();
+    act(() => {
+      flow().replayTour("add-folder");
+    });
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
+    useTabsStore.setState({
+      items: [{ kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref }],
+      activeItemId: `tab:epic:${EPIC_TAB_ID}`,
+      systemTabs: { history: null, settings: null },
+      stripOrder: [ref],
+    });
+    render(<OnboardingFlowHost />);
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      { kind: "new-draft", settings: null },
+      undefined,
+    );
+    expect(useLandingReceiptsStore.getState().dispatchedByAttemptId).toEqual({});
+  });
+
   it("the panels lesson waits for its surface rather than navigating", () => {
     act(() => {
       flow().finishModal("no-sessions");

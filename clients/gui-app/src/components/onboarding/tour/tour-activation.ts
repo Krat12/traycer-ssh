@@ -24,8 +24,7 @@ import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-stor
 
 let token = 0;
 const listeners = new Set<() => void>();
-let watchers = 0;
-let stopWatching: (() => void) | null = null;
+let watching = false;
 
 function bump(): void {
   token += 1;
@@ -33,45 +32,47 @@ function bump(): void {
   for (const listener of listeners) listener();
 }
 
+function identityOf(state: {
+  readonly status: string;
+  readonly contextMetadata: { readonly userId: string } | null;
+}): string {
+  return `${state.status}|${state.contextMetadata?.userId ?? ""}`;
+}
+
+/**
+ * The store subscriptions start on first use and are never stopped: the
+ * ready host unmounts on every readiness drop, and a replay or a sign-out
+ * that lands while it is down must still move the token before the host
+ * comes back - otherwise a remount would treat the new activation as the
+ * one it already entered, and old receipts would survive it.
+ */
+function ensureWatching(): void {
+  if (watching) return;
+  watching = true;
+  useOnboardingFlowStore.subscribe((next, previous) => {
+    if (next.activationRevision !== previous.activationRevision) bump();
+  });
+  useAuthStore.subscribe((next, previous) => {
+    if (identityOf(next) !== identityOf(previous)) bump();
+  });
+}
+
 export function getActivationToken(): number {
+  ensureWatching();
   return token;
 }
 
 export function subscribeActivation(listener: () => void): () => void {
+  ensureWatching();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
   };
 }
 
-/** Watch the flow and auth stores; returns stop. Reference-counted. */
-export function startActivationWatch(): () => void {
-  watchers += 1;
-  if (stopWatching === null) {
-    const unsubscribeFlow = useOnboardingFlowStore.subscribe((next, previous) => {
-      if (next.activationRevision !== previous.activationRevision) bump();
-    });
-    const unsubscribeAuth = useAuthStore.subscribe((next, previous) => {
-      if (
-        next.status !== previous.status ||
-        (next.contextMetadata?.userId ?? null) !==
-          (previous.contextMetadata?.userId ?? null)
-      ) {
-        bump();
-      }
-    });
-    stopWatching = () => {
-      unsubscribeFlow();
-      unsubscribeAuth();
-    };
-  }
-  return () => {
-    watchers -= 1;
-    if (watchers === 0 && stopWatching !== null) {
-      stopWatching();
-      stopWatching = null;
-    }
-  };
+/** Make sure the flow and auth stores are being watched (see above). */
+export function startActivationWatch(): void {
+  ensureWatching();
 }
 
 /** Tests only: a fresh token, no listeners disturbed. */

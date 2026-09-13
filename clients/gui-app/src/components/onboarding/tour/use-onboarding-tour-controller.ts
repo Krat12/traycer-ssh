@@ -315,7 +315,9 @@ export function useOnboardingTourController(): OnboardingTourController {
   // ── Activation token ────────────────────────────────────────────────────
   // See `tour-activation.ts`: moves synchronously with a chain start / pause
   // / end / replay or an identity change, and drops pending receipts.
-  useEffect(() => startActivationWatch(), []);
+  useEffect(() => {
+    startActivationWatch();
+  }, []);
   const activation = useSyncExternalStore(
     subscribeActivation,
     getActivationToken,
