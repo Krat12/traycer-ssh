@@ -1604,6 +1604,11 @@ describe("officeCivicSignText - the civic counter ladder", () => {
       hostId: null,
       kerbTile: null,
       ...overrides,
+      // AFTER the spread and read off it, because `Partial<OfficeCivicRoom>`
+      // carries `hostScope?: undefined` and spreading it over a default would
+      // widen the field back to optional. One host's room is the default every
+      // view but the hall states; a case that wants the shared reading says so.
+      hostScope: overrides.hostScope ?? "host",
     };
   }
 
@@ -1889,6 +1894,7 @@ describe("officeSignsToDraw - the medbay beacon", () => {
     seatIds: ["bed-0"],
     floorIndex: 0,
     hostId: null,
+    hostScope: "host" as const,
     kerbTile: null,
   };
   /**

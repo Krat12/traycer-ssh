@@ -536,6 +536,24 @@ export interface OfficeCivicRoom {
   readonly floorIndex: number;
   readonly hostId: string | null;
   /**
+   * WHO THIS ROOM SERVES, stated by the plan rather than inferred from
+   * `hostId`.
+   *
+   * `"host"` is a room of one building: its counters count that host's things,
+   * and `hostId` names the host. Every view whose storeys belong to one host
+   * each says this.
+   *
+   * `"every-host"` is a room the whole epic shares - Mission control's hall,
+   * which is ONE floor for every host, so its ward, gallery, dispatch desk and
+   * Records serve all of them. Such a room carries `hostId: null`, and THAT IS
+   * WHY THE SCOPE HAS TO BE A FIELD: `null` already means the unattributed
+   * host, a real host with its own agents and its own archived records, so a
+   * counter reading `null` as "everybody" would report the unattributed host's
+   * count on a shared room and a shared count on the unattributed one. The two
+   * are different answers and only the plan knows which it meant.
+   */
+  readonly hostScope: "host" | "every-host";
+  /**
    * Where a vehicle stops for this room - a tile of the floor's `road` - or
    * `null` where nothing drives to it. Carried by the PLAN because the road is
    * the plan's, and a scene that derived a kerb would be deriving geometry.

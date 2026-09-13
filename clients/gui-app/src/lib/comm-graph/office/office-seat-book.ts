@@ -106,6 +106,39 @@ function wantOfSeat(seat: OfficeSeat): OfficeSeatWant {
 }
 
 /**
+ * WHETHER A SEAT IS IN THE POOL THIS WANT MAY BE SERVED FROM - the FLOOR first
+ * for a civic want, the building alone for a desk.
+ *
+ * A desk stops at the host, and that has never been in doubt: hosts are
+ * separate buildings with no walkable route between them, and a desk on another
+ * floor of your own building is reached by the stairwell this view drew.
+ *
+ * A CIVIC WANT READS THE FLOOR FIRST, and the floor can belong to somebody
+ * else. That is not a relaxation of the host rule, it is the same rule read in
+ * the right order: what makes a seat reachable is standing on the storey it is
+ * on, and the contract has always said "the agent's own floor, then any room of
+ * that kind on its host". In the Floor, Towers and Building a storey belongs to
+ * exactly one host, so this clause admits nothing those views did not already
+ * admit and their per-host isolation is unchanged by construction rather than
+ * by luck. Mission control is the view this exists for: ONE hall for every
+ * host, whose beds and gallery chairs carry no host because no host owns them -
+ * and under a host filter alone, an agent at an attributed console could never
+ * be given one. A `null` host is not a wildcard either way; it is the
+ * unattributed building, which is why the floor and not the host is what had to
+ * move.
+ */
+function seatPoolAdmits(
+  seat: OfficeSeat,
+  ownerHostId: string | null,
+  preference: OfficeSeatPreference,
+): boolean {
+  if (seat.hostId === ownerHostId) return true;
+  return (
+    preference.wants !== "desk" && seat.floorIndex === preference.floorIndex
+  );
+}
+
+/**
  * `held` while the agent still wants the seat, `releasing` from the moment it
  * stops until the character is actually out of it.
  */
@@ -701,6 +734,11 @@ export class OfficeSeatBook {
    * can reach - offering it would strand the character mid-walk AND silence
    * the capacity demand that should have grown its own building.
    *
+   * A CIVIC want reads its own STOREY before it reads the building, which is
+   * `seatPoolAdmits`: a ward on the floor the agent is standing on serves it
+   * whoever the floor's seats are attributed to. See that helper for why the
+   * order and not the rule is what differs.
+   *
    * A cubby is never a target either. It is where a cold agent waits, so
    * waking into one would be a walk to nowhere.
    */
@@ -720,7 +758,7 @@ export class OfficeSeatBook {
       // crash can never be handed a desk - whatever the room and floor rules
       // below would have preferred.
       if (wantOfSeat(seat) !== preference.wants) continue;
-      if (seat.hostId !== owner.hostId) continue;
+      if (!seatPoolAdmits(seat, owner.hostId, preference)) continue;
       // Spoken for is spoken for, including by this agent: a renewed wake
       // reactivates its own reservation above and never reaches here.
       if (spoken.has(seatId)) continue;
@@ -732,6 +770,13 @@ export class OfficeSeatBook {
     // view: a room of this kind on the agent's own storey if there is one,
     // else any on its host - which is what sends a crash on storey seven down
     // the stairwell to the plaza's beds where that view keeps them there.
+    //
+    // FLOOR IS THE PRIMARY POOL AND NOT MERELY THE PREFERENCE. `free` was
+    // gathered by `seatPoolAdmits`, so a storey's seats are in it whatever host
+    // they carry; this `find` is what picks them, and the fallback is the
+    // host's own rooms exactly as before. The two halves have to agree - a
+    // preference for a floor whose seats the filter had already dropped is the
+    // shape the hall shipped broken in.
     if (preference.wants !== "desk") {
       const onFloor = free.find(
         (seat) => seat.floorIndex === preference.floorIndex,

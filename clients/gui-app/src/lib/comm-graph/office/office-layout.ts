@@ -3007,6 +3007,10 @@ function buildCivicRecord(request: CivicRoomRequest): CivicBuild {
       seatIds: seats.map((seat) => seat.seatId),
       floorIndex,
       hostId,
+      // A STOREY HERE IS ONE HOST'S. Every floor this builder makes belongs to
+      // one building, so its rooms count that building's things and nothing
+      // else's.
+      hostScope: "host",
       // Nothing drives to the lounge (C6), so it names no kerb. The infirmary
       // stops a vehicle at the road tile its door opens ONTO - the row below
       // its own bottom wall, because `anchorInfirmaryToRoad` put the room at
@@ -3177,6 +3181,7 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       seatIds: [],
       floorIndex,
       hostId: build.hostId,
+      hostScope: "host",
       // One tile past the counter's right end - the bell end, where the queue
       // forms - rather than on the counter itself.
       kerbTile: kerbOnRoad(road, helpDeskBellCol),
@@ -3193,6 +3198,7 @@ function fitFloor(request: FloorFitRequest): PlacedFloor {
       seatIds: [],
       floorIndex,
       hostId: build.hostId,
+      hostScope: "host",
       // Nothing drives to the archive: nobody is collected from it (C6).
       kerbTile: null,
     },

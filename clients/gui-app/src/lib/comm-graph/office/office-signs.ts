@@ -594,18 +594,41 @@ const SIREN_LIT_FRAME = 1;
  * - a ward or a waiting room says how many of ITS OWN seats are taken, because
  *   "is there a bed free" is the question somebody looking at it has;
  * - the archive says how many records it holds, which is its whole content
- *   (C5: no crate per agent, the number is the room);
+ *   (C5: no crate per agent, the number is the room) - ITS OWN host's records
+ *   in a view whose storeys belong to one host each, and every host's in a view
+ *   whose one floor serves them all. `room.hostScope` is what says which, and
+ *   it is a field rather than a reading of `hostId` because `null` there is the
+ *   unattributed host - a real host with records of its own - so a shared room
+ *   and an unattributed one are indistinguishable by that field alone;
  * - the help desk says nothing. The queue standing in front of it is the
  *   count, drawn at full size, and a number over it would be the same fact
  *   said twice.
  */
+/**
+ * HOW MANY RECORDS THIS ARCHIVE HOLDS, over the hosts its room serves.
+ *
+ * The tally is kept per host because that is what the population knows, and a
+ * room's scope is what turns those per-host counts into the one number on its
+ * door. The occupancy half needs nothing like this: `occupiedByRoom` is already
+ * keyed by the room, so a shared ward's seats are counted once whoever is in
+ * them.
+ */
+function archivedFor(room: OfficeCivicRoom, tally: OfficeCivicTally): number {
+  if (room.hostScope === "host") {
+    return tally.archivedByHost.get(room.hostId) ?? 0;
+  }
+  let total = 0;
+  for (const count of tally.archivedByHost.values()) total += count;
+  return total;
+}
+
 function civicCounterOf(
   room: OfficeCivicRoom,
   tally: OfficeCivicTally,
 ): string | null {
   if (room.kind === "help-desk") return null;
   if (room.kind === "archive") {
-    return `${tally.archivedByHost.get(room.hostId) ?? 0}`;
+    return `${archivedFor(room, tally)}`;
   }
   // A room a view could not fit any seats into counts nothing rather than
   // saying `0 of 0`, which reads as a fault in the floor plan.

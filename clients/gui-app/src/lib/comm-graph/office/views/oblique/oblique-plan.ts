@@ -1171,6 +1171,9 @@ function buildPlazaCivic(
       seatIds: beds.map((seat) => seat.seatId),
       floorIndex,
       hostId,
+      // ONE PLAZA PER BUILDING. Towers and Building stack a storey per host, so
+      // every room here serves the one whose plaza it stands on.
+      hostScope: "host",
       kerbTile: kerbBelow(road, wardDoor.col),
     },
     {
@@ -1184,6 +1187,7 @@ function buildPlazaCivic(
       seatIds: chairs.map((seat) => seat.seatId),
       floorIndex,
       hostId,
+      hostScope: "host",
       // Nothing drives to the waiting room (C6), so it names no kerb.
       kerbTile: null,
     },
@@ -1208,6 +1212,7 @@ function buildPlazaCivic(
       seatIds: [],
       floorIndex,
       hostId,
+      hostScope: "host",
       kerbTile: kerbBelow(road, deskDoor.col),
     },
     {
@@ -1227,6 +1232,7 @@ function buildPlazaCivic(
       seatIds: [],
       floorIndex,
       hostId,
+      hostScope: "host",
       // Nobody is collected from the archive (C6).
       kerbTile: null,
     },

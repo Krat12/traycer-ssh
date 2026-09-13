@@ -2134,6 +2134,13 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       seatIds: beds.map((seat) => seat.seatId),
       floorIndex: FLOOR_INDEX,
       hostId: null,
+      // ONE HALL FOR EVERY HOST, which is this view's whole shape: a single
+      // storey the entire epic is dispatched from, so its ward is every host's
+      // ward. `hostId: null` here is "no host owns this room", NOT "the
+      // unattributed host's room" - and since `null` is a real host elsewhere,
+      // the scope has to say so rather than be read off that field. All four of
+      // this hall's rooms are the same and say it the same way.
+      hostScope: "every-host",
       // NOTHING DRIVES INTO AN AMPHITHEATRE (C6). The hall plans no road, so
       // there is no tile a kerb could name.
       kerbTile: null,
@@ -2153,6 +2160,7 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       seatIds: chairs.map((seat) => seat.seatId),
       floorIndex: FLOOR_INDEX,
       hostId: null,
+      hostScope: "every-host",
       kerbTile: null,
     },
     {
@@ -2171,6 +2179,7 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       seatIds: [],
       floorIndex: FLOOR_INDEX,
       hostId: null,
+      hostScope: "every-host",
       kerbTile: null,
     },
     {
@@ -2192,6 +2201,10 @@ function buildHallCivic(packing: Packing, agents: number): HallCivic {
       seatIds: [],
       floorIndex: FLOOR_INDEX,
       hostId: null,
+      // THE COUNTER ON THIS DOOR SUMS EVERY HOST. One hall archives for the
+      // whole epic, so `Records - 7` means seven records, not seven of whoever
+      // happens to be unattributed.
+      hostScope: "every-host",
       kerbTile: null,
     },
   ];

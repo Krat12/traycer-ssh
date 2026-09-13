@@ -8092,6 +8092,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
           seatIds: [],
           floorIndex: 0,
           hostId: floor.hostId,
+          hostScope: "host",
           kerbTile: floor.receptionTile,
         };
         return {
