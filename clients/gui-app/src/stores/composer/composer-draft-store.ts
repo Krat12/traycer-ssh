@@ -663,7 +663,7 @@ export function collectComposerDirtyWrites(): ReadonlyArray<{
  * dirty and publishable; submit then retires the id
  * (`fenceAndDetachSubmittedDraft`) and the next caret move mints another. That
  * is one cloud row per idle composer per host, and every one of them showed up
- * on the landing page as "Untitled draft" under Drafts from other devices.
+ * on the landing page as an "Untitled draft" row.
  *
  * The condition is `revision === 0` - no content edit recorded on this chat's
  * composer yet - and deliberately not "has no host row yet". The two differ

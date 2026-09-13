@@ -41,7 +41,11 @@ import type { HistoryItem } from "@/components/home/data/home-page.data";
 import type { HistoryFacets } from "@/hooks/home/use-history-query";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useHistorySearchStore } from "@/stores/home/history-search-store";
-import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import {
+  emptyLandingDraftWorkspaceSnapshot,
+  freshLandingMirrorState,
+  useLandingDraftStore,
+} from "@/stores/home/landing-draft-store";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
 import { harnessDisplayName } from "@/components/session-import/session-import-model";
@@ -265,6 +269,19 @@ vi.mock("@/hooks/epic/use-epic-activity-status", () => ({
       : (testState.activityByEpicId.get(epicId) ?? "idle"),
 }));
 
+const draftClaimTestState = vi.hoisted(() => ({
+  claim: vi.fn(),
+}));
+vi.mock("@/hooks/drafts/use-draft-claim", () => ({
+  useDraftClaim: () => ({
+    mutation: { isPending: false },
+    claim: draftClaimTestState.claim,
+  }),
+}));
+vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
+  applyIncomingDraftDocument: (): Promise<void> => Promise.resolve(),
+}));
+
 function historyItem(overrides: Partial<HistoryItem>): HistoryItem {
   return {
     id: "history-epic-1",
@@ -453,6 +470,7 @@ describe("<EpicsListPanel />", () => {
     testState.refetch.mockReset();
     testState.fetchNextPage.mockReset();
     testState.openLandingDraftFromHistory.mockReset();
+    draftClaimTestState.claim.mockReset();
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     queryClient.clear();
@@ -3384,6 +3402,46 @@ describe("<EpicsListPanel />", () => {
     expect(screen.getByText(/every device/i)).not.toBeNull();
   });
 
+  it("claims a foreign-owned draft before deleting it", async () => {
+    const draftId = seedForeignOwnedLandingDraft("someone else's draft");
+    draftClaimTestState.claim.mockResolvedValue({
+      status: "already-owned",
+      draft: {
+        draftId,
+        kind: "landing",
+        target: { epicId: null, chatId: null, blockId: null },
+        revision: 1,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: "host-test",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-test" },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: { type: "doc", content: [] },
+          selection: null,
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+    });
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+    });
+  });
+
   it("caps the draft block and expands it on request", async () => {
     for (let index = 0; index < 6; index += 1) {
       seedRetainedLandingDraft(`draft ${index}`);
@@ -3414,5 +3472,34 @@ function seedRetainedLandingDraft(text: string): string {
   const id = useLandingDraftStore.getState().createDraft(null);
   useLandingDraftStore.getState().setDraftContent(id, content, null);
   useLandingDraftStore.getState().closeDraft(id);
+  return id;
+}
+
+// A row this panel's host ("host-test") does not own - `origin: "replica"`
+// so `draftRequiresClaim` reports it unowned regardless of ownerHostId.
+function seedForeignOwnedLandingDraft(text: string): string {
+  const id = "foreign-draft";
+  useLandingDraftStore.setState((state) => ({
+    drafts: [
+      ...state.drafts,
+      {
+        id,
+        content: {
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+        },
+        selection: null,
+        lastTouchedAt: Date.now(),
+        settings: null,
+        composerMode: "chat",
+        workspace: emptyLandingDraftWorkspaceSnapshot(),
+        ...freshLandingMirrorState(),
+        ownerHostId: "host-b",
+        origin: "replica",
+        adoption: { state: "adopted", hostId: "host-b" },
+        closed: true,
+      },
+    ],
+  }));
   return id;
 }

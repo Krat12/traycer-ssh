@@ -18,7 +18,6 @@ import {
   blobHashesOfDocument,
 } from "./draft-write-codec";
 import { draftKindIsHostBound } from "./draft-portability";
-import { resetCloudDraftKindsForTests } from "./cloud-draft-kinds";
 
 import { interviewDraftBindingKey } from "./draft-ids";
 import { EMPTY_LANDING_DRAFT_CONTENT } from "@/stores/home/landing-draft-content";
@@ -791,7 +790,6 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   warnedUnboundComposer.clear();
   warnedUnboundInterview.clear();
   resetDraftBlobTransportForTests();
-  resetCloudDraftKindsForTests();
   notifyCloudScopeListeners();
   // Re-bind production listeners. Tests that install their own must not
   // leave `routeLocalDelete` unbound for later files in the same worker.

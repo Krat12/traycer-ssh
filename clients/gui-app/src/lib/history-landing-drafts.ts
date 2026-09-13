@@ -11,30 +11,19 @@ export interface HistoryLandingDraft {
 }
 
 /**
- * Landing drafts this history facet may list: this host's store, not T8's
- * other-host cloud-drafts surface. Replicas and foreign-owned rows stay out.
- *
- * An unresolved host cannot MATCH an owner, so a row stamped with one stays
- * out while `currentHostId` is null. Treating the unresolved case as "mine"
- * hands the facet's open and delete actions a row that may belong to another
- * machine, on the one read where we cannot tell.
+ * Landing drafts this history facet may list: every retained draft with
+ * content, whichever host owns it. Drafts are one account-wide set; a row
+ * another host owns opens like any other and is claimed underneath on the
+ * first edit, and a delete claims before it destroys
+ * (`HistoryDraftsList`). Ownership is never a bucket the user sees.
  */
-export function isHistoryListedLandingDraft(
-  draft: LandingDraftTab,
-  currentHostId: string | null,
-): boolean {
-  if (isEmptyLandingDraftContent(draft.content)) return false;
-  if (draft.origin === "replica") return false;
-  if (draft.ownerHostId !== null && draft.ownerHostId !== currentHostId) {
-    return false;
-  }
-  return true;
+export function isHistoryListedLandingDraft(draft: LandingDraftTab): boolean {
+  return !isEmptyLandingDraftContent(draft.content);
 }
 
 export function listHistoryLandingDrafts(input: {
   readonly drafts: ReadonlyArray<LandingDraftTab>;
   readonly query: string;
-  readonly currentHostId: string | null;
   /**
    * The draft the composer above this list is editing right now. Listing it
    * would show the user the prompt they are typing as a row directly under
@@ -46,7 +35,7 @@ export function listHistoryLandingDrafts(input: {
   const needle = input.query.trim().toLowerCase();
   return input.drafts
     .filter((draft) => draft.id !== input.excludeDraftId)
-    .filter((draft) => isHistoryListedLandingDraft(draft, input.currentHostId))
+    .filter(isHistoryListedLandingDraft)
     .map((draft) => ({
       id: draft.id,
       title: landingDraftDisplayTitle(draft.content),

@@ -1693,7 +1693,23 @@ export function applyLandingHostDocument(
     existing !== undefined &&
     existing.generation > existing.syncedGeneration
   ) {
-    adoptLandingDraft(document.draftId, document.adoption.hostId);
+    // The host is authoritative on ownership even when the local edit wins
+    // on content: a claim that lands over an edit in flight moves the row to
+    // this host here, so the composer stops reading it as unowned and the
+    // kept edit publishes from this host on the next flush.
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === document.draftId
+          ? {
+              ...draft,
+              adoption: { state: "adopted", hostId: document.adoption.hostId },
+              ownerHostId: document.ownerHostId,
+              origin: document.origin,
+              publication: document.publication,
+            }
+          : draft,
+      ),
+    }));
     landingDraftRememberSynced(
       document.draftId,
       document.revision,

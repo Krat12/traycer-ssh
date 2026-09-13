@@ -39,8 +39,8 @@ export interface DraftClaimControl {
   /** The full mutation - pending state, error, reset. */
   readonly mutation: DraftClaimMutationResult;
   /**
-   * The claim as the authority banner needs it: every outcome typed, so a
-   * refusal reaches the inline surface instead of a rejected promise.
+   * The claim as the silent-takeover callers need it: every outcome typed,
+   * so a refusal reaches the inline notice instead of a rejected promise.
    */
   readonly claim: (draftId: string) => Promise<DraftClaimResult>;
 }
@@ -49,8 +49,9 @@ export interface DraftClaimControl {
  * First-edit claim through the tab's connected host. `unsupported-version`
  * is a typed unavailable reason, not a generic failure.
  *
- * No `onError` toast: the caller renders the refusal inline in
- * `DraftAuthorityBanner`, which is the one sanctioned reason to omit one.
+ * No `onError` toast: the claim is silent under the user's first edit, and a
+ * refusal renders inline (`DraftClaimNotice`, the History delete dialog),
+ * which is the one sanctioned reason to omit one.
  */
 export function useDraftClaim(
   client: HostClient<HostRpcRegistry> | null,
@@ -84,9 +85,10 @@ export function useDraftClaim(
 }
 
 /**
- * The one line the banner shows for an outcome that is not a takeover.
- * Every branch answers: the user pressed "Edit here" and the replica stayed
- * read-only, so a silent `null` reads as a dead button.
+ * The one line the claim notice shows for an outcome that is not a takeover.
+ * Every refusal answers: the silent claim under the user's edit failed, and
+ * their edits are staying on this device until it succeeds, so a `null` here
+ * would hide that. Never names a host.
  */
 export function draftClaimUserMessage(result: DraftClaimResult): string | null {
   switch (result.status) {
@@ -94,21 +96,21 @@ export function draftClaimUserMessage(result: DraftClaimResult): string | null {
     case "already-owned":
       return null;
     case "unsupported":
-      return "This host is too old to take over a draft. Update it and try again.";
+      return "Edits stay on this device until Traycer is updated here.";
     case "failed":
-      return "Could not take over this draft. Try again.";
+      return "Edits stay on this device for now. Could not sync this draft.";
     case "unavailable":
       switch (result.reason) {
         case "unsupported-version":
-          return "This draft needs a newer Traycer to open.";
+          return "This draft needs a newer Traycer to sync.";
         case "plan-ineligible":
-          return "Taking over a draft from another device needs a paid plan.";
+          return "Syncing this draft needs a paid plan. Edits stay on this device.";
         case "not-found":
-          return "This draft is no longer available.";
+          return "This draft was deleted elsewhere. Edits stay on this device.";
         case "not-published":
-          return "This draft has not been backed up yet.";
+          return "This draft has not been backed up yet. Edits stay on this device.";
         case "publication-not-ready":
-          return "Backup is not ready on this host yet.";
+          return "Backup is still starting. Edits stay on this device for now.";
       }
   }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type {
   ChatActiveTurn,
@@ -93,11 +93,17 @@ interface UseChatComposerSubmitArgs {
   readonly attachmentPreparationPending: boolean;
   /**
    * True while this chat's draft is a replica of another host's row that has
-   * not been claimed. The editor is disabled, but the toolbar's send button
-   * and the deferred steer confirm both reach this hook without passing the
-   * editor, so the block belongs in `submitBlocked` beside the others.
+   * not been claimed. The editor stays live (the first edit claims), but a
+   * send needs this host to own the row first, so `submitDraft` claims
+   * through `ensureDraftOwned` and re-enters once ownership lands.
    */
-  readonly draftReadOnly: boolean;
+  readonly draftUnowned: boolean;
+  /**
+   * Claims an unowned draft for this host before the send; resolves `false`
+   * on a refusal, which the authority notice narrates inline. The send
+   * itself is untouched: it re-enters `submitDraft` once ownership lands.
+   */
+  readonly ensureDraftOwned: () => Promise<boolean>;
   readonly onSubmitMessage:
     | ((input: ChatComposerSubmitInput) => boolean)
     | null;
@@ -173,7 +179,8 @@ export function useChatComposerSubmit(
     workspaceBlocked,
     imagesUnsupported,
     attachmentPreparationPending,
-    draftReadOnly,
+    draftUnowned,
+    ensureDraftOwned,
     onSubmitMessage,
     onSideChat,
   } = args;
@@ -227,12 +234,10 @@ export function useChatComposerSubmit(
       sendDisabled === true ||
       workspaceBlocked ||
       imagesUnsupported ||
-      attachmentPreparationPending ||
-      draftReadOnly,
+      attachmentPreparationPending,
     [
       activeTurnStatus,
       attachmentPreparationPending,
-      draftReadOnly,
       hasPendingApprovals,
       imagesUnsupported,
       sendDisabled,
@@ -240,9 +245,21 @@ export function useChatComposerSubmit(
     ],
   );
 
+  // The latest send, for the claim continuation below: the claim resolves
+  // after a re-render in which `draftUnowned` flipped, and re-entering the
+  // stale closure would claim again forever.
+  const submitDraftRef = useRef<(source: ChatComposerSubmitSource) => void>(
+    () => undefined,
+  );
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
+      if (draftUnowned) {
+        void ensureDraftOwned().then((owned) => {
+          if (owned) submitDraftRef.current(source);
+        });
+        return;
+      }
       const toolbar = toolbarStore.getState();
       if (toolbar.selection.modelSlug.length === 0) return;
       const editor = editorRef.current;
@@ -399,7 +416,9 @@ export function useChatComposerSubmit(
     [
       activeTurnStatus,
       clearAcceptedDraft,
+      draftUnowned,
       editorRef,
+      ensureDraftOwned,
       finalizeSend,
       onSideChat,
       pickerStore,
@@ -412,6 +431,9 @@ export function useChatComposerSubmit(
       toolbarStore,
     ],
   );
+  useEffect(() => {
+    submitDraftRef.current = submitDraft;
+  }, [submitDraft]);
 
   const onRestart = useCallback((): void => {
     if (pendingConflict === null) return;

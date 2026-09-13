@@ -15,10 +15,7 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import { ingestCloudDraftSummary } from "@/lib/drafts/draft-mirror-coordinator";
-import {
-  cloudDraftIdentityKey,
-  recordCloudDraftKind,
-} from "@/lib/drafts/cloud-draft-kinds";
+import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
@@ -71,16 +68,16 @@ export function useCloudDraftsIngest(
       (chat) => chat.ownerHostId !== hostId,
     );
     for (const summary of foreign) {
-      // Built from the SAME key the kinds registry and the listing use, plus
-      // the head. Both halves are load-bearing. `headSha256` is there because
-      // the identity alone is stable across publishes, so a newer head for the
-      // same draft used to hit this guard and be skipped, leaving the replica
-      // stale. `ownerHostId` is there because `claimAuthority` rebinds a row's
-      // owner while PRESERVING its head (it updates only `owner_host_id` and
+      // The owner-led identity key plus the head. Both halves are
+      // load-bearing. `headSha256` is there because the identity alone is
+      // stable across publishes, so a newer head for the same draft used to
+      // hit this guard and be skipped, leaving the replica stale.
+      // `ownerHostId` is there because `claimAuthority` rebinds a row's owner
+      // while PRESERVING its head (it updates only `owner_host_id` and
       // `owner_epoch`), so after a claim the same head arrives under a new
-      // owner: a guard that ignored the owner would skip it, never record the
-      // new owner's kind, and - since the listing keys by owner - hide the row
-      // until that host republished or this hook remounted.
+      // owner: a guard that ignored the owner would skip it and the local
+      // mirror would keep the stale owner until that host republished or this
+      // hook remounted.
       const key = `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
       if (ingestedKeys.has(key)) continue;
       ingestedKeys.add(key);
@@ -132,10 +129,6 @@ export function useCloudDraftsIngest(
           return;
         }
         const document = draftDocumentFromCloudHead(summary, outcome.record);
-        // The head is the only place a row's surface kind is written, and this
-        // is the only read of it - record before the ingest decides, so a
-        // host-bound row the ingest declines is still known to the listing.
-        recordCloudDraftKind(summary, document.kind);
         settle();
         await ingestCloudDraftSummary({ hostId, summary, document });
       };

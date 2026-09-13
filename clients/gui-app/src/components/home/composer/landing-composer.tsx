@@ -105,7 +105,7 @@ import { useComposerHostNotice } from "@/hooks/composer/use-composer-host-notice
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { usePromptStash } from "@/hooks/composer/use-prompt-stash";
 import { PromptStashControl } from "@/components/chat/composer/prompt-stash-control";
-import { DraftAuthorityBanner } from "@/components/drafts/draft-authority-banner";
+import { DraftClaimNotice } from "@/components/drafts/draft-claim-notice";
 import { useDraftAuthorityControl } from "@/hooks/drafts/use-draft-authority";
 import {
   landingStashIdentity,
@@ -154,16 +154,13 @@ function landingComposerCanSubmit(args: {
   readonly submitBlocked: boolean;
   readonly workspaceCanStart: boolean;
   readonly hasSubmittableContent: boolean;
-  /** Another host owns this draft (replica view); claim before submitting. */
-  readonly readOnly: boolean;
 }): boolean {
   return (
     !args.isSubmitting &&
     !args.attachmentPending &&
     !args.submitBlocked &&
     args.workspaceCanStart &&
-    args.hasSubmittableContent &&
-    !args.readOnly
+    args.hasSubmittableContent
   );
 }
 
@@ -251,11 +248,11 @@ export function LandingComposer(props: LandingComposerProps) {
   const setDraftSettings = useLandingDraftStore(
     (state) => state.setDraftSettings,
   );
-  // Hoisted above the toolbar wiring so the settings handler can consult it:
+  // Hoisted above the toolbar wiring so the settings handler can reach it:
   // every control that mutates the persisted draft - the editor, the mode
-  // switcher, the workspace controls, the run-settings toolbar, the
-  // attachment strip - is held while another host owns the draft. A
-  // foreign-owned draft must not change under its owner before a claim.
+  // switcher, the run-settings toolbar - notes its edit, and the first edit
+  // of a draft another host owns claims it for this host underneath. Nothing
+  // is held; the user never meets the ownership mechanism.
   const landingOwnerHostId = useLandingDraftStore((state) => {
     if (draftId === null) return null;
     return (
@@ -282,19 +279,13 @@ export function LandingComposer(props: LandingComposerProps) {
   });
   const handleToolbarSettingsChange = useCallback(
     (settings: ChatRunSettings) => {
-      if (authority.readOnly) return;
+      authority.noteEdit();
       setGlobalRunSettings(activeHostId, settings, Date.now());
       if (draftId !== null) {
         setDraftSettings(draftId, settings);
       }
     },
-    [
-      activeHostId,
-      authority.readOnly,
-      draftId,
-      setDraftSettings,
-      setGlobalRunSettings,
-    ],
+    [activeHostId, authority, draftId, setDraftSettings, setGlobalRunSettings],
   );
   const settingsSeed = useMemo(
     () =>
@@ -355,7 +346,7 @@ export function LandingComposer(props: LandingComposerProps) {
   // they could not give.
   const actions = useLandingComposerActions(submitTarget);
   const isSubmitting = runtimeState.isSubmitting || actions.isPending;
-  const mutationsDisabled = isSubmitting || authority.readOnly;
+  const mutationsDisabled = isSubmitting;
 
   const hasSubmittableContent = contentIsSubmittable(runtimeState.content);
   const draftWorkspace = useLandingDraftStore((state) => {
@@ -668,7 +659,6 @@ export function LandingComposer(props: LandingComposerProps) {
     submitBlocked,
     workspaceCanStart,
     hasSubmittableContent,
-    readOnly: authority.readOnly,
   });
 
   // Submit-time refusal copy (selection model §54). The G4 re-point used to
@@ -789,6 +779,7 @@ export function LandingComposer(props: LandingComposerProps) {
 
   const handleDocumentChange = useCallback(
     (content: JsonContent, selection: { from: number; to: number }) => {
+      authority.noteEdit();
       if (runtime !== null) {
         runtime.setSnapshot(content, selection);
         return;
@@ -804,7 +795,7 @@ export function LandingComposer(props: LandingComposerProps) {
         .getState()
         .setDraftContent(ensureBoundDraftId(), content, selection);
     },
-    [ensureBoundDraftId, runtime, unboundRuntime],
+    [authority, ensureBoundDraftId, runtime, unboundRuntime],
   );
 
   const handleSelectionChange = useCallback(
@@ -823,8 +814,21 @@ export function LandingComposer(props: LandingComposerProps) {
     [runtime, unboundRuntime],
   );
 
+  // A submit needs this host to own the draft (submit is "delete the draft
+  // here, create the chat"). An unowned draft claims first and the send
+  // re-enters through the ref, which reads the callback the claim's
+  // re-render produced - the closure that started the claim still believes
+  // the draft is unowned and would claim forever. A refusal creates nothing;
+  // the claim notice above the composer says why.
+  const handleSubmitRef = useRef<() => void>(() => undefined);
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
+    if (authority.unowned) {
+      void authority.ensureOwned().then((owned) => {
+        if (owned) handleSubmitRef.current();
+      });
+      return;
+    }
     const toolbar = toolbarStore.getState();
     if (toolbar.selection.modelSlug.length === 0) return;
     const refusal = actions.submit({
@@ -849,16 +853,34 @@ export function LandingComposer(props: LandingComposerProps) {
     raiseHostNotice(
       refusal === null ? null : { kind: "refused", message: refusal.message },
     );
-  }, [actions, canSubmit, draftId, pickerStore, raiseHostNotice, toolbarStore]);
+  }, [
+    actions,
+    authority,
+    canSubmit,
+    draftId,
+    pickerStore,
+    raiseHostNotice,
+    toolbarStore,
+  ]);
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
 
+  const handleStartTerminalRef = useRef<(launch: TerminalAgentLaunch) => void>(
+    () => undefined,
+  );
   const handleStartTerminal = useCallback(
     (launch: TerminalAgentLaunch) => {
       if (!workspaceCanStart || isSubmitting) return;
-      // Terminal mode bypasses `canSubmit` entirely, so the authority gate
-      // has to be restated here: a replica must not create an agent before
-      // the claim lands, and `ComposerBody` disabling Start is only the
-      // affordance half of that.
-      if (authority.readOnly) return;
+      // Terminal mode bypasses `canSubmit` entirely, so the claim has to be
+      // restated here: an agent is created off the draft, and that needs
+      // this host to own it. Same re-entry through a ref as `handleSubmit`.
+      if (authority.unowned) {
+        void authority.ensureOwned().then((owned) => {
+          if (owned) handleStartTerminalRef.current(launch);
+        });
+        return;
+      }
       const refusal = actions.selectTerminalAgent(launch, draftId);
       raiseHostNotice(
         refusal === null ? null : { kind: "refused", message: refusal.message },
@@ -866,13 +888,16 @@ export function LandingComposer(props: LandingComposerProps) {
     },
     [
       actions,
-      authority.readOnly,
+      authority,
       draftId,
       isSubmitting,
       raiseHostNotice,
       workspaceCanStart,
     ],
   );
+  useEffect(() => {
+    handleStartTerminalRef.current = handleStartTerminal;
+  }, [handleStartTerminal]);
 
   const handleRemoveImage = useCallback(
     (id: string) => {
@@ -891,6 +916,7 @@ export function LandingComposer(props: LandingComposerProps) {
       composerMode={composerMode}
       disabled={mutationsDisabled}
       onSwitch={() => {
+        authority.noteEdit();
         const next = nextComposerMode(composerMode);
         setGlobalComposerMode(next);
         if (draftId !== null) {
@@ -912,24 +938,18 @@ export function LandingComposer(props: LandingComposerProps) {
       initialSelection={initialSelection}
       canSubmit={canSubmit}
       isSubmitting={isSubmitting}
-      editorReadOnly={authority.readOnly}
+      editorReadOnly={false}
       attachmentPending={attachmentPending}
       workspaceDisabledHint={submitBlockedHint}
       header={<div className="flex justify-start">{switcher}</div>}
       toolbarLayout={isMobile ? "collapsed" : "full"}
       topBanner={
         <>
-          {authority.readOnly ? (
-            <DraftAuthorityBanner
-              ownerLabel={authority.ownerLabel}
-              claiming={authority.claiming}
-              claimError={authority.claimError}
-              publicationLabel={authority.publicationLabel}
-              onClaim={() => {
-                void authority.claim();
-              }}
-            />
-          ) : null}
+          <DraftClaimNotice
+            message={authority.claimError}
+            claiming={authority.claiming}
+            onRetry={authority.retry}
+          />
           <ComposerHostNotice
             notice={hostNotice}
             onDismiss={dismissHostNotice}
