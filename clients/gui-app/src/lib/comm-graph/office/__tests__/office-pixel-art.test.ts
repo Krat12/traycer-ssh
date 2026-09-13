@@ -229,6 +229,78 @@ function surfaceRaster(
   return raster;
 }
 
+function rasterFromImageData(
+  captured: RasterizedSprite[],
+  dimensions: { value: { width: number; height: number } | null },
+  image: { readonly data: Uint8ClampedArray },
+): void {
+  const size = dimensions.value;
+  if (size === null) throw new Error("missing raster dimensions");
+  captured.push({
+    width: size.width,
+    height: size.height,
+    pixels: image.data,
+  });
+}
+
+function warmDrawPair(
+  name: OfficeSpriteName,
+  firstFacing: "left" | "right",
+): Readonly<{
+  readonly drawn: ReadonlyArray<unknown>;
+  readonly rasters: ReadonlyArray<RasterizedSprite>;
+}> {
+  clearOfficeSpriteCache();
+  const drawn: unknown[] = [];
+  const rasters: RasterizedSprite[] = [];
+  const dimensions: { value: { width: number; height: number } | null } = {
+    value: null,
+  };
+  const restore = stubGetContext(() => ({
+    drawImage: (surface: unknown) => drawn.push(surface),
+    createImageData: (width: number, height: number) => {
+      dimensions.value = { width, height };
+      return { data: new Uint8ClampedArray(width * height * 4) };
+    },
+    putImageData: (image: { readonly data: Uint8ClampedArray }) =>
+      rasterFromImageData(rasters, dimensions, image),
+  }));
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx === null) throw new Error("missing drawing context");
+    drawOfficeSprite(
+      ctx,
+      { name, facing: firstFacing },
+      { x: 0, y: 0 },
+      "light",
+    );
+    drawOfficeSprite(
+      ctx,
+      { name, facing: firstFacing === "left" ? "right" : "left" },
+      { x: 0, y: 0 },
+      "light",
+    );
+  } finally {
+    restore();
+  }
+  return { drawn, rasters };
+}
+
+const VEHICLE_SPRITE_NAMES: ReadonlyArray<OfficeSpriteName> = [
+  "ambulance",
+  "ambulance-b",
+  "ambulance-iso",
+  "ambulance-iso-b",
+  "police-car",
+  "police-car-b",
+  "police-car-iso",
+  "police-car-iso-b",
+  "fire-engine",
+  "fire-engine-b",
+  "fire-engine-iso",
+  "fire-engine-iso-b",
+];
+
 afterEach(() => {
   clearOfficeSpriteCache();
 });
@@ -407,6 +479,74 @@ describe("sprite maps", () => {
         );
       }
     }
+  });
+
+  it.each(VEHICLE_SPRITE_NAMES)(
+    "keeps both warm-cache facing orders distinct and correct for %s",
+    (name) => {
+      for (const firstFacing of ["right", "left"] as const) {
+        const pair = warmDrawPair(name, firstFacing);
+        expect(
+          pair.rasters,
+          `${name}/${firstFacing} raster count`,
+        ).toHaveLength(2);
+        expect(pair.drawn, `${name}/${firstFacing} draw count`).toHaveLength(2);
+        expect(pair.drawn[0], `${name}/${firstFacing} cache identity`).not.toBe(
+          pair.drawn[1],
+        );
+        const secondFacing = firstFacing === "left" ? "right" : "left";
+        expect(pair.rasters[0].pixels).toEqual(
+          rasterizeSpriteMap(
+            mapNamed(name),
+            officeSpriteColors({ name, facing: firstFacing }, "light"),
+            firstFacing === "left",
+          ).pixels,
+        );
+        expect(pair.rasters[1].pixels).toEqual(
+          rasterizeSpriteMap(
+            mapNamed(name),
+            officeSpriteColors({ name, facing: secondFacing }, "light"),
+            secondFacing === "left",
+          ).pixels,
+        );
+      }
+    },
+  );
+
+  it("GUARD: keeps a desk's stray left facing out of its cache key", () => {
+    clearOfficeSpriteCache();
+    const drawn: RasterizedSprite[] = [];
+    const dimensions: { value: { width: number; height: number } | null } = {
+      value: null,
+    };
+    const restore = stubGetContext(() => ({
+      createImageData: (width: number, height: number) => {
+        dimensions.value = { width, height };
+        return { data: new Uint8ClampedArray(width * height * 4) };
+      },
+      putImageData: (image: { readonly data: Uint8ClampedArray }) =>
+        rasterFromImageData(drawn, dimensions, image),
+    }));
+    try {
+      const first = officeSpriteSurface({ name: "desk" }, "light");
+      const sizeBeforeStrayFacing = officeSpriteCacheSize();
+      const left = officeSpriteSurface(
+        { name: "desk", facing: "left" },
+        "light",
+      );
+      expect(left).toBe(first);
+      expect(officeSpriteCacheSize()).toBe(sizeBeforeStrayFacing);
+    } finally {
+      restore();
+    }
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0].pixels).toEqual(
+      rasterizeSpriteMap(
+        mapNamed("desk"),
+        officeSpriteColors({ name: "desk" }, "light"),
+        false,
+      ).pixels,
+    );
   });
 
   it("declares the sizes the scene positions the new fixtures by", () => {
