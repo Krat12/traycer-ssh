@@ -585,6 +585,120 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
     expect(worst).toBeGreaterThan(0);
   });
 
+  it("holds the same frame budget with two vehicles on the road", () => {
+    // RULE 8, UNCHANGED. A vehicle is one drawable and no hit region, so two of
+    // them have to disappear into a budget written before they existed. The
+    // interesting half is that this is MEASURED rather than argued: the slack
+    // term reads "what a frame may cost with no seats in it at all", and two
+    // vehicles would push a strictly seatless worst case from 24 to 26. It
+    // never gets there, because a vehicle is dispatched on its KERB being in
+    // the rect and a kerb is on the lobby row with the storey's rooms directly
+    // above it - a frame holding a vehicle holds seats.
+    //
+    // TWO HOSTS, because coalescing is per room and per kind: one help desk can
+    // only ever have one police car standing at it, so a second vehicle needs a
+    // second floor with a second help desk. Same thousand agents either way.
+    const epic = makeTestEpic("two-hosts", SCALE, 1);
+    const scene = new OfficeScene(view, null);
+    const idle = new Map<string, OfficeAgentStatus>();
+    // `reducedMotion: false`, because `sceneInputFor` turns it ON - every other
+    // budget here wants motion suppressed, and a vehicle is the first thing in
+    // this file that the suppression would silence outright. Without this the
+    // case measures a road nothing ever drove on, which is what the
+    // anti-vacuity assertion at the end exists to catch.
+    const live = (
+      statusById: ReadonlyMap<string, OfficeAgentStatus>,
+    ): OfficeSceneInput => ({
+      ...sceneInputFor({ agents: epic.agents, statusById }),
+      reducedMotion: false,
+    });
+    scene.sync(live(idle));
+    const layout = layoutOf(scene);
+    const projector = view.painter.projector(layout);
+    const world = scene.worldSize();
+    // The whole world as the rect, so every kerb is inside it at dispatch.
+    scene.frame(1, { x: 0, y: 0, width: world.width, height: world.height });
+    // One agent per host entering `attention`, which is the police car's
+    // trigger. A FRESH map, never a mutation of `idle`: the scene diffs against
+    // the previous sync's map by reference.
+    const perHost = new Map<string, string>();
+    for (const agent of epic.agents) {
+      if (agent.hostId === null) continue;
+      if (perHost.has(agent.hostId)) continue;
+      perHost.set(agent.hostId, agent.id);
+    }
+    const flagged = new Map<string, OfficeAgentStatus>(idle);
+    for (const agentId of perHost.values()) flagged.set(agentId, "attention");
+    scene.sync(live(flagged));
+
+    // WHERE THE KERBS ARE, derived rather than swept for. `viewRectsOver` puts
+    // five distinct rows across a sixteen-thousand-pixel world, and a lobby row
+    // is one tile tall - so a sweep meets a vehicle only by luck, and a case
+    // that depends on luck is a case that passes for the wrong reason.
+    const kerbs: OfficeRect[] = [];
+    for (const floor of layout.floors) {
+      if (floor.road === null) continue;
+      for (const room of floor.civic) {
+        if (room.kerbTile === null) continue;
+        const at = projector.project(room.kerbTile.col, room.kerbTile.row);
+        kerbs.push({
+          x: Math.max(0, at.x - VIEWPORT.width / 2),
+          y: Math.max(0, at.y - VIEWPORT.height / 2),
+          width: VIEWPORT.width,
+          height: VIEWPORT.height,
+        });
+      }
+    }
+
+    let worst = 0;
+    let seenVehicles = 0;
+    const measure = (rect: OfficeRect): number => {
+      const seats = paintedSeatsIn({ layout, projector, rect });
+      const frame = scene.frame(1, rect);
+      const body =
+        frame.props.length +
+        frame.actors.length +
+        (frame.world === null ? 0 : frame.world.length) +
+        frame.overlay.length;
+      expect(body).toBeLessThanOrEqual(
+        FRAME_DRAWABLES_PER_SEAT * seats + FRAME_DRAWABLE_SLACK,
+      );
+      worst = Math.max(worst, body);
+      return frame.world === null
+        ? frame.actors.filter((drawable) => drawable.kind === "vehicle").length
+        : frame.world.filter((entry) => entry.drawable.kind === "vehicle")
+            .length;
+    };
+
+    // The sweep, for the general bound, and then the kerbs over a drive long
+    // enough to cover the arrival at twice walking pace. The bound is derived
+    // from the LONGEST ROAD rather than guessed: a thousand-agent storey is
+    // some 166 tiles across, which at six tiles a second is most of half a
+    // minute before the kerb is reached at all.
+    for (const rect of viewRectsOver(world)) measure(rect);
+    const longest = layout.floors.reduce(
+      (far, floor) =>
+        Math.max(far, floor.road === null ? 0 : floor.road.tiles.length),
+      0,
+    );
+    const steps = Math.ceil((longest / 6) * 10) + 60;
+    for (let step = 0; step < steps; step += 1) {
+      for (const rect of kerbs) seenVehicles += measure(rect);
+      if (seenVehicles > 0 && step > 0) break;
+      scene.tick(100);
+    }
+
+    // ANTI-VACUITY, and the whole point of the case: a budget that holds
+    // because no vehicle was ever on the road proves nothing about vehicles.
+    // Driven by the DATA - a view whose floors carry no road cannot dispatch,
+    // and at this base only one does. The cross-view guard is outside the
+    // `describe.each`, where a run that dispatched nowhere at all is caught.
+    const drives = layout.floors.some((floor) => floor.road !== null);
+    if (drives) expect(seenVehicles).toBeGreaterThan(0);
+    else expect(seenVehicles).toBe(0);
+    expect(worst).toBeGreaterThan(0);
+  });
+
   it("counts exactly the seats the painter emitted this frame, not merely bounds them", () => {
     // THE DENOMINATOR ITSELF, not another ceiling on it. The case above only
     // ever uses `paintedSeatsIn` as the multiplier in an upper bound, so a
