@@ -315,6 +315,48 @@ describe("settings search", () => {
       setMobileApp(true);
       expect(labelsFor("onboarding", MOBILE)).not.toContain("Onboarding");
     });
+
+    it("finds every lesson on desktop and none in the installed mobile app", () => {
+      const lessons: ReadonlyArray<{
+        readonly query: string;
+        readonly label: string;
+        readonly id: string;
+      }> = [
+        { query: "split screen", label: "Split screen", id: "split-screen" },
+        {
+          query: "task tabs",
+          label: "Task tabs & navigation",
+          id: "task-tabs",
+        },
+        {
+          query: "agent selection guide",
+          label: "Agent selection guide",
+          id: "agent-guide",
+        },
+        {
+          query: "browser login import",
+          label: "Browser login import",
+          id: "login-import",
+        },
+        {
+          query: "add a workspace folder",
+          label: "Add a workspace folder",
+          id: "add-folder",
+        },
+      ];
+
+      for (const { query, label, id } of lessons) {
+        expect(labelsFor(query, DESKTOP), query).toContain(label);
+        expect(landingsFor(query, DESKTOP), query).toContain(
+          `onboarding#onboarding-lesson-${id}`,
+        );
+      }
+
+      setMobileApp(true);
+      for (const { query, label } of lessons) {
+        expect(labelsFor(query, MOBILE), query).not.toContain(label);
+      }
+    });
   });
 
   describe("availability", () => {
