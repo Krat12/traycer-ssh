@@ -1,7 +1,6 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionImportProgressToastBridge } from "@/components/layout/bridges/session-import-progress-toast-bridge";
-import { useOnboardingTourOpenStore } from "@/stores/onboarding/onboarding-tour-open-store";
 import { useSessionImportRunStore } from "@/stores/session-import/session-import-run-store";
 
 const progressToastMock = vi.hoisted(() => vi.fn());
@@ -56,13 +55,11 @@ beforeEach(() => {
   toastMessageMock.mockClear();
   toastDismissMock.mockClear();
   useSessionImportRunStore.setState({ runs: new Map() });
-  useOnboardingTourOpenStore.getState().setOpen(false);
 });
 
 afterEach(() => {
   cleanup();
   useSessionImportRunStore.setState({ runs: new Map() });
-  useOnboardingTourOpenStore.getState().setOpen(false);
 });
 
 describe("<SessionImportProgressToastBridge />", () => {
@@ -96,24 +93,6 @@ describe("<SessionImportProgressToastBridge />", () => {
     });
     expect(progressToastMock).toHaveBeenCalledWith(
       "Starting import…",
-      expect.anything(),
-    );
-  });
-
-  it("holds every toast while the tour is on screen, then shows it on landing", () => {
-    act(() => {
-      useOnboardingTourOpenStore.getState().setOpen(true);
-    });
-    render(<SessionImportProgressToastBridge />);
-
-    startRun({ total: 5 });
-    expect(progressToastMock).not.toHaveBeenCalled();
-
-    act(() => {
-      useOnboardingTourOpenStore.getState().setOpen(false);
-    });
-    expect(progressToastMock).toHaveBeenCalledWith(
-      "Importing 0 of 5…",
       expect.anything(),
     );
   });

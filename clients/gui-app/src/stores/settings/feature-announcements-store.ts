@@ -6,10 +6,9 @@ import { basePersistOptions, persistKey, STORE_KEYS } from "@/lib/persist";
  * Features this install has been told about, once each.
  *
  * Keyed by FEATURE, not by app version: the surface that announces a feature
- * is the first one to show it - a toast for a user who has already finished
- * onboarding, the tour act for one who has not - and either consumes the id,
- * so exactly one of them ever appears per install and skipping the tour act
- * does not resurrect the toast. A version-keyed "what's new" would need a
+ * is the first one to show it - a toast, or the surface that shows the
+ * feature itself - and either consumes the id, so exactly one of them ever
+ * appears per install. A version-keyed "what's new" would need a
  * version compare against `snapshot.currentVersion`, which is empty without a
  * desktop bridge; a feature id needs nothing. A future announcement is one
  * more member of the union.

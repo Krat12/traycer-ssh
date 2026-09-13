@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from "./routes/__root";
 import { Route as IndexRouteImport } from "./routes/index";
 import { Route as EpicsRouteImport } from "./routes/epics";
 import { Route as HomeRouteImport } from "./routes/home";
-import { Route as OnboardingRouteImport } from "./routes/onboarding";
 import { Route as SettingsRouteImport } from "./routes/settings";
 import { Route as DraftDraftIdRouteImport } from "./routes/draft.$draftId";
 import { Route as DraftNewRouteImport } from "./routes/draft.new";
@@ -53,11 +52,6 @@ const EpicsRoute = EpicsRouteImport.update({
 const HomeRoute = HomeRouteImport.update({
   id: "/home",
   path: "/home",
-  getParentRoute: () => rootRouteImport,
-} as any);
-const OnboardingRoute = OnboardingRouteImport.update({
-  id: "/onboarding",
-  path: "/onboarding",
   getParentRoute: () => rootRouteImport,
 } as any);
 const SettingsRoute = SettingsRouteImport.update({
@@ -196,7 +190,6 @@ export interface FileRoutesByFullPath {
   "/": typeof IndexRoute;
   "/epics": typeof EpicsRouteWithChildren;
   "/home": typeof HomeRoute;
-  "/onboarding": typeof OnboardingRoute;
   "/settings": typeof SettingsRouteWithChildren;
   "/draft/$draftId": typeof DraftDraftIdRoute;
   "/draft/new": typeof DraftNewRoute;
@@ -227,7 +220,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof IndexRoute;
   "/home": typeof HomeRoute;
-  "/onboarding": typeof OnboardingRoute;
   "/draft/$draftId": typeof DraftDraftIdRoute;
   "/draft/new": typeof DraftNewRoute;
   "/settings/agents": typeof SettingsAgentsRoute;
@@ -259,7 +251,6 @@ export interface FileRoutesById {
   "/": typeof IndexRoute;
   "/epics": typeof EpicsRouteWithChildren;
   "/home": typeof HomeRoute;
-  "/onboarding": typeof OnboardingRoute;
   "/settings": typeof SettingsRouteWithChildren;
   "/draft/$draftId": typeof DraftDraftIdRoute;
   "/draft/new": typeof DraftNewRoute;
@@ -293,7 +284,6 @@ export interface FileRouteTypes {
     | "/"
     | "/epics"
     | "/home"
-    | "/onboarding"
     | "/settings"
     | "/draft/$draftId"
     | "/draft/new"
@@ -324,7 +314,6 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/home"
-    | "/onboarding"
     | "/draft/$draftId"
     | "/draft/new"
     | "/settings/agents"
@@ -355,7 +344,6 @@ export interface FileRouteTypes {
     | "/"
     | "/epics"
     | "/home"
-    | "/onboarding"
     | "/settings"
     | "/draft/$draftId"
     | "/draft/new"
@@ -388,7 +376,6 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute;
   EpicsRoute: typeof EpicsRouteWithChildren;
   HomeRoute: typeof HomeRoute;
-  OnboardingRoute: typeof OnboardingRoute;
   SettingsRoute: typeof SettingsRouteWithChildren;
   DraftDraftIdRoute: typeof DraftDraftIdRoute;
   DraftNewRoute: typeof DraftNewRoute;
@@ -415,13 +402,6 @@ declare module "@tanstack/react-router" {
       path: "/home";
       fullPath: "/home";
       preLoaderRoute: typeof HomeRouteImport;
-      parentRoute: typeof rootRouteImport;
-    };
-    "/onboarding": {
-      id: "/onboarding";
-      path: "/onboarding";
-      fullPath: "/onboarding";
-      preLoaderRoute: typeof OnboardingRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/settings": {
@@ -677,7 +657,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   EpicsRoute: EpicsRouteWithChildren,
   HomeRoute: HomeRoute,
-  OnboardingRoute: OnboardingRoute,
   SettingsRoute: SettingsRouteWithChildren,
   DraftDraftIdRoute: DraftDraftIdRoute,
   DraftNewRoute: DraftNewRoute,

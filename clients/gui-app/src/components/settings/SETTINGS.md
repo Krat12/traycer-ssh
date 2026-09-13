@@ -976,10 +976,9 @@ means the drain UI renders NOTHING - never a zero, which would offer to end
       pane; "quit the browser fully" for a locked database); nothing retries
       on its own, because a retry after a denied Keychain prompt is a second
       prompt. The steps themselves are the headless `ImportLoginsFlow`
-      (`import-logins-flow.tsx`), which the dialog wraps and the tour's
-      login-import act renders on its stage; the surface supplies the
-      FRAME (header / title / description / footer) because the dialog's
-      are Radix parts that throw outside a `Dialog`. The dialog reads
+      (`import-logins-flow.tsx`), which the dialog wraps; the surface
+      supplies the FRAME (header / title / description / footer) because the
+      dialog's are Radix parts that throw outside a `Dialog`. The dialog reads
       "an import is in flight" off the mutation cache (`useIsMutating` on
       `browserMutationKeys.importLogins()`), since the mutation is the
       flow's. The row also opens on a ONE-SHOT INTENT
@@ -989,19 +988,17 @@ means the drain UI renders NOTHING - never a zero, which would offer to end
       app-update toast) arms `openImportLogins` and navigates to General,
       the row derives `open` from its own state OR the intent, and closing
       - or mounting with saving off, when the row would refuse - consumes
-        it. The toast shows once per install, for a user who has already
-        finished onboarding (a fresh user meets the feature as a tour act
-        instead); either surface consumes the `login-import` id in the
-        persisted `feature-announcements` store, so exactly one of them ever
-        shows. The toast CLAIMS the id rather than consuming it (`claim`
-        re-reads localStorage before writing, synchronously), because the
-        store is per renderer and two windows restored together would each
-        hydrate it empty; the tour consumes it on the act's mount AND on the
-        tour's finish unconditionally (the availability read is still pending
-        on an immediate Skip, and an act the list held can be dropped again),
-        so leaving the tour never resurrects the toast. The toast also holds
-        until the system-tab modal API is published, since its action
-        navigates through it and would otherwise no-op on a cold launch.
+        it. The toast is the only announcement surface for browser login
+        import and shows once per install: it consumes the `login-import` id
+        in the persisted `feature-announcements` store. It CLAIMS the id
+        rather than consuming it (`claim` re-reads localStorage before
+        writing, synchronously), because the store is per renderer and two
+        windows restored together would each hydrate it empty. The toast
+        also holds until the system-tab modal API is published, since its
+        action navigates through it and would otherwise no-op on a cold
+        launch. (The first-run tour that used to meet a fresh user with this
+        feature as an act is gone; the welcome modal and Settings ▸
+        Onboarding that replace it re-gate this toast in a later ticket.)
     - **Saved website sessions** reads `browser.savedLoginSites` from the
       surface's host (`useBrowserSavedLoginSitesQuery`) - registrable domains,
       never values. Settings shows the count and first three sites in

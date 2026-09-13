@@ -18,10 +18,9 @@ import type { GuiHarnessId } from "@traycer/protocol/host/agent/shared";
  * (`lesson-diorama.tsx`): the split-screen drag demo and the task-tabs cycle.
  *
  * These were lifted from the first-run tour's desktop diorama when that tour
- * was retired; nothing here imports from `components/onboarding/`, so the old
- * directory can go without this module noticing. Only what the two retained
- * scenes read survived the move — a fixture that no scene reads is dead
- * weight, not headroom.
+ * was retired (`Salvage-from` in the deletion commit names the last revision
+ * that had it). Only what the two retained scenes read survived the move — a
+ * fixture that no scene reads is dead weight, not headroom.
  */
 
 /** The single easing curve every miniature transition uses. */

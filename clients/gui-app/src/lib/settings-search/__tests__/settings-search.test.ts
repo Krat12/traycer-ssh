@@ -286,15 +286,13 @@ describe("settings search", () => {
     });
 
     it("lands tour vocabulary on the Onboarding page", () => {
-      expect(landingFor("onboarding", DESKTOP)).toBe("onboarding#<top>");
-      // Among the landings rather than first: Fuse ranks "replay" against
-      // "Quote reply" too, and which of the two wins is a tie-break this
-      // suite has no business pinning.
-      for (const query of ["replay tour", "product tour", "first run"]) {
-        expect(landingsFor(query, DESKTOP), query).toContain(
-          "onboarding#<top>",
-        );
+      for (const query of ["onboarding", "product tour", "first run"]) {
+        expect(landingFor(query, DESKTOP), query).toBe("onboarding#<top>");
       }
+      // "replay tour" has always ranked "Quote reply" first (Fuse scores the
+      // near-miss on "reply" above the exact "replay" keyword), so the page
+      // is asserted among its landings rather than at the top.
+      expect(landingsFor("replay tour", DESKTOP)).toContain("onboarding#<top>");
     });
 
     it("no longer indexes General's retired replay group", () => {

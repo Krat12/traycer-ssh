@@ -7,7 +7,6 @@ import {
   progressSuccessToast,
   progressToast,
 } from "@/lib/toast/progress-toast";
-import { useOnboardingTourOpenStore } from "@/stores/onboarding/onboarding-tour-open-store";
 import {
   sessionImportDoneCount,
   sessionImportRunFor,
@@ -20,10 +19,11 @@ import {
  * summary when that run completes.
  *
  * It reads the app-wide run store, never a wizard, so it behaves the same for
- * a run started from Settings, one started from the tour, and one this window
- * merely attached to. While the tour is on screen every toast HOLDS - the
- * act's copy already promises the import runs in the background, and the
- * toast greeting the user as they land in the real app is that promise kept.
+ * a run started from Settings, one started from an announcement, and one this
+ * window merely attached to.
+ * TODO(onboarding-revamp T3): hold while the welcome modal / a tour is up -
+ * the modal's sessions page promises the import runs in the background, and
+ * the toast greeting the user as they land in the app is that promise kept.
  *
  * One child per host rather than one effect over the map: a host's toast has
  * its own bookkeeping - the run the user dismissed by hand, the summary
@@ -33,20 +33,16 @@ import {
  * is retired, taking its toast down with it.
  */
 export function SessionImportProgressToastBridge(): ReactNode {
-  const tourOpen = useOnboardingTourOpenStore((state) => state.open);
   const hostIds = useSessionImportRunStore(
     useShallow((state) => [...state.runs.keys()]),
   );
   return hostIds.map((hostId) => (
-    <HostImportToast key={hostId} hostId={hostId} tourOpen={tourOpen} />
+    <HostImportToast key={hostId} hostId={hostId} />
   ));
 }
 
-function HostImportToast(props: {
-  readonly hostId: string;
-  readonly tourOpen: boolean;
-}): null {
-  const { hostId, tourOpen } = props;
+function HostImportToast(props: { readonly hostId: string }): null {
+  const { hostId } = props;
   const toastId = `session-import-progress:${hostId}`;
   const run = useSessionImportRunStore(
     useShallow((state) => {
@@ -75,7 +71,6 @@ function HostImportToast(props: {
 
   useEffect(() => {
     if (run.status === "starting" || run.status === "running") {
-      if (tourOpen) return;
       const runKey = run.runId ?? "starting";
       // A dismissal during "starting" was aimed at this same run; carry it
       // over when the host's `started` frame swaps the key to the real id.
@@ -118,7 +113,6 @@ function HostImportToast(props: {
     }
 
     if (run.status === "complete") {
-      if (tourOpen) return;
       if (run.runId === null || completedRunRef.current === run.runId) return;
       completedRunRef.current = run.runId;
       progressVisibleRef.current = false;
@@ -136,7 +130,7 @@ function HostImportToast(props: {
     if (run.status === "idle") {
       dismissedRunRef.current = null;
     }
-  }, [hostLabel, run, toastId, tourOpen]);
+  }, [hostLabel, run, toastId]);
 
   // The slice was retired (the wizard's "Import more", or a reopen): the
   // progress toast, if still up, is reporting a run nothing watches any more.

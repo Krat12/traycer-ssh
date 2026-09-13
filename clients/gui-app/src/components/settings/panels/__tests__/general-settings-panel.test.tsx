@@ -85,8 +85,6 @@ interface TestHostClient {
   readonly getActiveHostId: () => string | null;
 }
 
-const navigateMock = vi.hoisted(() => vi.fn());
-
 interface TestPerWindowSnapshot {
   readonly epicTabs: readonly unknown[];
   readonly activeTabId: string | null;
@@ -200,15 +198,6 @@ vi.mock("@/providers/windows-bridge-context", () => ({
   useWindowsBridge: () => windowsBridgeMock.current,
 }));
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@tanstack/react-router")>();
-  return {
-    ...actual,
-    useNavigate: () => navigateMock,
-  };
-});
-
 const clearAllPersistedStoresMock = vi.mocked(clearAllPersistedStores);
 
 function makeBridgeWithClear(): TestWindowsBridge {
@@ -255,7 +244,6 @@ describe("GeneralSettingsPanel", () => {
         websocketUrl: "ws://remote.invalid",
       },
     ];
-    navigateMock.mockReset();
     windowsBridgeMock.current = null;
     clearAllPersistedStoresMock.mockClear();
     clearAllPersistedStoresMock.mockResolvedValue(undefined);
