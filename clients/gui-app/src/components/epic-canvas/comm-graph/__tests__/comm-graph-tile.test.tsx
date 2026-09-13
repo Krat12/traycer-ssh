@@ -129,10 +129,17 @@ import * as officeAutoModule from "@/lib/comm-graph/office/office-auto";
 import { OfficeScene } from "@/lib/comm-graph/office/office-scene";
 import { makeTestEpic } from "@/lib/comm-graph/office/office-test-epic";
 import type {
+  OfficeAgentStatus,
   OfficeSize,
   OfficeViewId,
 } from "@/lib/comm-graph/office/office-types";
-import { OFFICE_BENCH_SEED } from "@/components/epic-canvas/comm-graph/office/office-bench";
+import {
+  OFFICE_BENCH_SCRIPT_STEP_MS,
+  OFFICE_BENCH_SEED,
+  officeBench,
+  parseOfficeBenchSearch,
+} from "@/components/epic-canvas/comm-graph/office/office-bench";
+
 import {
   OFFICE_VIEWS,
   OFFICE_VIEW_IDS,
@@ -744,6 +751,23 @@ function lastCanvasCamera(spy: SpiedCalls): TileCamera | null {
  * the spy's own `MockInstance` generic, rather than the untyped-call-args
  * shape `lastCanvasCamera` has to narrow at runtime.
  */
+function statusMapOfSync(
+  spy: SpiedCalls,
+): ReadonlyMap<string, OfficeAgentStatus> {
+  const input = spy.mock.calls.at(-1)?.[0];
+  if (typeof input !== "object" || input === null) {
+    throw new Error("expected a scene sync");
+  }
+  if (!("statusById" in input)) {
+    throw new Error("expected a scene input");
+  }
+  const map = input.statusById;
+  if (!(map instanceof Map)) {
+    throw new Error("expected a status map");
+  }
+  return map;
+}
+
 function lastCanvasReady(
   spy: MockInstance<typeof officeCanvasModule.CommGraphOfficeCanvas>,
 ): boolean | null {
@@ -3519,6 +3543,64 @@ describe("CommGraphTile", () => {
         // population it has never heard of, which is the bug this case is for.
         expect(input.statusById.size).toBeGreaterThan(0);
       } finally {
+        synced.mockRestore();
+        restore();
+      }
+    });
+
+    it("advances a scripted bench onto the scene through the timer, not a pinned hook", async () => {
+      // GAP B: every bench case consumes maps or step numbers, so
+      // `useOfficeBenchScriptStep` stuck at 0 escapes all of them. This
+      // reads the map the SCENE received after the real timeout, on the
+      // tile that actually draws a benched office.
+      vi.useFakeTimers({
+        toFake: ["setTimeout", "clearTimeout"],
+        shouldAdvanceTime: true,
+      });
+      const restore = benchAt("?officeBench=40&officeBenchScript=outbreak");
+      const synced = vi.spyOn(OfficeScene.prototype, "sync");
+      try {
+        await reachAutoFloor();
+        await pickView("floor");
+        await waitFor(() => {
+          expect(synced.mock.calls.length).toBeGreaterThan(0);
+        });
+        const request = parseOfficeBenchSearch(window.location.search);
+        if (request === null) {
+          throw new Error("expected a scripted bench in the URL");
+        }
+        const bench = officeBench(request);
+        const crashers: string[] = [];
+        for (const [id, status] of bench.steps[1]) {
+          if (status === "failure") crashers.push(id);
+        }
+        expect(crashers.length).toBeGreaterThan(0);
+        const crasherHost = bench.agents.find(
+          (agent) => agent.id === crashers[0],
+        )?.hostId;
+        const resting = statusMapOfSync(synced);
+        // PRECONDITION, not the red: at triage/40 the fixture happens to
+        // put no `failure` on this host, so this loop is green at base.
+        // The red is the timer advancing the scene onto step 1 below.
+        for (const agent of bench.agents) {
+          if (agent.hostId !== crasherHost) continue;
+          expect(resting.get(agent.id)).not.toBe("failure");
+        }
+
+        await act(async () => {
+          vi.advanceTimersByTime(OFFICE_BENCH_SCRIPT_STEP_MS);
+          await Promise.resolve();
+        });
+        await waitFor(() => {
+          const after = statusMapOfSync(synced);
+          expect(after.get(crashers[0])).toBe("failure");
+        });
+        const after = statusMapOfSync(synced);
+        for (const id of crashers) {
+          expect(after.get(id)).toBe("failure");
+        }
+      } finally {
+        vi.useRealTimers();
         synced.mockRestore();
         restore();
       }

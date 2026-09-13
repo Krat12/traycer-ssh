@@ -93,26 +93,27 @@ describe("parseOfficeBenchSearch", () => {
   });
 
   it("defaults outbreak when the param is absent or unreadable", () => {
-    // 3 is the ticket's stated default. Comparing to the constant
-    // alone moves both sides together, and is `undefined === undefined`
-    // against a tree that has no field at all.
-    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(3);
-    expect(parseOfficeBenchSearch("?officeBench=20")?.outbreak).toBe(3);
+    // TWO, the ambulance row: three or more crashers on one sync is K3's
+    // trigger for an engine, which is a different vehicle. Comparing to
+    // the constant alone moves both sides together, and is
+    // `undefined === undefined` against a tree that has no field at all.
+    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(2);
+    expect(parseOfficeBenchSearch("?officeBench=20")?.outbreak).toBe(2);
     expect(
       parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=nope")
         ?.outbreak,
-    ).toBe(3);
+    ).toBe(2);
   });
 
   it("falls a zero or negative outbreak back to the default, and caps a count at the population", () => {
-    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(3);
+    expect(OFFICE_BENCH_OUTBREAK_DEFAULT).toBe(2);
     expect(
       parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=0")?.outbreak,
-    ).toBe(3);
+    ).toBe(2);
     expect(
       parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=-2")
         ?.outbreak,
-    ).toBe(3);
+    ).toBe(2);
     expect(
       parseOfficeBenchSearch("?officeBench=20&officeBenchOutbreak=100")
         ?.outbreak,
@@ -315,7 +316,11 @@ describe("officeBench", () => {
     const bench = officeBench(request);
     expect(bench.steps.length).toBeGreaterThan(1);
     expect(bench.steps[0]).toBe(bench.statusById);
-    expect(bench.steps[0]).toEqual(fixture.statusById);
+    // The resting map is NOT the fixture's roll: civic-wanting statuses
+    // are stood down so the first script step is a transition rather than
+    // a floor that opened already full. The identity with `statusById`
+    // stays — that is now structural (`statusById` is `steps[0]`).
+    expect(bench.steps[0]).not.toEqual(fixture.statusById);
 
     const resting = failureIds(bench.steps[0]);
     const next = failureIds(bench.steps[1]);
@@ -332,6 +337,138 @@ describe("officeBench", () => {
       }),
     );
     expect(hosts.size).toBe(1);
+  });
+
+  const CIVIC_WANTING: ReadonlySet<OfficeAgentStatus> = new Set([
+    "failure",
+    "awaiting",
+    "attention",
+  ]);
+  const KEPT_HOT: ReadonlySet<OfficeAgentStatus> = new Set([
+    "working",
+    "background",
+    "archived",
+  ]);
+
+  function hostIdOf(
+    agents: ReadonlyArray<CommGraphAgentNode>,
+    agentId: string,
+  ): string | null {
+    const node = agents.find((agent) => agent.id === agentId);
+    if (node === undefined) throw new Error(`missing ${agentId}`);
+    return node.hostId;
+  }
+
+  it("rests every civic-wanting status on every host, and keeps working, background and archived", () => {
+    // two-hosts/400: both buildings are in frame in Towers, Building and
+    // the Floor's stacked storeys, so a total that hid a dirty second
+    // host would still look clean.
+    const request: OfficeBenchRequest = {
+      shape: "two-hosts",
+      agents: 400,
+      script: "outbreak",
+      outbreak: OFFICE_BENCH_OUTBREAK_DEFAULT,
+    };
+    const fixture = makeTestEpic(
+      request.shape,
+      request.agents,
+      OFFICE_BENCH_SEED,
+    );
+    const bench = officeBench(request);
+    const hosts = new Set(bench.agents.map((agent) => agent.hostId));
+    expect(hosts.size).toBeGreaterThan(1);
+
+    for (const host of hosts) {
+      const ids = bench.agents
+        .filter((agent) => agent.hostId === host)
+        .map((agent) => agent.id);
+      const fixtureCivic = ids.filter((id) => {
+        const status = fixture.statusById.get(id);
+        return status !== undefined && CIVIC_WANTING.has(status);
+      });
+      // Vacuity: the fixture itself must have carried civic-wanting
+      // statuses on this host, or the rest is congratulating a clean roll.
+      expect(fixtureCivic.length, String(host)).toBeGreaterThan(0);
+      for (const id of ids) {
+        const rested = bench.steps[0].get(id);
+        // The label carries the status found, not just the id: on a
+        // 400-agent loop "expected true to be false" is a failure you
+        // have to go hunting for, and "leaf-137 on host-b rests as
+        // awaiting" is one you have already read.
+        expect(
+          rested === undefined || CIVIC_WANTING.has(rested),
+          `${id} on ${String(host)} rests as ${String(rested)}`,
+        ).toBe(false);
+      }
+      const fixtureKept = ids.filter((id) => {
+        const status = fixture.statusById.get(id);
+        return status !== undefined && KEPT_HOT.has(status);
+      });
+      expect(fixtureKept.length, String(host)).toBeGreaterThan(0);
+      for (const id of fixtureKept) {
+        expect(bench.steps[0].get(id), id).toBe(fixture.statusById.get(id));
+      }
+    }
+  });
+
+  it("makes outbreak step 1's failures all new, exactly two, on one host", () => {
+    const request: OfficeBenchRequest = {
+      shape: "many-roots",
+      agents: 1000,
+      script: "outbreak",
+      outbreak: 2,
+    };
+    const bench = officeBench(request);
+    const atRest = failureIds(bench.steps[0]);
+    const crashed = failureIds(bench.steps[1]);
+    expect(crashed).toHaveLength(2);
+    expect(atRest).toHaveLength(0);
+    for (const id of crashed) {
+      expect(bench.steps[0].get(id)).not.toBe("failure");
+    }
+    const hosts = new Set(crashed.map((id) => hostIdOf(bench.agents, id)));
+    expect(hosts.size).toBe(1);
+  });
+
+  it("sends waiting's freed chair to somebody who queued, not a fixture bystander", () => {
+    const request: OfficeBenchRequest = {
+      shape: "triage",
+      agents: 60,
+      script: "waiting",
+      outbreak: OFFICE_BENCH_OUTBREAK_DEFAULT,
+    };
+    const fixture = makeTestEpic(
+      request.shape,
+      request.agents,
+      OFFICE_BENCH_SEED,
+    );
+    const bench = officeBench(request);
+    const chairs = civicCapacityFor(request.agents).chairs;
+    expect(chairs).toBeGreaterThan(0);
+    const overflow = statusCount(bench.steps[1], "awaiting");
+    expect(overflow).toBeGreaterThan(chairs);
+    expect(statusCount(bench.steps[2], "awaiting")).toBe(overflow - 1);
+
+    const queued: string[] = [];
+    for (const [id, status] of bench.steps[1]) {
+      if (status === "awaiting") queued.push(id);
+    }
+    const still: string[] = [];
+    for (const [id, status] of bench.steps[2]) {
+      if (status === "awaiting") still.push(id);
+    }
+    const left = queued.filter((id) => !still.includes(id));
+    expect(left).toHaveLength(1);
+    // EVERY awaiting agent at the overflow step is one the script put
+    // there, not a fixture bystander the old resting map left awaiting
+    // at both steps. Same shape as outbreak step 1's failures.
+    for (const id of queued) {
+      expect(bench.steps[0].get(id), id).not.toBe("awaiting");
+    }
+    const fixtureAwaiting = [...fixture.statusById.values()].filter(
+      (status) => status === "awaiting",
+    ).length;
+    expect(fixtureAwaiting).toBeGreaterThan(0);
   });
 
   it("plays waiting so more agents await than the lounge has chairs", () => {
