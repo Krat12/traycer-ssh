@@ -11687,6 +11687,25 @@ describe("OfficeScene fixup 8c - the book settles with the plan (D66)", () => {
 describe("OfficeScene fixup 8 - a seated agent's name tag is fitted to its seat", () => {
   type OfficeLabelDrawable = Extract<OfficeDrawable, { kind: "label" }>;
 
+  /**
+   * The scene's book, captured from a frame build rather than through a
+   * private field - the same trick `describe.each` uses locally, repeated
+   * here because that copy is out of scope.
+   */
+  function bookOf(scene: OfficeScene): OfficeSeatBook {
+    const spy = vi.spyOn(OfficeSeatBook.prototype, "civicClaimOf");
+    try {
+      frameOf(scene);
+      const captured: unknown = spy.mock.contexts.at(-1);
+      if (!(captured instanceof OfficeSeatBook)) {
+        throw new Error("expected the scene seat book");
+      }
+      return captured;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
   it("gives every seated character's label the effective seat's own width, cubby occupants included, and null to a walker (309 Building, lod 2)", () => {
     const epic = makeTestEpic("triage", 309, 1);
     // The walker: revealed on a SECOND, playing sync, the same recipe the
@@ -11719,6 +11738,7 @@ describe("OfficeScene fixup 8 - a seated agent's name tag is fitted to its seat"
     );
 
     const layout = layoutOf(scene);
+    const book = bookOf(scene);
     const frame = scene.frame(2, WHOLE_WORLD);
     const labelByAgentId = new Map<string, OfficeLabelDrawable>();
     // The Building's own painter interleaves props and characters into one
@@ -11742,23 +11762,65 @@ describe("OfficeScene fixup 8 - a seated agent's name tag is fitted to its seat"
     expect(walkerLabel?.fitTiles).toBeNull();
 
     // Every OTHER seated character - the entire rest of the 309-agent
-    // Building - carries its effective seat's own tile width, with at least
+    // Building - carries its EFFECTIVE seat's own tile width, with at least
     // one cubby occupant (a one-tile seat) among them.
+    //
+    // `layout.desks` is the roll-call, NOT the oracle. `OfficeDesk` says so on
+    // itself - "the INITIAL assignment, not the truth" - and for a civic
+    // holder the two differ: the label reads `effectiveSeat`, which is the bed
+    // or the chair the agent is in. Reading the width off the assignment was
+    // true until `CIVIC_ROOMS_EXPECTED` turned `building` on and there was
+    // something else for a Building agent to be sitting in.
+    //
+    // "Moved" is `heldClaimWant` and not `civicClaimOf`, here and below: a
+    // held RESERVE DESK displaces the assignment too and is not civic, so a
+    // civic-only gate would assert `effectiveSeat === layout.desks` for a
+    // reserve-desk holder and be wrong for a reason this case is not about.
     let checkedCubbyOccupant = false;
     let checkedSeatedAgent = false;
-    for (const [agentId, seat] of layout.desks) {
+    let checkedCivicHolders = 0;
+    for (const [agentId, desk] of layout.desks) {
       if (agentId === walker.id) continue;
       if (frame.awayAgentIds.has(agentId)) continue;
       const label = labelByAgentId.get(agentId);
       if (label === undefined) continue;
       checkedSeatedAgent = true;
+      const seat = book.effectiveSeat(agentId);
+      if (seat === null) {
+        throw new Error(`seated agent ${agentId} has no effective seat`);
+      }
       expect(label.fitTiles, `fitTiles for ${agentId}`).toBe(
         seat.hitTiles.width,
       );
-      if (seat.hitTiles.width === 1) checkedCubbyOccupant = true;
+      if (book.civicClaimOf(agentId) !== null) checkedCivicHolders += 1;
+      // The desk-sitter half, kept exactly as strong as it was: with no held
+      // claim of ANY kind the effective seat IS the assignment, so for the
+      // whole un-moved population `layout.desks` still carries the assertion
+      // on its own. `heldClaimWant` and not `civicClaimOf`, because a held
+      // RESERVE DESK also displaces the assignment and is not civic.
+      if (book.heldClaimWant(agentId) === null) {
+        expect(seat.seatId, `assignment for ${agentId}`).toBe(desk.seatId);
+        expect(label.fitTiles, `fitTiles for ${agentId}`).toBe(
+          desk.hitTiles.width,
+        );
+      }
+      // KEYED ON THE KIND, not on the width. A lounge chair is one tile too,
+      // so a width test would let a civic holder stand in for the cubby
+      // occupant this flag exists to find, and the cubby half of the case
+      // would go quiet without a single assertion changing.
+      if (seat.kind === "cubby") checkedCubbyOccupant = true;
     }
     expect(checkedSeatedAgent).toBe(true);
     expect(checkedCubbyOccupant).toBe(true);
+    // The witness the corrected oracle needs. Before the playback entry
+    // settled their walks, every civic holder was still crossing the floor and
+    // `awayAgentIds` skipped the lot - which is how a stale oracle survived
+    // `building: true` in silence. Without this the case could go quiet the
+    // same way again.
+    expect(
+      checkedCivicHolders,
+      "civic holders the loop actually reached",
+    ).toBeGreaterThan(0);
   });
 });
 
