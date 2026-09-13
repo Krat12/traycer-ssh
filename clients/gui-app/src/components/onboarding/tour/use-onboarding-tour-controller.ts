@@ -34,7 +34,6 @@ import {
   resolveHistoryRow,
   resolvePanelTarget,
   type TargetResolution,
-  type TargetTracker,
   type TourSurfaceScope,
 } from "@/components/onboarding/tour/tour-targets";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -298,9 +297,7 @@ export function useOnboardingTourController(): OnboardingTourController {
   const reducedMotion = useReducedMotion() === true;
 
   // ── Suspension gate (F2) ────────────────────────────────────────────────
-  const gateRef = useRef<SuspensionGate | null>(null);
-  if (gateRef.current === null) gateRef.current = createSuspensionGate();
-  const gate = gateRef.current;
+  const [gate] = useState(createSuspensionGate);
   const suspension = useSyncExternalStore(
     gate.subscribe,
     gate.getSnapshot,
@@ -381,9 +378,7 @@ export function useOnboardingTourController(): OnboardingTourController {
   );
 
   // ── Target resolution + presentation epoch ──────────────────────────────
-  const trackerRef = useRef<TargetTracker | null>(null);
-  if (trackerRef.current === null) trackerRef.current = createTargetTracker();
-  const tracker = trackerRef.current;
+  const [tracker] = useState(createTargetTracker);
   const target = useSyncExternalStore(
     tracker.subscribe,
     tracker.getSnapshot,
