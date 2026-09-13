@@ -652,7 +652,19 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
 
     let worst = 0;
     let seenVehicles = 0;
-    const measure = (rect: OfficeRect): number => {
+    const vehiclesIn = (frame: OfficeFrame): number =>
+      frame.world === null
+        ? frame.actors.filter((drawable) => drawable.kind === "vehicle").length
+        : frame.world.filter((entry) => entry.drawable.kind === "vehicle")
+            .length;
+    // The budget calculation on whatever rect it is handed, split out of
+    // `measure` so the combined frame below can be put through the SAME
+    // arithmetic without its body reaching `worst` - which is a claim about
+    // viewport-sized frames and would stop meaning that the moment a
+    // whole-world body entered it.
+    const budgeted = (
+      rect: OfficeRect,
+    ): { readonly body: number; readonly vehicles: number } => {
       const seats = paintedSeatsIn({ layout, projector, rect });
       const frame = scene.frame(1, rect);
       const body =
@@ -663,11 +675,12 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
       expect(body).toBeLessThanOrEqual(
         FRAME_DRAWABLES_PER_SEAT * seats + FRAME_DRAWABLE_SLACK,
       );
+      return { body, vehicles: vehiclesIn(frame) };
+    };
+    const measure = (rect: OfficeRect): number => {
+      const { body, vehicles } = budgeted(rect);
       worst = Math.max(worst, body);
-      return frame.world === null
-        ? frame.actors.filter((drawable) => drawable.kind === "vehicle").length
-        : frame.world.filter((entry) => entry.drawable.kind === "vehicle")
-            .length;
+      return vehicles;
     };
 
     // The sweep, for the general bound, and then the kerbs over a drive long
@@ -697,13 +710,17 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
       width: world.width,
       height: world.height,
     };
-    const extant = (): number => {
-      const frame = scene.frame(1, wholeWorld);
-      return frame.world === null
-        ? frame.actors.filter((drawable) => drawable.kind === "vehicle").length
-        : frame.world.filter((entry) => entry.drawable.kind === "vehicle")
-            .length;
-    };
+    const extant = (): number => vehiclesIn(scene.frame(1, wholeWorld));
+    // The frame that carries BOTH, put through the budget. `extant` counts on a
+    // whole-world frame that never reaches `budgeted`, so until this existed no
+    // budget-checked frame was required to contain two vehicles at all: every
+    // rect that WAS checked is one viewport over one kerb, which holds one. The
+    // title's "same frame budget with two vehicles" was therefore a strictly
+    // stronger claim than the case proved - true, most likely, but not tested.
+    // One call closes it, and `vehicles === 2` is what makes the frame the
+    // combined one rather than another single-vehicle frame that happened to
+    // pass.
+    let combinedVehicles: number | null = null;
     for (let step = 0; step < steps; step += 1) {
       for (const rect of kerbs) seenVehicles += measure(rect);
       mostAtOnce = Math.max(mostAtOnce, extant());
@@ -712,7 +729,10 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
       // the pair exists within a tick or two of dispatch, long before anybody
       // has driven anywhere, and stopping at the first sighting is what let
       // the weaker assertion look satisfied.
-      if (mostAtOnce >= 2 && seenVehicles > 0 && step > 0) break;
+      if (mostAtOnce >= 2 && seenVehicles > 0 && step > 0) {
+        combinedVehicles = budgeted(wholeWorld).vehicles;
+        break;
+      }
       scene.tick(100);
     }
 
@@ -726,9 +746,13 @@ describe.each(OFFICE_VIEW_IDS)("%s at a thousand agents", (viewId) => {
       expect(seenVehicles).toBeGreaterThan(0);
       // The title's own claim, asserted rather than assumed.
       expect(mostAtOnce).toBe(2);
+      // And the budget actually paid on a frame holding both, which is the
+      // half of the title that used to rest on inference.
+      expect(combinedVehicles).toBe(2);
     } else {
       expect(seenVehicles).toBe(0);
       expect(mostAtOnce).toBe(0);
+      expect(combinedVehicles).toBeNull();
     }
     expect(worst).toBeGreaterThan(0);
   });
