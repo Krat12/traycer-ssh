@@ -218,6 +218,61 @@ describe.each(OFFICE_VIEW_IDS)("%s view", (viewId) => {
     );
     const agentIds = new Set(epic.agents.map((agent) => agent.id));
 
+    /**
+     * A ROOM THAT SAYS IT IS WALLED HAS A BACK WALL, in every view.
+     *
+     * `enclosure` is read by the isometric painter alone today, so the OTHER
+     * views' values would be declarations nobody checks - and an unchecked
+     * declaration drifts. This is the one direction that can be checked from the
+     * plan itself: a walled room's first bounds row is its back wall, so every
+     * tile of it is blocked.
+     *
+     * THE REVERSE IS NOT ASSERTED and must not be. An open room's perimeter is
+     * blocked by its own FURNITURE - Campus's reception counter is two blocked
+     * tiles and no wall - and reading that as a wall is the defect this field
+     * exists to prevent. A test that pinned it would pin the bug.
+     *
+     * The counts are the other half. Without them a view that quietly turned
+     * every room open would satisfy the implication vacuously, and this case is
+     * the only place the values are read at all. Measured: the Floor walls its
+     * infirmary and its waiting room, Campus its sick bay and its records hut,
+     * and the three views whose civic rooms stand on an open plaza or in one
+     * hall wall nothing.
+     */
+    it("walls exactly the civic rooms that say they are walled", () => {
+      const civic = layout.floors.flatMap((floor) => floor.civic);
+      if (!CIVIC_ROOMS_EXPECTED[viewId]) {
+        expect(civic.length).toBe(0);
+        return;
+      }
+      expect(civic.length).toBeGreaterThan(0);
+
+      const walledPerStorey: Readonly<Record<OfficeViewId, number>> = {
+        floor: 2,
+        towers: 0,
+        building: 0,
+        "mission-control": 0,
+        campus: 2,
+        city: 0,
+      };
+      const storeys = layout.floors.filter((floor) => floor.civic.length > 0);
+      const walled = civic.filter((room) => room.enclosure === "walled");
+      expect(walled.length).toBe(walledPerStorey[viewId] * storeys.length);
+
+      for (const room of walled) {
+        for (
+          let col = room.bounds.col;
+          col < room.bounds.col + room.bounds.cols;
+          col += 1
+        ) {
+          expect(
+            layout.walkable[room.bounds.row]?.[col],
+            `${viewId} ${room.kind} back wall open at col ${String(col)}`,
+          ).not.toBe(true);
+        }
+      }
+    });
+
     it("plans civic rooms exactly where the table says it should", () => {
       const enrolled = CIVIC_ROOMS_EXPECTED[viewId];
       const withRooms = layout.floors.filter((floor) => floor.civic.length > 0);

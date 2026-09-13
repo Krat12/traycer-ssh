@@ -2166,7 +2166,12 @@ describe("campus civic rooms, painted", () => {
       if (wall.kind !== "sprite") continue;
       const key = `${wall.x},${wall.y + 24}`;
       if (wall.sprite.name === "wall-iso-right") rightWalls.add(key);
-      else leftWalls.add(`${wall.x + 32},${wall.y + 24}`);
+      // PLUS SIXTEEN, not thirty-two: a left wall is drawn at
+      // `corner.x - ISO_HALF_WIDTH`, and ISO_HALF_WIDTH is one tile. At +32 no
+      // key in this set ever matched a corner, so every `leftWalls.has(...)`
+      // below answered false and the aisle assertion - the one that justifies
+      // the walkability filter existing at all - passed on an empty set.
+      else leftWalls.add(`${wall.x + ISO_HALF_WIDTH},${wall.y + 24}`);
     }
 
     // THE WARD'S TOP ROW IS A WALL, every column of it.
@@ -2195,6 +2200,122 @@ describe("campus civic rooms, painted", () => {
         `ward aisle row ${String(row)} was walled shut`,
       ).toBe(false);
     }
+  });
+
+  /**
+   * AN OPEN CIVIC ROOM GETS NO WALLS, WHATEVER ITS TILES SAY.
+   *
+   * The counter case is the regression: the front desk's bounds ARE the
+   * reception counter, whose two tiles are blocked because a counter is solid,
+   * and a painter that read blockedness as a wall boxed in the one room in the
+   * layer you are meant to walk up to. Measured at the time: two
+   * `wall-iso-right` along its top row and one `wall-iso-left` down its side, at
+   * every population.
+   *
+   * ONE CASE PER OPEN ROOM rather than one for the desk, because the rule is
+   * about the CLASS - `enclosure`, which the plan states - and the two open
+   * rooms fail it in different ways. The counter is open AND blocked, so it
+   * reds a painter that reads tiles. The bench row is open and UNBLOCKED, so it
+   * reds a painter that reads bounds instead. Only the pair distinguishes the
+   * field from either shortcut.
+   *
+   * The reverse direction is deliberately not asserted anywhere: "open implies
+   * an unblocked perimeter" is FALSE of the counter, and believing it is exactly
+   * what went wrong.
+   */
+  describe("open civic rooms", () => {
+    /** Every wall corner the painter emitted, by side, for one population. */
+    function wallCornersOf(layout: OfficeLayout): {
+      right: ReadonlySet<string>;
+      left: ReadonlySet<string>;
+    } {
+      const whole: OfficeTileRect = {
+        col: 0,
+        row: 0,
+        cols: layout.cols,
+        rows: layout.rows,
+      };
+      const right = new Set<string>();
+      const left = new Set<string>();
+      for (const drawable of ISO_PAINTER.floor(layout, whole, 1)) {
+        if (drawable.kind !== "sprite") continue;
+        if (drawable.sprite.name === "wall-iso-right") {
+          right.add(`${drawable.x},${drawable.y + 24}`);
+        } else if (drawable.sprite.name === "wall-iso-left") {
+          left.add(`${drawable.x + ISO_HALF_WIDTH},${drawable.y + 24}`);
+        }
+      }
+      return { right, left };
+    }
+
+    it.each([12, 309, 1000])(
+      "leaves the front desk's counter open at %i agents",
+      (n) => {
+        const layout = campusLayout(n);
+        const desk = layout.floors
+          .flatMap((floor) => floor.civic)
+          .find((room) => room.kind === "help-desk");
+        if (desk === undefined) throw new Error("no front desk");
+        expect(desk.enclosure).toBe("open");
+
+        // THE COUNTER IS STILL THERE, so "no walls" cannot be passing because
+        // the desk stopped being drawn at all.
+        const counterTiles = new Set<string>();
+        for (let col = desk.bounds.col; col < desk.bounds.col + 2; col += 1) {
+          counterTiles.add(`${String(col)},${String(desk.bounds.row)}`);
+        }
+        const counterArt = layout.props.filter((prop) =>
+          counterTiles.has(`${String(prop.tile.col)},${String(prop.tile.row)}`),
+        );
+        expect(counterArt.length).toBeGreaterThan(0);
+        // AND ITS TILES ARE BLOCKED, which is the premise that made the defect
+        // possible: a painter reading tiles sees exactly what a wall looks like.
+        for (const tile of counterTiles) {
+          const [col, row] = tile.split(",").map(Number);
+          expect(layout.walkable[row]?.[col]).not.toBe(true);
+        }
+
+        const { right, left } = wallCornersOf(layout);
+        const projector = ISO_PAINTER.projector(layout);
+        for (const tile of counterTiles) {
+          const [col, row] = tile.split(",").map(Number);
+          const point = projector.project(col, row);
+          const key = `${point.x},${point.y}`;
+          expect(right.has(key), `counter ${tile} got a right wall`).toBe(
+            false,
+          );
+          expect(left.has(key), `counter ${tile} got a left wall`).toBe(false);
+        }
+      },
+    );
+
+    it.each([12, 309, 1000])("leaves the bench row open at %i agents", (n) => {
+      const layout = campusLayout(n);
+      const benches = layout.floors
+        .flatMap((floor) => floor.civic)
+        .find((room) => room.kind === "waiting-room");
+      if (benches === undefined) throw new Error("no bench row");
+      expect(benches.enclosure).toBe("open");
+
+      const { right, left } = wallCornersOf(layout);
+      const projector = ISO_PAINTER.projector(layout);
+      const b = benches.bounds;
+      for (let col = b.col; col < b.col + b.cols; col += 1) {
+        for (let row = b.row; row < b.row + b.rows; row += 1) {
+          const point = projector.project(col, row);
+          const key = `${point.x},${point.y}`;
+          expect(
+            right.has(key) || left.has(key),
+            `bench ${String(col)},${String(row)} was walled`,
+          ).toBe(false);
+        }
+      }
+      // The lawn is walkable under the whole row, which is the other half of
+      // what makes this room the bounds-reading painter's discriminator.
+      for (let col = b.col; col < b.col + b.cols; col += 1) {
+        expect(layout.walkable[b.row]?.[col]).toBe(true);
+      }
+    });
   });
 
   it("gives every civic room a quad of its own at overview", () => {
