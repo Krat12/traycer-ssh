@@ -754,4 +754,29 @@ describe("welcome modal <-> tour seam", () => {
     fireEvent.keyDown(screen.getByTestId("welcome-modal"), { key: "Escape" });
     expect(seam.toast).toHaveBeenCalledTimes(1);
   });
+
+  it("a pending completion is held by tourBusy across a replay and delivered once the tour pauses", () => {
+    render(<OnboardingFlowHost />);
+    // The chain ends with no Settings bridge yet: pending, held.
+    completeChainViaFinishFrom(fireEvent);
+    expect(flow().completionPending).toBe(true);
+    expect(seam.toast).not.toHaveBeenCalled();
+    // A replay starts before the bridge publishes: the tour has the screen.
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    expect(useOnboardingPresenceStore.getState().tourBusy).toBe(true);
+    expect(useOnboardingPresenceStore.getState().modalOpen).toBe(false);
+    act(() => {
+      setSystemTabModalApi(fakeSettingsApi());
+    });
+    expect(flow().completionPending).toBe(true);
+    expect(seam.toast).not.toHaveBeenCalled();
+    // Esc on the tour: busy clears, the held toast is delivered.
+    emit({ type: "step:after", action: "close", origin: "keyboard" }, props());
+    expect(flow().chain).toBe("paused");
+    expect(useOnboardingPresenceStore.getState().tourBusy).toBe(false);
+    expect(seam.toast).toHaveBeenCalledTimes(1);
+    expect(flow().completionPending).toBe(false);
+  });
 });
