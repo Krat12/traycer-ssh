@@ -674,8 +674,17 @@ interface OfficeEnvelope {
  */
 interface OfficeVehicle {
   readonly kind: OfficeVehicleKind;
-  /** The floor the ROOM is on, which on a plaza storey is not every rider's. */
-  readonly floorIndex: number;
+  /**
+   * A CACHE of the floor the room is on - which on a plaza storey is not every
+   * rider's - and NOT the trip's identity. `civicRoomId` below is that.
+   *
+   * It is not `readonly` because a floor index is a position in the partition's
+   * host-id ordering, so a host arriving lexically earlier moves the room this
+   * trip serves to a new index while the trip is still on the road.
+   * `floorOfVehicle` validates it against the room before trusting it and
+   * re-finds it when it has moved.
+   */
+  floorIndex: number;
   /** The room whose kerb it stops at; also the coalescing key, with `kind`. */
   readonly civicRoomId: string;
   /** Everyone this trip serves. Coalescing appends; it never queues a second. */
@@ -4416,19 +4425,52 @@ export class OfficeScene {
     return true;
   }
 
+  /** This room on this floor, or `null` where the floor does not carry it. */
+  private civicRoomOn(
+    floor: OfficeFloor,
+    civicRoomId: string,
+  ): OfficeCivicRoom | null {
+    return floor.civic.find((room) => room.civicRoomId === civicRoomId) ?? null;
+  }
+
   /**
    * The storey this vehicle is driving on, or `null` if it has gone.
    *
-   * A re-plan can drop a floor out from under a trip already on the road - a
-   * host leaving takes its storey with it - so the index is not guaranteed to
-   * still be in range. The TYPE says an index is always a floor, which is why
-   * the question has to be asked of the LENGTH: comparing the element against
-   * `undefined` is a condition the compiler can see is never true.
+   * ASKED OF THE ROOM, and the cached index is only a shortcut to it. A re-plan
+   * can drop a floor out from under a trip already on the road - a host leaving
+   * takes its storey with it - and it can also RENUMBER the floor the trip is
+   * serving without moving anything: a floor index is a position in the host-id
+   * ordering, so one lexically earlier host appearing makes storey 0 into storey
+   * 1. An index alone cannot tell those apart, and read X's stable room ids made
+   * the difference visible - a dispatch for the renamed room now coalesces onto
+   * the standing trip, whose index then pointed at ANOTHER HOST's floor: the
+   * kerb lookup found no room, the frame stopped drawing the van, the next tick
+   * removed it, and the rider it had just absorbed never got its trip. Before
+   * those ids the room id changed too, so the coalesce missed and a second van
+   * was dispatched - the old trip was still lost, which is the half of this that
+   * is older than the ids.
+   *
+   * So the index is validated against the room and re-found when it has moved,
+   * which is also what carries a trip already on the road onto its host's new
+   * floor. The cache stays because this is read several times per tick per
+   * vehicle and a layout with a hundred storeys would otherwise scan them all;
+   * the validation is four comparisons on the floor it already believes in.
    */
   private floorOfVehicle(vehicle: OfficeVehicle): OfficeFloor | null {
     const floors = this.currentLayout.floors;
-    if (vehicle.floorIndex >= floors.length) return null;
-    return floors[vehicle.floorIndex];
+    // The TYPE says an index is always a floor, which is why the range question
+    // is asked of the LENGTH: comparing the element against `undefined` is a
+    // condition the compiler can see is never true.
+    if (vehicle.floorIndex < floors.length) {
+      const cached = floors[vehicle.floorIndex];
+      if (this.civicRoomOn(cached, vehicle.civicRoomId) !== null) return cached;
+    }
+    const moved = floors.findIndex(
+      (floor) => this.civicRoomOn(floor, vehicle.civicRoomId) !== null,
+    );
+    if (moved < 0) return null;
+    vehicle.floorIndex = moved;
+    return floors[moved];
   }
 
   private roadOf(vehicle: OfficeVehicle): OfficeRoad | null {
@@ -4438,9 +4480,8 @@ export class OfficeScene {
   /** Where on the polyline this vehicle's room stops it. */
   private kerbIndexOf(vehicle: OfficeVehicle, road: OfficeRoad): number | null {
     const floor = this.floorOfVehicle(vehicle);
-    const room = floor?.civic.find(
-      (entry) => entry.civicRoomId === vehicle.civicRoomId,
-    );
+    const room =
+      floor === null ? null : this.civicRoomOn(floor, vehicle.civicRoomId);
     const kerb = room?.kerbTile ?? null;
     if (kerb === null) return null;
     const index = road.tiles.findIndex(
