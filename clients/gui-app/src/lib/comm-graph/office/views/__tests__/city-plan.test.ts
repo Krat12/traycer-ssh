@@ -1137,8 +1137,12 @@ describe("planCity", () => {
 
   describe("projected bounds at 1,000 agents", () => {
     // Measured directly against `measureCity` and the projector's own bounds:
-    // 70 x 81 tiles, 2,416 x 1,300 projected px (includes the tallest
+    // 70 x 83 tiles, 2,448 x 1,316 projected px (includes the tallest
     // building's stack height, `H`).
+    //
+    // Two rows and 32 x 16 px more than before `CITY_FOOT_RING_ROWS`: the foot
+    // band the host plate needs is two rows deeper, and an isometric box grows
+    // by half a tile each way per row, so +2 rows is +32 px wide and +16 tall.
     const input1280 = inputFor("triage", 1000, VIEWPORT_1280);
     const layout1280 = planCity(input1280);
     const size1280 = measureCity(input1280);
@@ -1146,9 +1150,9 @@ describe("planCity", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout1280.cols, rows: layout1280.rows }).toEqual({
         cols: 70,
-        rows: 81,
+        rows: 83,
       });
-      expect(size1280).toEqual({ width: 2416, height: 1300 });
+      expect(size1280).toEqual({ width: 2448, height: 1316 });
     });
 
     it("agrees with the projector's own bounds", () => {
@@ -1161,7 +1165,8 @@ describe("planCity", () => {
         VIEWPORT_1280.width / size1280.width,
         VIEWPORT_1280.height / size1280.height,
       );
-      expect(fit).toBeCloseTo(0.53, 2);
+      // 0.5229, down from 0.5300: a taller world fits a little smaller.
+      expect(fit).toBeCloseTo(0.52, 2);
     });
 
     it("pins the fit at 680x440", () => {
@@ -1176,7 +1181,8 @@ describe("planCity", () => {
   });
 
   describe("projected bounds at 309 agents", () => {
-    // Measured: 44 x 48 tiles, 1,472 x 828 px.
+    // Measured: 44 x 50 tiles, 1,504 x 844 px - the same two rows and the same
+    // 32 x 16 px the 1,000-agent case above explains.
     const input = inputFor("triage", 309, VIEWPORT_1280);
     const layout = planCity(input);
     const size = measureCity(input);
@@ -1184,9 +1190,9 @@ describe("planCity", () => {
     it("pins the tile and pixel size", () => {
       expect({ cols: layout.cols, rows: layout.rows }).toEqual({
         cols: 44,
-        rows: 48,
+        rows: 50,
       });
-      expect(size).toEqual({ width: 1472, height: 828 });
+      expect(size).toEqual({ width: 1504, height: 844 });
     });
 
     it("pins the fit at both viewports", () => {
@@ -1194,14 +1200,15 @@ describe("planCity", () => {
         VIEWPORT_1280.width / size.width,
         VIEWPORT_1280.height / size.height,
       );
-      expect(fit1280).toBeCloseTo(0.85, 2);
+      // 0.8294 and 0.4521, from 0.8500 and 0.4600.
+      expect(fit1280).toBeCloseTo(0.83, 2);
       const input680 = inputFor("triage", 309, VIEWPORT_680);
       const size680 = measureCity(input680);
       const fit680 = Math.min(
         VIEWPORT_680.width / size680.width,
         VIEWPORT_680.height / size680.height,
       );
-      expect(fit680).toBeCloseTo(0.46, 2);
+      expect(fit680).toBeCloseTo(0.45, 2);
     });
   });
 
@@ -1520,7 +1527,8 @@ describe("planCity", () => {
 
     const before = scene.layout();
     if (before === null) throw new Error("expected a layout after sync");
-    expect(before.rows).toBe(23);
+    // 25, two more than before the foot band: every City layout carries it.
+    expect(before.rows).toBe(25);
     const beforeSeatIds = new Map(
       Array.from(before.desks.entries()).map(([id, desk]) => [id, desk.seatId]),
     );
@@ -1532,7 +1540,10 @@ describe("planCity", () => {
     );
     const beforeProjector = ISO_PAINTER.projector(before);
     const beforeOrigin = beforeProjector.project(0, 0);
-    expect(beforeOrigin.x).toBe(368);
+    // 400 and 448 below, each 32 px right of where they were: the projected
+    // origin is `rows * ISO_HALF_WIDTH` and the foot band added two rows. The
+    // DELTA between them is what this case is about, and it does not move.
+    expect(beforeOrigin.x).toBe(400);
 
     let away = false;
     for (let step = 0; step < 500 && !away; step += 1) {
@@ -1546,12 +1557,12 @@ describe("planCity", () => {
 
     const after = scene.layout();
     if (after === null) throw new Error("expected a layout after growth");
-    expect(after.rows).toBe(26);
+    expect(after.rows).toBe(28);
     expect(after.cols).toBe(before.cols);
     expect(after.shiftFromPrevious).toBeNull();
     const afterProjector = ISO_PAINTER.projector(after);
     const afterOrigin = afterProjector.project(0, 0);
-    expect(afterOrigin.x).toBe(416);
+    expect(afterOrigin.x).toBe(448);
     const delta = {
       x: afterOrigin.x - beforeOrigin.x,
       y: afterOrigin.y - beforeOrigin.y,
@@ -2327,9 +2338,15 @@ describe("planCity", () => {
 
     // Measured on `95b4f16bd`: 8 hosts, 112 spots - 74 window reads against
     // 680 whole-world; 50 hosts, 700 spots - 94 against 4,212.
+    //
+    // RE-MEASURED with the deeper district foot: the 50-host window reads
+    // DROPPED to 90, and the other three did not move. The window is a fixed
+    // rect of the world, so two extra rows at every district's foot put
+    // marginally sparser ground inside it - the claim below, that the window's
+    // cost barely moves while the world grows, is if anything strengthened.
     expect(spread8.windowReads).toBe(74);
     expect(spread8.wholeReads).toBe(680);
-    expect(spread50.windowReads).toBe(94);
+    expect(spread50.windowReads).toBe(90);
     expect(spread50.wholeReads).toBe(4212);
 
     // The window's cost barely moves while the world grows six-fold, and is

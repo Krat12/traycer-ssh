@@ -194,9 +194,11 @@ const CITY_APPEND_COUNTS: ReadonlyArray<number> = [0, 90, 1000];
  * scene layout are carried through every append, exactly as
  * `t5-overview-handoff.test.ts`'s `grown-city-sweep` probe does. City
  * deliberately freezes a district's WIDTH across appends, so the roster
- * growing 3 -> 93 -> 1,003 grows the same 18-wide district from 18x13 to
- * 18x46 to 18x410 tiles - narrower against its height every append, not
- * larger on both axes.
+ * growing 3 -> 93 -> 1,003 grows the same 18-wide district from 18x15 to
+ * 18x48 to 18x412 tiles - narrower against its height every append, not
+ * larger on both axes. Each step measured, and each two rows taller than it
+ * was before `CITY_FOOT_RING_ROWS`: the foot band the host plate needs is a
+ * property of every City layout, not of one population.
  */
 function growAppendedCity(): OfficeScene {
   const view = OFFICE_VIEWS.city;
@@ -228,14 +230,14 @@ function growAppendedCity(): OfficeScene {
 }
 
 describe("the grown-City overview coverage (H1)", () => {
-  it("covers every painted point of the final append-grown City district (18x410 tiles)", () => {
+  it("covers every painted point of the final append-grown City district (18x412 tiles)", () => {
     const view = OFFICE_VIEWS.city;
     const scene = growAppendedCity();
     const layout = scene.layout();
     if (layout === null) throw new Error("no layout");
     expect({ cols: layout.cols, rows: layout.rows }).toEqual({
       cols: 18,
-      rows: 410,
+      rows: 412,
     });
     const misses = sweepOverviewBlocks(scene, view, layout);
     // The symmetric-diamond overhang answered 634.2683906914502px on this
