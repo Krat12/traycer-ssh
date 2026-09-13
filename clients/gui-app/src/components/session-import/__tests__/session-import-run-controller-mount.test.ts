@@ -91,6 +91,9 @@ describe("SessionImportRunController mount point", () => {
     expect(mountAt).toBeLessThan(providerClosesAt);
     expect(routedTreeAt).toBeGreaterThan(providerOpensAt);
     expect(routedTreeAt).toBeLessThan(providerClosesAt);
+    // And before the routed tree, so the handle is registered by the time
+    // any surface under it can mount an Import button.
+    expect(mountAt).toBeLessThan(routedTreeAt);
   });
 
   it("is mounted in neither shell, so no surface depends on which shell it is in", () => {
