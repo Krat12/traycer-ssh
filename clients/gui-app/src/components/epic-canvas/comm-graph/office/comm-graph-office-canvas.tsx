@@ -89,7 +89,10 @@ import {
   planOfficeStaticChunks,
   type OfficeStaticChunkDraw,
 } from "@/components/epic-canvas/comm-graph/office/office-static-layer";
-import { officeBenchStatuses } from "@/components/epic-canvas/comm-graph/office/office-bench";
+import {
+  officeBenchStatuses,
+  useOfficeBenchScriptStep,
+} from "@/components/epic-canvas/comm-graph/office/office-bench";
 import {
   officeTileRectOf,
   OFFICE_PROJECTION_BLEED_PX,
@@ -2592,7 +2595,14 @@ export function CommGraphOfficeCanvas(props: CommGraphOfficeCanvasProps) {
   // carries the statuses instead. `null` in production, where the reader
   // returns before it touches anything and takes the fixtures out of the
   // bundle with it.
-  const benchStatusById = officeBenchStatuses();
+  //
+  // The STEP is how far a scripted bench has got: the civic layer is driven by
+  // status transitions, so a bench that is to show an outbreak has to hand the
+  // scene a map that changed since the last sync rather than one that was
+  // already full of crashed agents when the office opened. It is 0 forever on
+  // every bench that named no script, and in production.
+  const benchScriptStep = useOfficeBenchScriptStep();
+  const benchStatusById = officeBenchStatuses(benchScriptStep);
   const statusById = useMemo(
     () =>
       benchStatusById ??

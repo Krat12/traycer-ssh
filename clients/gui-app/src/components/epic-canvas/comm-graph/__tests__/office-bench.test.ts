@@ -11,9 +11,19 @@ import {
   officeBench,
   parseOfficeBenchSearch,
   OFFICE_BENCH_MAX_AGENTS,
+  OFFICE_BENCH_OUTBREAK_DEFAULT,
   OFFICE_BENCH_SEED,
   type OfficeBenchRequest,
 } from "@/components/epic-canvas/comm-graph/office/office-bench";
+
+/**
+ * A URL that asked for no script: the two script fields a request always
+ * carries, at the values "nothing happens to this office" takes.
+ */
+const STILL_OFFICE = {
+  script: null,
+  outbreak: OFFICE_BENCH_OUTBREAK_DEFAULT,
+} as const;
 
 /** The bench's agents alone, which most of these cases are about. */
 function benchAgents(
@@ -27,13 +37,14 @@ describe("parseOfficeBenchSearch", () => {
     expect(parseOfficeBenchSearch("?officeBench=1000")).toEqual({
       shape: "triage",
       agents: 1000,
+      ...STILL_OFFICE,
     });
   });
 
   it("reads a named shape, which is how the review's worst case is reachable", () => {
     expect(
       parseOfficeBenchSearch("?officeBench=1000&officeBenchShape=many-roots"),
-    ).toEqual({ shape: "many-roots", agents: 1000 });
+    ).toEqual({ shape: "many-roots", agents: 1000, ...STILL_OFFICE });
   });
 
   it("falls back to triage for a shape it does not know", () => {
@@ -41,7 +52,7 @@ describe("parseOfficeBenchSearch", () => {
     // bench that every number in the plan is quoted at.
     expect(
       parseOfficeBenchSearch("?officeBench=12&officeBenchShape=atrium"),
-    ).toEqual({ shape: "triage", agents: 12 });
+    ).toEqual({ shape: "triage", agents: 12, ...STILL_OFFICE });
   });
 
   it("caps a count that would take the window down with it", () => {
@@ -62,7 +73,7 @@ describe("parseOfficeBenchSearch", () => {
   it("keeps other search parameters out of it", () => {
     expect(
       parseOfficeBenchSearch("?focusedAt=3&officeBench=309&focusPaneId=pane-1"),
-    ).toEqual({ shape: "triage", agents: 309 });
+    ).toEqual({ shape: "triage", agents: 309, ...STILL_OFFICE });
   });
 });
 
@@ -70,7 +81,11 @@ describe("officeBench", () => {
   it("projects the fixture as the comm-graph's own nodes", () => {
     const fixture = makeTestEpic("triage", 12, OFFICE_BENCH_SEED);
 
-    const nodes = benchAgents({ shape: "triage", agents: 12 });
+    const nodes = benchAgents({
+      shape: "triage",
+      agents: 12,
+      ...STILL_OFFICE,
+    });
 
     expect(nodes).toHaveLength(12);
     // The same agents, in the same order, carrying every field the tile's own
@@ -97,7 +112,11 @@ describe("officeBench", () => {
   });
 
   it("carries the archived agents, which are the ones a still bench can show", () => {
-    const nodes = benchAgents({ shape: "triage", agents: 309 });
+    const nodes = benchAgents({
+      shape: "triage",
+      agents: 309,
+      ...STILL_OFFICE,
+    });
 
     // 4 % of the fixture, and the one status that rides on the agent record
     // rather than on a store the bench has no entry in.
@@ -108,15 +127,31 @@ describe("officeBench", () => {
     // The tile calls this on every render and again on every remount, and a
     // view switch is a remount; rebuilding a thousand agents each time would
     // make the bench the thing being measured.
-    const first = benchAgents({ shape: "many-roots", agents: 50 });
-    const second = benchAgents({ shape: "many-roots", agents: 50 });
+    const first = benchAgents({
+      shape: "many-roots",
+      agents: 50,
+      ...STILL_OFFICE,
+    });
+    const second = benchAgents({
+      shape: "many-roots",
+      agents: 50,
+      ...STILL_OFFICE,
+    });
 
     expect(second).toBe(first);
   });
 
   it("rebuilds when the bench asked for changes", () => {
-    const triage = benchAgents({ shape: "triage", agents: 50 });
-    const roots = benchAgents({ shape: "many-roots", agents: 50 });
+    const triage = benchAgents({
+      shape: "triage",
+      agents: 50,
+      ...STILL_OFFICE,
+    });
+    const roots = benchAgents({
+      shape: "many-roots",
+      agents: 50,
+      ...STILL_OFFICE,
+    });
 
     expect(roots).not.toBe(triage);
     // Every root of its own, which is the shape's whole point.
@@ -129,7 +164,11 @@ describe("officeBench", () => {
     // and bubbles over desks at a thousand agents.
     const fixture = makeTestEpic("triage", 309, OFFICE_BENCH_SEED);
 
-    const bench = officeBench({ shape: "triage", agents: 309 });
+    const bench = officeBench({
+      shape: "triage",
+      agents: 309,
+      ...STILL_OFFICE,
+    });
 
     expect(bench.statusById).toEqual(fixture.statusById);
     // NEITHER of the two still statuses counts. `idle` is seated with nothing
@@ -147,9 +186,21 @@ describe("officeBench", () => {
   it("is the same tenth of the floor on every run, not a fresh roll", () => {
     // The point of a bench: two profiles of one URL are comparable, so a
     // difference between them is the code's and not the dice's.
-    const first = officeBench({ shape: "one-team", agents: 120 }).statusById;
-    const rebuilt = officeBench({ shape: "triage", agents: 120 }).statusById;
-    const again = officeBench({ shape: "one-team", agents: 120 }).statusById;
+    const first = officeBench({
+      shape: "one-team",
+      agents: 120,
+      ...STILL_OFFICE,
+    }).statusById;
+    const rebuilt = officeBench({
+      shape: "triage",
+      agents: 120,
+      ...STILL_OFFICE,
+    }).statusById;
+    const again = officeBench({
+      shape: "one-team",
+      agents: 120,
+      ...STILL_OFFICE,
+    }).statusById;
 
     expect(rebuilt).not.toBe(first);
     expect([...again]).toEqual([...first]);
@@ -159,7 +210,11 @@ describe("officeBench", () => {
     // Held together rather than beside each other: a status map built from one
     // fixture and an agent set from another would name agents that are not
     // there and leave the ones that are reading idle.
-    const bench = officeBench({ shape: "two-hosts", agents: 80 });
+    const bench = officeBench({
+      shape: "two-hosts",
+      agents: 80,
+      ...STILL_OFFICE,
+    });
 
     const ids = new Set(bench.agents.map((node) => node.id));
     for (const agentId of bench.statusById.keys()) {
