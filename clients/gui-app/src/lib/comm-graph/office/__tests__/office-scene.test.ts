@@ -7672,6 +7672,142 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     expect(dispatched).toBe(road !== null);
   });
 
+  /** Host-b's own storey, found by its host rather than by an index. */
+  function floorOfHost(
+    scene: OfficeScene,
+    hostId: string,
+  ): { readonly index: number; readonly floor: OfficeFloor } {
+    const floors = layoutOf(scene).floors;
+    const index = floors.findIndex((floor) => floor.hostId === hostId);
+    if (index < 0) throw new Error(`no storey for ${hostId}`);
+    return { index, floor: floors[index] };
+  }
+
+  /** This storey's infirmary kerb and its road's entry, as one comparable line. */
+  function wardKerbOf(floor: OfficeFloor): string {
+    const ward = floor.civic.find((room) => room.kind === "infirmary");
+    const kerb = ward?.kerbTile ?? null;
+    const entry = floor.road?.entryTile ?? null;
+    return `kerb=${String(kerb?.col)},${String(kerb?.row)} entry=${String(entry?.col)},${String(entry?.row)}`;
+  }
+
+  /**
+   * READ Z'S Z1: A TRIP FOLLOWS ITS HOST'S STOREY, NOT THE NUMBER IT HAD.
+   *
+   * A vehicle cached the index of the floor whose road it drives on, and a floor
+   * index is a POSITION in the partition's host-id ordering. So one lexically
+   * earlier host appearing renumbered the storey under a trip already at the
+   * kerb. The read X ids are what made that cost a rider: the room id no longer
+   * changes, so the next dispatch for that ward COALESCES onto the standing trip,
+   * `absorb` appends the newcomer, and the cached index then resolves to another
+   * host's floor - no ward there, so no kerb, the frame stops drawing the van and
+   * the next tick removes it. The rider it had just absorbed never gets a trip and
+   * nothing retries while it stays crashed.
+   *
+   * The OLD trip's loss is older than those ids: before them the room id changed
+   * with the index, so the coalesce missed and the newcomer spawned its own van
+   * while the original still drove off a cliff. Both halves are one fix - resolve
+   * the floor from the room - and this case pins both, since the van it looks for
+   * after the append is the FIRST one.
+   *
+   * MOTION ON AND A SETTLED FEED, live cursor: the van has to be on the road
+   * rather than seated instantly, and the append has to be a sync that re-plans
+   * while it is out there.
+   */
+  it("keeps a ward's ambulance when a lexically earlier host renumbers its storey", (context) => {
+    const crew = wardAgents("z1", "host-b", 3);
+    const crewIds = new Set(crew.map((person) => person.id));
+    const scene = newVehicleScene();
+    scene.sync(
+      sceneInput({ agents: crew, visibleAgentIds: crewIds, feedSettled: true }),
+    );
+    const opened = layoutOf(scene);
+    if (opened.floors[0].road === null || !hasInfirmary(opened)) {
+      context.skip("this view has no road or infirmary yet (K2)");
+      return;
+    }
+
+    // ONE CRASH, ONE AMBULANCE, asserted positively before anything moves.
+    scene.sync(
+      sceneInput({
+        agents: crew,
+        visibleAgentIds: crewIds,
+        statusById: failures("z1-a"),
+        feedSettled: true,
+      }),
+    );
+    expect(
+      namesInfirmary(infirmaryNames(opened), scene.whereabouts("z1-a") ?? ""),
+      "z1-a is not in the ward",
+    ).toBe(true);
+    const sent = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+      (vehicle) => vehicle.vehicleKind,
+    );
+    expect(sent, "no ambulance for the first crash").toEqual(["ambulance"]);
+    const before = floorOfHost(scene, "host-b");
+
+    // THE EARLIER HOST, AND A SECOND CRASH, ON ONE SYNC - which is what makes
+    // the dispatch land on the standing trip rather than on a free slot.
+    const early = agent({ id: "host-a-root", hostId: "host-a", createdAt: 9 });
+    const both = [...crew, early];
+    const bothIds = new Set(both.map((person) => person.id));
+    scene.sync(
+      sceneInput({
+        agents: both,
+        visibleAgentIds: bothIds,
+        statusById: failures("z1-a", "z1-b"),
+        feedSettled: true,
+      }),
+    );
+    const after = floorOfHost(scene, "host-b");
+
+    // THE PREMISES: host-b moved in the ORDERING and nowhere else. Only a view
+    // that FREEZES its ground has both - measured, and this is where the other
+    // five go:
+    //
+    //   Towers, Building  the index does not move at all. A scene carries its
+    //                     previous layout, which keeps a known host's storeys
+    //                     where they were and appends the newcomer's.
+    //   Floor, Campus     the index moves and so does the ward. The Floor
+    //                     stacks storeys, so host-b's kerb goes from 28,25 to
+    //                     28,53; Campus re-bands sideways, 0,20 to 16,20. A van
+    //                     following a ward that itself moved is a different
+    //                     question from one whose ward stayed put.
+    //   City              both: a frozen band, and a new index. The case runs.
+    //
+    // City is asserted rather than skipped, because for City these premises are
+    // the promise the frozen band makes.
+    const renumbered = after.index !== before.index;
+    const groundHeld = wardKerbOf(after.floor) === wardKerbOf(before.floor);
+    if (viewId === "city") {
+      expect(renumbered, "City's storey did not move").toBe(true);
+      expect(groundHeld, "City's frozen ward moved").toBe(true);
+    } else if (!renumbered || !groundHeld) {
+      context.skip(
+        `${viewId} ${renumbered ? "moves the ward with the index" : "keeps its index under a carry"}`,
+      );
+      return;
+    }
+    expect(
+      namesInfirmary(
+        infirmaryNames(layoutOf(scene)),
+        scene.whereabouts("z1-b") ?? "",
+      ),
+      "z1-b is not in the ward",
+    ).toBe(true);
+
+    // AND THE TRIP IS STILL THERE, after the re-plan and a tick, exactly one -
+    // one means the newcomer was absorbed rather than given a second van, and
+    // the tick is what `advanceVehicle` would have used to remove it.
+    scene.tick(100);
+    expect(
+      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+        (vehicle) => vehicle.vehicleKind,
+      ),
+      "the ward's ambulance did not survive its storey being renumbered",
+    ).toEqual(["ambulance"]);
+  });
+
   it("dispatches an ambulance for a failure that got a bed", (context) => {
     const scene = newVehicleScene();
     scene.sync(sceneInput({ agents: AGENTS, visibleAgentIds: BOTH }));
