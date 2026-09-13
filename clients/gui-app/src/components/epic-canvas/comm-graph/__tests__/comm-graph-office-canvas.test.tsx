@@ -104,6 +104,10 @@ import { cloneElement, type ReactNode } from "react";
 import { CommGraphOfficeCanvas } from "@/components/epic-canvas/comm-graph/office/comm-graph-office-canvas";
 import { OfficeAutoChip } from "@/components/epic-canvas/comm-graph/office/office-auto-chip";
 import type { OfficeAutoDecision } from "@/lib/comm-graph/office/office-auto";
+import {
+  useAppLocalNotificationsStore,
+  type AppLocalNotificationEntry,
+} from "@/stores/notifications/app-local-notifications-store";
 import { useCommGraphTimelineStore } from "@/stores/epics/comm-graph-timeline-store";
 import {
   commGraphPairId,
@@ -209,6 +213,59 @@ beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", ControllableIntersectionObserver);
   resolvedThemeMock.current = "light";
 });
+
+/**
+ * PUTS A STATUS ON THE RENDERED POPULATION - the thing this suite could not do.
+ *
+ * Every Building and Floor office here rendered COLD, so every storey was
+ * cubbies and every seat one tile: `canvasAgent` builds a `CommGraphAgentNode`,
+ * which carries no status, and the canvas derives `statusById` itself from
+ * sources none of these cases reached. `partitionOfficePopulation` then found
+ * nothing live and nothing hot, `quietIds` returned every member, and the
+ * civic layer - which IS status-driven placement - had nothing to draw.
+ *
+ * The canvas reads three sources, and two of them are reachable from a test
+ * with no production change at all:
+ *
+ * - `awaiting` comes from `awaitingSenderIds(events, …)`, so it rides the
+ *   `events` prop these cases already pass;
+ * - `failure` comes from an unread, non-terminal app-local notification whose
+ *   payload addresses the agent - which is this helper. The row has to be
+ *   unread (`readAt: null`), carry the agent's own host, and NOT be one of the
+ *   `terminal.*` kinds, which the indicator reads as a terminal failure and
+ *   which `officeFlagKind` would then call `attention` rather than `failure`;
+ * - `attention` additionally comes from the host indicator context, which is
+ *   not needed here and is left alone.
+ *
+ * Deliberately the real selector path rather than a stubbed `statusById`: what
+ * these cases are worth depends on the canvas deriving the status the way it
+ * does in the app, and a stub would pass against a canvas that had stopped
+ * reading the store at all.
+ */
+function seedFailure(agentId: string, hostId: string | null): void {
+  // Annotated rather than inferred: an unannotated literal spread into
+  // `setState` reports its mismatch against the whole store shape, which
+  // buries the one field that is actually wrong under a page of union text.
+  // Named here, a bad row points at itself.
+  const row: AppLocalNotificationEntry = {
+    id: `local-failure-${agentId}`,
+    originHostId: hostId,
+    updatedAt: 1,
+    readAt: null,
+    kind: "stream.transport.error",
+    sourceRef: null,
+    // `kind: "chat"` is the payload union's discriminant, not decoration:
+    // `NotificationPayload` is a union over nine entity kinds and this is the
+    // one that addresses an agent by `{epicId, chatId}`.
+    payload: { kind: "chat", epicId: "epic-1", chatId: agentId },
+    message: "stream failed",
+    detail: null,
+    displayedUpdatedAt: 1,
+  };
+  useAppLocalNotificationsStore.setState((state) => ({
+    byId: { ...state.byId, [row.id]: row },
+  }));
+}
 
 function agent(id: string, name: string): CommGraphAgentNode {
   return {
@@ -681,6 +738,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   useCommGraphTimelineStore.setState({ stateByEpicId: {} });
+  useAppLocalNotificationsStore.setState({ byId: {} });
 });
 
 /**
@@ -1444,6 +1502,42 @@ describe("CommGraphOfficeCanvas", () => {
     expect(
       screen.getByTestId("comm-graph-office-directory-quiet").textContent,
     ).toBe("Quiet · 1 idle or archived");
+    expect(
+      screen.getByTestId("comm-graph-office-directory-footer").textContent,
+    ).toBe("2 agents · 0 at work");
+  });
+
+  it("seats a real status on the rendered population, which this suite could not do before", () => {
+    // THE PREREQUISITE'S OWN CASE. Every office here rendered cold, so the
+    // footer below read "0 at work" whatever the epic was doing and no case
+    // could put an agent anywhere but a cubby. `seedFailure` writes the one
+    // thing the canvas actually reads - an unread, non-terminal, app-local
+    // failure addressed to that agent - and the status arrives through the
+    // real selector rather than through a stubbed `statusById`, which is what
+    // makes it evidence about the canvas rather than about the fixture.
+    //
+    // The footer is the observable because it counts STATUSES and nothing
+    // else - `office-directory-panel`'s `atWork` is
+    // `everyone.filter((m) => isOfficeHotStatus(m.status)).length`, the shared
+    // hot/cold predicate applied to the status each member arrived with. So if
+    // the seed did not reach `officeAgentStatuses`, this reads exactly as the
+    // cold control below it. The bed itself is NOT observable from here: this
+    // suite mocks `AgentHoverTooltip` down to its bare trigger, so the hover
+    // card that would name the infirmary never renders, and sprites go through
+    // `drawImage`, which `paintedText` cannot see. Where the agent ends up is
+    // pinned in `office-scene.test.ts`; what this case owes is that the status
+    // gets here at all.
+    seedFailure(REVIEWER.id, REVIEWER.hostId);
+    renderOffice(new Set([ORCHESTRATOR.id, REVIEWER.id]));
+
+    expect(
+      screen.getByTestId("comm-graph-office-directory-footer").textContent,
+    ).toBe("2 agents · 1 at work");
+    // ...and the cold reading is still what an unseeded office gives, so the
+    // line above is the seed and not the footer having changed meaning.
+    cleanup();
+    useAppLocalNotificationsStore.setState({ byId: {} });
+    renderOffice(new Set([ORCHESTRATOR.id, REVIEWER.id]));
     expect(
       screen.getByTestId("comm-graph-office-directory-footer").textContent,
     ).toBe("2 agents · 0 at work");
