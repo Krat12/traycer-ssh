@@ -2661,7 +2661,33 @@ export class OfficeScene {
       if (want === undefined && heldWant === "desk") continue;
       this.seats.endClaim(agentId);
       const character = this.characters.get(agentId);
-      if (character !== undefined) this.returnToDesk(character);
+      // NOBODY LEFT TO WALK HOME, so the seat is freed HERE. An archived agent
+      // is deleted outright on a first sync or under reduced motion, and
+      // `vacated` is only ever called by a character arriving somewhere - so a
+      // claim ended for an agent that no longer exists would sit in
+      // `releasing` with nothing able to finish it, and its bed or chair would
+      // stay in `occupancy()` for the life of the scene. Measured: the seat
+      // was still held after six syncs and sixteen hundred ticks.
+      if (character === undefined) {
+        this.seats.vacated(agentId);
+        continue;
+      }
+      // THIS PASS RELEASES SEATS; IT DOES NOT CHOOSE DESTINATIONS. Two walks
+      // are already under way by the time it runs, and `returnToDesk` would
+      // overwrite either with `returning`:
+      //
+      // - a departure. `sendArchivedHome` runs before this and sets `leaving`,
+      //   so an archived lounge holder would be sent back to its desk instead
+      //   of out of the building, and would never depart.
+      // - a queue walk. `updateReceptionQueue` runs before this too, so a
+      //   civic holder that flips to `attention` would have the summons it was
+      //   just given cancelled on the same sync.
+      //
+      // Both keep their walk. The claim is ended either way, which is the part
+      // that is this pass's business, and the seat frees when the walk ends.
+      if (character.errand === "leaving") continue;
+      if (this.inReceptionQueue(character)) continue;
+      this.returnToDesk(character);
     }
 
     for (const agentId of served) {
