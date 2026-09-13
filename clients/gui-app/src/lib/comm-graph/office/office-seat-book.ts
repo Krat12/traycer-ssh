@@ -323,17 +323,37 @@ export class OfficeSeatBook {
     if (layout === null) return null;
     const existing = this.claims.get(agentId);
     if (existing !== undefined) {
-      // An agent that goes hot again before it has finished walking home takes
-      // ITS OWN seat back rather than shopping for another one. Picking a
-      // second seat here would abandon a reservation that only `vacated` may
-      // end, and the seat the agent is still standing in would go to somebody
-      // else while it is in it.
-      if (existing.state === "releasing") {
-        this.claims.set(agentId, { ...existing, state: "held" });
-        this.claimShortfall.delete(agentId);
-        this.refresh();
+      const existingSeat = layout.seats.get(existing.seatId);
+      if (existingSeat === undefined) return null;
+      // AN EXISTING CLAIM IS ONLY REUSABLE FOR THE KIND IT IS. The rule below
+      // is about an agent coming back for the seat it was walking away from,
+      // and that is only the same seat while it still wants the same FURNITURE.
+      // Without this check a bed answered a request for a lounge chair: an
+      // agent going `failure -> awaiting` had its bed claim ended and was sent
+      // home, then the claim in the same sync re-held that very bed and
+      // `startCivicWalk` settled it back into it - so it never reached the
+      // lounge, and every later sync did it again. A wake desk answered the
+      // first request for a bed the same way.
+      if (wantOfSeat(existingSeat) === preference.wants) {
+        // An agent that goes hot again before it has finished walking home
+        // takes ITS OWN seat back rather than shopping for another one.
+        // Picking a second seat here would abandon a reservation that only
+        // `vacated` may end, and the seat the agent is still standing in would
+        // go to somebody else while it is in it.
+        if (existing.state === "releasing") {
+          this.claims.set(agentId, { ...existing, state: "held" });
+          this.claimShortfall.delete(agentId);
+          this.refresh();
+        }
+        return existingSeat;
       }
-      return layout.seats.get(existing.seatId) ?? null;
+      // Falling through allocates fresh and OVERWRITES the stale claim, which
+      // is what frees the bed for the next crasher on this same sync rather
+      // than the next - the release pass above says exactly that. It does not
+      // strand the `endClaim` -> `vacated` ordering: a later `vacated` for the
+      // old seat is a no-op against a `held` claim, and if nothing of the new
+      // kind is free the stale claim is left releasing and the agent simply
+      // walks home, which is the honest outcome.
     }
     const seat = this.firstFreeSeat(layout, agentId, preference);
     if (seat === null) {
