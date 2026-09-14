@@ -29,6 +29,10 @@ import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
 import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-store";
 import type { OnboardingBranch } from "@/stores/onboarding/onboarding-tour-catalog";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
+import {
+  sessionImportIsRunning,
+  useSessionImportRun,
+} from "@/stores/session-import/session-import-run-store";
 
 const NO_PROVIDERS: ReadonlyArray<ProviderId> = [];
 
@@ -113,6 +117,10 @@ export function WelcomeModal(props: {
     streamBinding,
     hostReady && modalPage === 2,
   );
+  // Page 1 has no probe of its own, but the run controller fills this slice
+  // the moment it attaches to a run already in flight on connect - so a run
+  // it knows about is the one fact page 1 can read without a second RPC.
+  const runInFlight = sessionImportIsRunning(useSessionImportRun(streamHostId));
   // The "untick" hint describes ticked rows on screen, so it is true only
   // while page 2 is showing the LIST - not the already-running notice, the
   // scanning line or the empty state - and at least one row is ticked.
@@ -147,7 +155,9 @@ export function WelcomeModal(props: {
       enabled_provider_count: enabledProviderIds.length,
       session_count: welcomeScan.importableCount,
     });
-    if (welcomeBranchAfterProviders(welcomeScan) === "no-sessions") {
+    if (
+      welcomeBranchAfterProviders(welcomeScan, runInFlight) === "no-sessions"
+    ) {
       finishModal("no-sessions");
       return;
     }
@@ -205,10 +215,19 @@ export function WelcomeModal(props: {
  * scanned, or when the scan already finished with nothing to import; the
  * sessions page otherwise - including while the scan is still running or
  * has failed, since page 2 owns the copy for both.
+ *
+ * A run already in flight on the host is tested FIRST, before the scan: it
+ * is importing rows onto the landing list regardless of what this scan
+ * found, so the empty-scan shortcut would send the user down the
+ * `no-sessions` tours with imported tasks about to appear. Page 2's
+ * already-running notice is the same test in the same position, and its
+ * Continue finishes as `sessions`.
  */
 function welcomeBranchAfterProviders(
   welcomeScan: WelcomeScan,
+  runInFlight: boolean,
 ): "no-sessions" | "sessions-page" {
+  if (runInFlight) return "sessions-page";
   if (!welcomeScan.eligible) return "no-sessions";
   const { phase } = welcomeScan.scan.state;
   if (phase === "complete" && welcomeScan.importableCount === 0) {
