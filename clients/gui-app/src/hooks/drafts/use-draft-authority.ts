@@ -175,16 +175,6 @@ export function useDraftAuthorityControl(args: {
     attemptCounter.current += 1;
     const attempt = attemptCounter.current;
     const promise = (async (): Promise<boolean> => {
-      const result = await claimDraft(draftId);
-      if (result.status !== "ok" && result.status !== "already-owned") {
-        return false;
-      }
-      // Superseded: the surface moved to another host while this claim ran.
-      // Its document names this host as owner and would route the dirty row
-      // back here; the current host's claim is the one that counts.
-      const stillCurrent = (): boolean =>
-        currentHostRef.current === tabHostId &&
-        (latestApplied.current.get(draftId) ?? 0) <= attempt;
       const reclaimOnCurrentHost = (): void => {
         // The surface moved hosts and no further edit started that host's
         // claim: start it now, for this same draft, so the edit that began
@@ -196,6 +186,19 @@ export function useDraftAuthorityControl(args: {
           noteEditRef.current();
         }
       };
+      const result = await claimDraft(draftId);
+      if (result.status !== "ok" && result.status !== "already-owned") {
+        // A refusal is repaired on its own host (host-fenced); on a host the
+        // surface has left it repairs nothing, so the current host claims.
+        reclaimOnCurrentHost();
+        return false;
+      }
+      // Superseded: the surface moved to another host while this claim ran.
+      // Its document names this host as owner and would route the dirty row
+      // back here; the current host's claim is the one that counts.
+      const stillCurrent = (): boolean =>
+        currentHostRef.current === tabHostId &&
+        (latestApplied.current.get(draftId) ?? 0) <= attempt;
       if (!stillCurrent()) {
         reclaimOnCurrentHost();
         return true;

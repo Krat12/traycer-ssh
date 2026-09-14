@@ -310,6 +310,7 @@ export function LandingComposer(props: LandingComposerProps) {
           : state.drafts.find((entry) => entry.id === draftId);
       return {
         generation: draft?.generation ?? 0,
+        dirty: draft !== undefined && draft.generation > draft.syncedGeneration,
         content: draft?.content ?? null,
         settings: draft?.settings ?? null,
         composerMode: draft?.composerMode ?? null,
@@ -323,6 +324,13 @@ export function LandingComposer(props: LandingComposerProps) {
     const seen = seenEditMark.current;
     if (seen === null) {
       seenEditMark.current = landingEditMark;
+      // A row that mounts already dirty and unowned carries an edit whose
+      // claim never settled here (the surface was closed before the refusal
+      // landed, or the app restarted): re-arm it now rather than waiting
+      // for the next keystroke.
+      if (landingEditMark.dirty && resolvedHostId !== null) {
+        authority.noteEdit();
+      }
       return;
     }
     if (landingEditMark.generation <= seen.generation) {

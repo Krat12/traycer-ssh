@@ -1162,4 +1162,52 @@ describe("useDraftAuthorityControl", () => {
     expect(bindLandingOwnershipMock.bind).not.toHaveBeenCalled();
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
+
+  it("a refused claim on a left host re-claims on the current host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Claim 1: noteEdit on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The surface moves to host-b without any edit there yet - the draft is
+    // still unowned on host-b too (owner is host-c).
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Claim 1 is refused while host-b is current: the refusal is host-fenced
+    // to host-a, which the surface has since left, so it repairs nothing.
+    // Instead the latest `noteEdit` (bound to the now-current host-b)
+    // starts host-b's own claim for the same draft.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
 });
