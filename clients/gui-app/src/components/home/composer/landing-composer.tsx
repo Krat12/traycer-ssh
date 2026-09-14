@@ -879,26 +879,29 @@ export function LandingComposer(props: LandingComposerProps) {
   // claim, with `ownershipSettled` marking the one re-entry that must not
   // settle again - a refused claim leaves the draft unowned.
   const ownershipSettling = useRef(false);
-  const ownershipSettled = useRef(false);
+  // The host the settle was made for: a bypass earned on host A must not
+  // skip host B's settle if the composer re-pointed while the claim ran.
+  const ownershipSettledFor = useRef<string | null>(null);
   const handleSubmitRef = useRef<() => void>(() => undefined);
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
-    if (authority.unowned && !ownershipSettled.current) {
+    if (authority.unowned && ownershipSettledFor.current !== resolvedHostId) {
       if (ownershipSettling.current) return;
       ownershipSettling.current = true;
+      const settledFor = resolvedHostId;
       void authority.settleOwnership().finally(() => {
         ownershipSettling.current = false;
-        ownershipSettled.current = true;
+        ownershipSettledFor.current = settledFor;
         try {
           handleSubmitRef.current();
         } finally {
-          ownershipSettled.current = false;
+          ownershipSettledFor.current = null;
         }
       });
       return;
     }
     dispatchSubmit();
-  }, [authority, canSubmit, dispatchSubmit]);
+  }, [authority, canSubmit, dispatchSubmit, resolvedHostId]);
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
@@ -920,23 +923,30 @@ export function LandingComposer(props: LandingComposerProps) {
       if (!workspaceCanStart || isSubmitting) return;
       // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
       // is restated here: an agent is created off the draft.
-      if (authority.unowned && !ownershipSettled.current) {
+      if (authority.unowned && ownershipSettledFor.current !== resolvedHostId) {
         if (ownershipSettling.current) return;
         ownershipSettling.current = true;
+        const settledFor = resolvedHostId;
         void authority.settleOwnership().finally(() => {
           ownershipSettling.current = false;
-          ownershipSettled.current = true;
+          ownershipSettledFor.current = settledFor;
           try {
             handleStartTerminalRef.current(launch);
           } finally {
-            ownershipSettled.current = false;
+            ownershipSettledFor.current = null;
           }
         });
         return;
       }
       dispatchStartTerminal(launch);
     },
-    [authority, dispatchStartTerminal, isSubmitting, workspaceCanStart],
+    [
+      authority,
+      dispatchStartTerminal,
+      isSubmitting,
+      resolvedHostId,
+      workspaceCanStart,
+    ],
   );
   useEffect(() => {
     handleStartTerminalRef.current = handleStartTerminal;
