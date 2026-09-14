@@ -371,6 +371,68 @@ describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placeme
     expect(() => bindLandingAdoptionHost(null)).not.toThrow();
     expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
   });
+
+  it("a hold survives a round trip through its adoption host when nothing was mounted there to flush it", () => {
+    const id = "own-hold-survives-unflushed-return";
+    bindLandingAdoptionHost(HOST_B);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    // No session is mounted for HOST_A, so the return below re-queues onto
+    // nothing and cannot flush the row clean.
+    bindLandingAdoptionHost(HOST_A);
+    bindLandingAdoptionHost(HOST_B);
+
+    // If the marker had been released on the round trip (rather than only
+    // at sync), this would wrongly stop withholding the row here.
+    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
+  });
+
+  it("contrast: once a return flush actually syncs the row, the marker is gone and a later edit is not spuriously withheld", async () => {
+    const id = "own-marker-released-at-sync";
+    const logA: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_A, logA);
+    bindLandingAdoptionHost(HOST_B);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(logA.upserts).toEqual([]);
+
+    // The return flushes through the mounted session, and `rememberSynced`
+    // releases the marker once the row is clean.
+    bindLandingAdoptionHost(HOST_A);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
+
+    // A fresh edit, made directly in the store (bumping generation past
+    // syncedGeneration) while the placement still matches the adoption
+    // host, must not be withheld by a marker that should already be gone.
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === id
+          ? { ...draft, generation: draft.generation + 1 }
+          : draft,
+      ),
+    }));
+
+    expect(
+      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
+    ).toEqual([id]);
+  });
 });
 
 describe("submitComposerDraft", () => {

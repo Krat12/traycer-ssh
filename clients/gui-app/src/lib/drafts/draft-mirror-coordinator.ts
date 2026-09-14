@@ -191,7 +191,9 @@ export function bindLandingAdoptionHost(hostId: string | null): void {
     if (row.adoption.state !== "adopted" || row.adoption.hostId !== hostId) {
       continue;
     }
-    heldLandingEdits.delete(draftId);
+    // The marker stays until the edit SYNCS (`rememberSynced`): a placement
+    // that leaves again before this flush must find the row still held, or
+    // the old host's sweep would send the edit while the placement is gone.
     sessions.get(hostId)?.session.noteDirty(draftId);
   }
 }
@@ -418,6 +420,11 @@ const sink: DraftMirrorSink = {
   },
   rememberSynced(draftId, hostRevision, collectedGeneration) {
     landingDraftRememberSynced(draftId, hostRevision, collectedGeneration);
+    // A held landing edit is released only once the generation it belongs
+    // to has synced; a route or a placement return does not release it.
+    if (heldLandingEdits.has(draftId) && !landingDraftIsDirty(draftId)) {
+      heldLandingEdits.delete(draftId);
+    }
     composerDraftRememberSynced(draftId, hostRevision, collectedGeneration);
     interviewDraftRememberSynced(draftId, hostRevision, collectedGeneration);
     newChatDraftRememberSynced(draftId, hostRevision, collectedGeneration);
@@ -703,7 +710,6 @@ function routeLocalEdit(draftId: string): void {
     heldLandingEdits.add(draftId);
     return;
   }
-  heldLandingEdits.delete(draftId);
   if (landing !== undefined && landing.adoption.state === "unadopted") {
     if (landingAdoptionHostId === null) return;
     sessions.get(landingAdoptionHostId)?.session.noteDirty(draftId);

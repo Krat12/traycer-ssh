@@ -571,6 +571,116 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a superseded claim that commits forces a re-claim on the current host even when unowned reads false there", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The composer returns to host-a while host-b's claim is still pending.
+    // Host-a's own row already names it as owner, so the render-derived
+    // `unowned` guard reads false there - it alone would refuse a re-claim.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    // Host-b's (superseded) claim commits: the local row still names
+    // host-a as owner while the cloud now says host-b, so the re-claim on
+    // host-a must be forced past the `unowned` guard.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("contrast: a superseded claim that is refused does not force a re-claim once the current host already reads owned", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    // Host-b's (superseded) claim is refused: the refusal-path re-claim is
+    // unforced, so the guard - already satisfied on host-a - holds and no
+    // second claim starts.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("returning to a draft with a pending claim joins it", async () => {
     const repairOnEditA = vi.fn();
     const repairOnEditB = vi.fn();
