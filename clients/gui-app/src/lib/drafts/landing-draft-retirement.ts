@@ -93,11 +93,43 @@ export function resolveLandingDraftRetirementOwner(
 ): void {
   const receipt = readRetirement(draftId);
   if (receipt === undefined || receipt.ownerResolved) return;
+  // A speculative receipt (delete pending on a host whose ownership was
+  // never confirmed) is confirmed only by THAT host's document; a document
+  // from another owner says the claim never committed and must not
+  // redirect the delete onto that owner's original.
+  if (receipt.pendingDelete && receipt.hostId !== hostId) return;
   writeRetirement(draftId, {
     hostId,
     pendingDelete: true,
     ownerResolved: true,
   });
+}
+
+/**
+ * Retire a draft id through `hostId` WITHOUT a confirmed owner: a landing
+ * repair forked the draft after a refused claim, and the refusal may have
+ * been a lost response to a claim that committed there. The delete is
+ * routed to that host: `deleted` (it did commit) or `absent` (it did not)
+ * both complete the receipt, and an echo from the still-owner elsewhere
+ * leaves it alone. Replaces the fork's completed local-only receipt.
+ */
+export function retireLandingDraftSpeculatively(
+  draftId: string,
+  hostId: string,
+): void {
+  writeRetirement(draftId, {
+    hostId,
+    pendingDelete: true,
+    ownerResolved: false,
+  });
+}
+
+/** A pending delete on a host whose ownership was never confirmed. */
+export function isLandingDraftRetirementSpeculative(draftId: string): boolean {
+  const receipt = readRetirement(draftId);
+  return (
+    receipt !== undefined && receipt.pendingDelete && !receipt.ownerResolved
+  );
 }
 
 /**

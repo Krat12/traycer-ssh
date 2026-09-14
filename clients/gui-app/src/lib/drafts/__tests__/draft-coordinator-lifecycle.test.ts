@@ -18,12 +18,18 @@ import {
   unbindInterviewDraftHost,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
-import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
 import {
+  notifyDraftLocalDelete,
+  notifyDraftLocalEdit,
+} from "@/lib/drafts/draft-local-edits";
+import {
+  isLandingDraftRetirementSpeculative,
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
   rearmLandingDraftDelete,
   resetLandingDraftRetirementsForTests,
+  retireLandingDraft,
+  retireLandingDraftSpeculatively,
 } from "@/lib/drafts/landing-draft-retirement";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import { useInterviewDraftStore } from "@/stores/composer/interview-draft-store";
@@ -847,6 +853,133 @@ describe("deleteLandingDraftThroughHost", () => {
       useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
     ).toBe(false);
     expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+  });
+});
+
+describe("speculative landing draft retirement", () => {
+  const HOST_B = "host-b";
+
+  function mountAbsentAnsweringSession(hostId: string, log: HostLog) {
+    return acquireDraftMirrorSession({
+      hostId,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.delete") {
+            const draftId = (params as { draftId: string }).draftId;
+            log.deletes.push(draftId);
+            return Promise.resolve({ deleted: false });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+  }
+
+  it("a document from another owner leaves a speculative receipt untouched, and creates no row", async () => {
+    const id = "speculative-other-owner";
+    retireLandingDraftSpeculatively(id, HOST_B);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
+
+    // The claim's refusal may have been a lost response to a commit on
+    // host-b; a document from a DIFFERENT owner (host-a) says nothing about
+    // that and must not redirect - or resolve - the speculative receipt.
+    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
+    await applyIncomingDraftDocument(document, null);
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
+    expect(
+      useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
+    ).toBe(false);
+  });
+
+  it("a document from the speculated host resolves the receipt, still pending there", async () => {
+    const id = "speculative-confirmed-owner";
+    retireLandingDraftSpeculatively(id, HOST_B);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
+
+    // A document from the SAME host the receipt speculated on confirms the
+    // claim did commit there.
+    const document = landingCloudDocument(id, HOST_B, "cloud body host-b");
+    await applyIncomingDraftDocument(document, null);
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
+  });
+
+  it("a speculative receipt on the claimed host is COMPLETED (not unresolved) when that host answers absent", async () => {
+    const id = "speculative-absent-completes";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountAbsentAnsweringSession(HOST_B, log);
+    // Let the session's own bootstrap (list + retryPendingDeletes) finish
+    // before driving the delete below, so it cannot race it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    retireLandingDraftSpeculatively(id, HOST_B);
+
+    notifyDraftLocalDelete(id);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+    expect(landingDraftIsRetired(id)).toBe(true);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
+
+    // Completed, not merely unresolved: a later document from another host
+    // must not reopen the receipt.
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await applyIncomingDraftDocument(document, null);
+    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+  });
+
+  it("contrast: a non-speculative receipt on the same absent answer stays unresolved, not completed", async () => {
+    const id = "non-speculative-absent-unresolves";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountAbsentAnsweringSession(HOST_B, log);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // A confirmed-owner receipt, unlike the speculative one above.
+    retireLandingDraft(id, HOST_B);
+    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
+
+    notifyDraftLocalDelete(id);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+    expect(landingDraftIsRetired(id)).toBe(true);
+
+    // Unresolved, not completed: a later document from another host supplies
+    // the missing delete destination instead of being ignored.
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await applyIncomingDraftDocument(document, null);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
   });
 });
 

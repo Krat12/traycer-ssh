@@ -2447,4 +2447,125 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
+
+  it("a double-refusal chaining B -> A -> B does not deadlock: the re-claim on host-b starts a fresh attempt instead of joining its own ancestor", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    const third = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    // The submit path starts attempt 1 on host-b.
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The surface moves to host-a; still unowned there (replica origin).
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    // An edit on host-a starts its own, independent attempt 2 - a fresh
+    // chain, unrelated to attempt 1's.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // Attempt 1 refuses WHILE the surface is still on host-a: it is
+    // host-fenced away from its own host (host-b), so it chains (unforced)
+    // into host-a's already-pending attempt 2 instead of starting a new
+    // claim. No third claim call yet.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(settleResolved).toBe(false);
+
+    // The surface moves BACK to host-b while attempt 2 - now carrying
+    // attempt 1's chain - is still pending, and attempt 1 itself is still
+    // registered under the host-b key (its own async body is suspended
+    // awaiting attempt 2).
+    view.rerender({
+      tabHostId: "host-b",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 2 refuses: host-b is current again, so its own re-claim wants
+    // to run there (placement went B -> A -> B). Attempt 1 is still pending
+    // under the host-b key and shares attempt 2's chain (an ancestor) -
+    // joining it would have the two await each other forever, so the
+    // re-claim must start a genuinely fresh attempt 3 instead.
+    claimMock.claim.mockReturnValueOnce(third.promise);
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 3 (the fresh, non-ancestor-joining attempt) settles refused:
+    // the whole cascade (1 -> 2 -> 3) resolves refused along with it, and
+    // the original settle promise from step 1 resolves too.
+    await act(async () => {
+      third.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    // abandon() walks to the last link (attempt 3), releases its (inherited)
+    // suppression and repairs it once, fenced to host-b which the surface
+    // still shows.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+
+    // A second abandon() is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
 });

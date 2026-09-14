@@ -52,6 +52,25 @@ export interface SettledOwnership {
   readonly abandon: () => void;
 }
 
+/**
+ * Identity of a chain of attempts (an attempt and every re-claim it
+ * chained into). Shared by reference along the chain.
+ */
+type ClaimChain = { readonly root: number };
+
+/**
+ * How a claim is started. `bypassGuard`: ignore the render-derived
+ * `unowned` (a committed supersession left the local row stale). `chain`:
+ * the chain this claim continues; an attempt already in flight for the
+ * current host is joined UNLESS it belongs to that same chain (it would be
+ * an ancestor, and the two would await each other), in which case a fresh
+ * attempt is started. `null` for a user edit, which joins freely.
+ */
+interface ClaimMode {
+  readonly bypassGuard: boolean;
+  readonly chain: ClaimChain | null;
+}
+
 interface PendingClaim {
   readonly promise: Promise<boolean>;
   /** The host this attempt claims through and the draft it claims. */
@@ -63,6 +82,8 @@ interface PendingClaim {
    * suppression and its deferred repair apply to the LAST link.
    */
   chained: PendingClaim | null;
+  /** The chain this attempt belongs to (see `ClaimMode.chain`). */
+  chain: ClaimChain;
   /** Settled outcome, recorded before any repair handler runs. */
   outcome: "pending" | "owned" | "refused";
   /**
@@ -149,7 +170,7 @@ export function useDraftAuthorityControl(args: {
   // The latest `noteEdit` and the draft the surface shows now, for a
   // settlement that finds its host superseded: the re-claim is for THIS
   // draft only - a move to another draft is not an edit of that draft.
-  const noteEditRef = useRef<(force: boolean) => PendingClaim | null>(
+  const noteEditRef = useRef<(mode: ClaimMode) => PendingClaim | null>(
     () => null,
   );
   const currentDraftRef = useRef(args.draftId);
@@ -199,14 +220,20 @@ export function useDraftAuthorityControl(args: {
   // was merely delayed, would apply this host's superseded document - so
   // the re-claim must be a genuinely newer attempt, which then outranks it
   // in `latestApplied`.
+  // `avoid`: never join an attempt of this chain (an ancestor). `fresh`:
+  // never join at all - a committed supersession made any attempt already
+  // in flight here stale (its delayed success would apply this host's
+  // superseded document), so the re-claim must outrank it.
   const runClaim = useCallback(
-    (fresh: boolean): PendingClaim | null => {
+    (avoid: ClaimChain | null, fresh: boolean): PendingClaim | null => {
       const draftId = args.draftId;
       const tabHostId = args.tabHostId;
       if (draftId === null || tabHostId === null) return null;
       const key = pendingClaimKey(tabHostId, draftId);
       const pending = inflight.current.get(key);
-      if (pending !== undefined && !fresh) return pending;
+      if (pending !== undefined && !fresh && pending.chain !== avoid) {
+        return pending;
+      }
       attemptCounter.current += 1;
       const attempt = attemptCounter.current;
       const promise = (async (): Promise<boolean> => {
@@ -241,8 +268,19 @@ export function useDraftAuthorityControl(args: {
             latest.attempt > attempt &&
             latest.tabHostId !== tabHostId;
           if (!moved && !outranked) return null;
-          const next = noteEditRef.current(committed);
+          // Joins an attempt already in flight on the current host (a submit
+          // may have joined it there, and its suppression must be the one
+          // that counts) unless that attempt is an ANCESTOR of this chain:
+          // the placement went B -> A -> B, B's refusal chained into A, and
+          // A's refusal joining B would have the two await each other
+          // forever. Such a re-claim is a fresh attempt instead. The
+          // ownership guard is bypassed only for a committed supersession.
+          const next = noteEditRef.current({
+            bypassGuard: committed,
+            chain: entry.chain,
+          });
           if (next === null) return null;
+          next.chain = entry.chain;
           // A submit that settled on this attempt is settling on the chain:
           // the re-claim inherits its suppression (a refusal there would
           // otherwise fork the draft under the deferred send); `abandon`
@@ -316,6 +354,7 @@ export function useDraftAuthorityControl(args: {
         tabHostId,
         draftId,
         chained: null,
+        chain: { root: attempt },
         outcome: "pending",
         repairGuard: { done: false },
         repairArmed: false,
@@ -339,16 +378,17 @@ export function useDraftAuthorityControl(args: {
   // that committed elsewhere leaves the local row naming this host as owner
   // while the cloud says otherwise (see `reclaimOnCurrentHost`).
   const claimForEdit = useCallback(
-    (force: boolean): PendingClaim | null => {
-      if (!force && !unowned) return null;
+    (mode: ClaimMode): PendingClaim | null => {
+      if (!mode.bypassGuard && !unowned) return null;
       const draftId = args.draftId;
       const tabHostId = args.tabHostId;
       if (draftId === null || tabHostId === null) return null;
       // An edit joins a claim already in flight - one the submit path or an
       // earlier edit started - and arms the repair on it once. Dropping the
       // edit instead would leave it on the unowned identity if that claim is
-      // refused. A forced re-claim is always a fresh attempt.
-      const entry = runClaim(force);
+      // refused. A re-claim never joins an ancestor of its own chain, and a
+      // committed supersession's re-claim never joins at all.
+      const entry = runClaim(mode.chain, mode.bypassGuard);
       if (entry === null) return null;
       if (!entry.repairArmed) {
         entry.repairArmed = true;
@@ -367,7 +407,7 @@ export function useDraftAuthorityControl(args: {
     [args.draftId, args.tabHostId, repairFor, runClaim, unowned],
   );
   const noteEdit = useCallback((): void => {
-    void claimForEdit(false);
+    void claimForEdit({ bypassGuard: false, chain: null });
   }, [claimForEdit]);
 
   useLayoutEffect(() => {
@@ -377,7 +417,7 @@ export function useDraftAuthorityControl(args: {
   const settleOwnership = useCallback(async (): Promise<SettledOwnership> => {
     const noop: SettledOwnership = { abandon: () => undefined };
     if (!unowned) return noop;
-    const entry = runClaim(false);
+    const entry = runClaim(null, false);
     if (entry === null) return noop;
     entry.repairSuppressed = true;
     await entry.promise;

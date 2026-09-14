@@ -108,6 +108,8 @@ import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { usePromptStash } from "@/hooks/composer/use-prompt-stash";
 import { PromptStashControl } from "@/components/chat/composer/prompt-stash-control";
 import { forkLandingDraftInPlace } from "@/lib/drafts/landing-draft-fork";
+import { retireLandingDraftSpeculatively } from "@/lib/drafts/landing-draft-retirement";
+import { notifyDraftLocalDelete } from "@/lib/drafts/draft-local-edits";
 import { useDraftAuthorityControl } from "@/hooks/drafts/use-draft-authority";
 import {
   landingStashIdentity,
@@ -284,6 +286,14 @@ export function LandingComposer(props: LandingComposerProps) {
       return;
     }
     forkLandingDraftInPlace(draftId);
+    // The refusal may be a lost response to a claim that DID commit on this
+    // host, whose echo arrives after the re-read above: the old id is left
+    // pending delete there, owner unconfirmed, so that echo tombstones it
+    // instead of the committed row surviving as a duplicate elsewhere.
+    if (resolvedHostId !== null) {
+      retireLandingDraftSpeculatively(draftId, resolvedHostId);
+      notifyDraftLocalDelete(draftId);
+    }
   }, [draftId, resolvedHostId]);
   const authority = useDraftAuthorityControl({
     draftId,

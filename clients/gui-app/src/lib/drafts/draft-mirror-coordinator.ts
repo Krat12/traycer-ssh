@@ -97,6 +97,7 @@ import {
 import type { DraftMirrorTiming } from "./draft-mirror-timing";
 import {
   completeLandingDraftDelete,
+  isLandingDraftRetirementSpeculative,
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
   pendingLandingDraftDeleteIdsForHost,
@@ -761,12 +762,20 @@ function settleLandingDeleteOutcome(
     completeLandingDraftDelete(draftId);
     return;
   }
-  // `absent`: the host does not hold the row - never had it, or another
-  // device's claim moved it elsewhere while this delete was on its way.
-  // The receipt goes back to owner-unresolved so the new owner's next
-  // document routes the delete there, instead of a completed receipt
-  // hiding a row that still exists. `failed` leaves it pending for retry.
-  if (outcome === "absent") unresolveLandingDraftRetirementOwner(draftId);
+  if (outcome !== "absent") return;
+  // `absent` from a host whose ownership was never confirmed (a repair's
+  // speculative retirement): the claim did not commit there, nothing is
+  // owed anywhere, and the still-owner's original stays.
+  if (isLandingDraftRetirementSpeculative(draftId)) {
+    completeLandingDraftDelete(draftId);
+    return;
+  }
+  // `absent` from the confirmed owner: never had it, or another device's
+  // claim moved it elsewhere while this delete was on its way. The receipt
+  // goes back to owner-unresolved so the new owner's next document routes
+  // the delete there, instead of a completed receipt hiding a row that
+  // still exists. `failed` leaves it pending for retry.
+  unresolveLandingDraftRetirementOwner(draftId);
 }
 
 function routeLocalFlush(draftId: string): void {
