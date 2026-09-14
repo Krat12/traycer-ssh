@@ -412,16 +412,75 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(claimMock.claim).toHaveBeenCalledTimes(2);
 
+    // A's claim is superseded by B's: A's refusal must not repair the
+    // draft out from under the host the composer now shows.
     await act(async () => {
       first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // B is the current host; its refusal repairs.
+    await act(async () => {
       second.resolve({ status: "unavailable", reason: "not-found" });
-      await Promise.all([first.promise, second.promise]);
+      await second.promise;
     });
 
     await waitFor(() => {
-      expect(repairOnEdit.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(repairOnEdit).toHaveBeenCalledTimes(1);
     });
     expect(claimMock.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it("a superseded host's refusal never repairs after the current host succeeds", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Composer moves to another host while host-a's claim is still pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // B (the current host) succeeds first.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+
+    // A's (superseded) refusal arrives afterward and must not repair.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
   });
 
   it("returning to a draft with a pending claim joins it", async () => {

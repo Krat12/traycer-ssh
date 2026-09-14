@@ -82,16 +82,31 @@ export function useDraftAuthorityControl(args: {
   // draft's repair: B must not ride A's outcome, in either direction.
   const repairRef = useRef<{
     readonly draftId: string;
+    readonly tabHostId: string;
     readonly fn: () => void;
   } | null>(null);
   useEffect(() => {
-    if (args.draftId === null) return;
-    repairRef.current = { draftId: args.draftId, fn: args.repairOnEdit };
-  }, [args.draftId, args.repairOnEdit]);
+    if (args.draftId === null || args.tabHostId === null) return;
+    repairRef.current = {
+      draftId: args.draftId,
+      tabHostId: args.tabHostId,
+      fn: args.repairOnEdit,
+    };
+  }, [args.draftId, args.repairOnEdit, args.tabHostId]);
 
-  const repairFor = useCallback((draftId: string): void => {
+  // A refusal repairs only while the surface still shows the draft on the
+  // host the claim was made through: a claim from a host the composer has
+  // since left is superseded by the current host's own claim, and must not
+  // re-key the draft underneath it.
+  const repairFor = useCallback((draftId: string, tabHostId: string): void => {
     const repair = repairRef.current;
-    if (repair !== null && repair.draftId === draftId) repair.fn();
+    if (
+      repair !== null &&
+      repair.draftId === draftId &&
+      repair.tabHostId === tabHostId
+    ) {
+      repair.fn();
+    }
   }, []);
 
   const runClaim = useCallback((): PendingClaim | null => {
@@ -123,8 +138,9 @@ export function useDraftAuthorityControl(args: {
 
   const noteEdit = useCallback((): void => {
     if (!unowned) return;
-    // `unowned` narrows `args.draftId` to a string.
+    // `unowned` narrows both `args.draftId` and `args.tabHostId` to strings.
     const draftId = args.draftId;
+    const tabHostId = args.tabHostId;
     // An edit joins a claim already in flight - one the submit path or an
     // earlier edit started - and arms the repair on it once. Dropping the
     // edit instead would leave it on the unowned identity if that claim is
@@ -133,9 +149,9 @@ export function useDraftAuthorityControl(args: {
     if (entry === null || entry.repairArmed) return;
     entry.repairArmed = true;
     void entry.promise.then((owned) => {
-      if (!owned && !entry.repairSuppressed) repairFor(draftId);
+      if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
     });
-  }, [args.draftId, repairFor, runClaim, unowned]);
+  }, [args.draftId, args.tabHostId, repairFor, runClaim, unowned]);
 
   const settleOwnership = useCallback(async (): Promise<void> => {
     if (!unowned) return;

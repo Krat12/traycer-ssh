@@ -9,6 +9,7 @@ import {
 import type { ProviderTerminalLoginSurface } from "@/lib/providers/provider-terminal-login-surface";
 import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import type { ChatRunSettings } from "@traycer/protocol/host/agent/gui/subscribe";
 
@@ -280,28 +281,47 @@ export function LandingComposer(props: LandingComposerProps) {
   });
   // Every local mutation of the draft row bumps `generation`, including the
   // workspace controls, whose handlers write the store without passing
-  // through this component. A bump past the one seen at mount is an edit,
-  // so the claim covers those too; the mount value itself is not (a restored
-  // tab is not an edit), and neither is a host echo, which leaves
-  // `generation` alone.
-  const landingGeneration = useLandingDraftStore((state) => {
-    if (draftId === null) return 0;
-    return state.drafts.find((entry) => entry.id === draftId)?.generation ?? 0;
-  });
-  // Edits made while no host is resolved are not consumed: `unowned` cannot
-  // be judged without a host, so the watch holds the mark and revisits it
-  // the moment a host resolves, claiming (or repairing) then.
-  const seenGeneration = useRef<number | null>(null);
+  // through this component. A bump past the one seen at mount counts as an
+  // edit only when a substantive field moved with it: a caret move bumps
+  // `generation` but changes no field, and merely looking at a draft must
+  // not take it over. A host echo changes fields without bumping
+  // `generation`, so it does not count either. Edits made while no host is
+  // resolved are not consumed: `unowned` cannot be judged without a host,
+  // so the watch holds the mark and revisits it the moment a host resolves.
+  const landingEditMark = useLandingDraftStore(
+    useShallow((state) => {
+      const draft =
+        draftId === null
+          ? undefined
+          : state.drafts.find((entry) => entry.id === draftId);
+      return {
+        generation: draft?.generation ?? 0,
+        content: draft?.content ?? null,
+        settings: draft?.settings ?? null,
+        composerMode: draft?.composerMode ?? null,
+        workspace: draft?.workspace ?? null,
+        closed: draft?.closed ?? null,
+      };
+    }),
+  );
+  const seenEditMark = useRef<typeof landingEditMark | null>(null);
   useEffect(() => {
-    if (seenGeneration.current === null) {
-      seenGeneration.current = landingGeneration;
+    const seen = seenEditMark.current;
+    if (seen === null) {
+      seenEditMark.current = landingEditMark;
       return;
     }
-    if (landingGeneration <= seenGeneration.current) return;
+    if (landingEditMark.generation <= seen.generation) return;
     if (resolvedHostId === null) return;
-    seenGeneration.current = landingGeneration;
-    authority.noteEdit();
-  }, [authority, landingGeneration, resolvedHostId]);
+    const substantive =
+      landingEditMark.content !== seen.content ||
+      landingEditMark.settings !== seen.settings ||
+      landingEditMark.composerMode !== seen.composerMode ||
+      landingEditMark.workspace !== seen.workspace ||
+      landingEditMark.closed !== seen.closed;
+    seenEditMark.current = landingEditMark;
+    if (substantive) authority.noteEdit();
+  }, [authority, landingEditMark, resolvedHostId]);
   const handleToolbarSettingsChange = useCallback(
     (settings: ChatRunSettings) => {
       authority.noteEdit();
