@@ -1152,6 +1152,111 @@ describe("useDraftAuthorityControl", () => {
   // noteEdit claims once with the draftId; a second noteEdit while pending
   // does not re-claim...".
 
+  it("a re-claim does not rejoin a predecessor once relabeling has merged its chain into a shared root, starting a fresh attempt instead", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    const third = deferred<DraftClaimResult>();
+    const fourth = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    // ownerHostId never names any host this test visits, so `unowned` reads
+    // true on host-a, host-b and host-c throughout - only `tabHostId` moves.
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-z",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Attempt 1: noteEdit on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The surface moves to host-b before attempt 1 settles.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+
+    // Attempt 1 refuses while host-b is current: its own re-claim
+    // continuation chains a fresh attempt 2 there automatically (no
+    // explicit edit needed). The merge points attempt 2's chain root at
+    // attempt 1's - attempt 1 now awaits attempt 2.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+
+    // The surface moves to host-c. Attempt 3: an independent claim there via
+    // noteEdit - its own chain, not yet merged with anything.
+    claimMock.claim.mockReturnValueOnce(third.promise);
+    view.rerender({ tabHostId: "host-c" });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(3, "draft-1");
+
+    // The surface returns to host-b before attempt 2 or attempt 3 settles.
+    view.rerender({ tabHostId: "host-b" });
+
+    // Attempt 3 refuses while host-b is current: its re-claim joins the
+    // pending attempt 2 (still in flight on host-b) rather than starting a
+    // new claim - still 3 total - and the join merges attempt 3's chain
+    // with attempt 1/2's, so all three now share one root.
+    await act(async () => {
+      third.resolve({ status: "unavailable", reason: "not-found" });
+      await third.promise;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(3);
+
+    // The surface moves to host-a. Attempt 2 refuses there: its own
+    // re-claim targets the host-a key, where attempt 1 is STILL pending (it
+    // is awaiting attempt 2's own settlement, which has not resolved yet).
+    // After the merge above, attempt 1 and attempt 2 share the same chain
+    // root, so attempt 1 is now a PREDECESSOR of this re-claim - joining it
+    // would have the two await each other forever. A genuinely fresh fourth
+    // attempt starts instead.
+    claimMock.claim.mockReturnValueOnce(fourth.promise);
+    view.rerender({ tabHostId: "host-a" });
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await second.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(4);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(4, "draft-1");
+
+    // Nothing has repaired yet: attempts 1, 2 and 3 each deferred to a
+    // successor, and attempt 4 is still pending.
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // Attempt 4 refuses while host-a is still current: it is the final
+    // link, so its own armed repair fires - exactly once - and the whole
+    // chain settles without hanging.
+    await act(async () => {
+      fourth.resolve({ status: "unavailable", reason: "not-found" });
+      await fourth.promise;
+    });
+    await waitFor(() => {
+      expect(repairOnEdit).toHaveBeenCalledTimes(1);
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(4);
+  });
+
   it("returning to a draft with a pending claim joins it", async () => {
     const repairOnEditA = vi.fn();
     const repairOnEditB = vi.fn();

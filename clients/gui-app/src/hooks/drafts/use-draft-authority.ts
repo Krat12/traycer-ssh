@@ -54,9 +54,20 @@ export interface SettledOwnership {
 
 /**
  * Identity of a chain of attempts (an attempt and every re-claim it
- * chained into). Shared by reference along the chain.
+ * chained into, in either direction). A union-find node: joining two
+ * chains points one root at the other, so every member of either -
+ * predecessors already awaiting a link as much as successors - resolves
+ * to one root without walking the links.
  */
-type ClaimChain = { readonly root: number };
+interface ClaimChain {
+  parent: ClaimChain | null;
+}
+
+function chainRoot(chain: ClaimChain): ClaimChain {
+  let node = chain;
+  while (node.parent !== null) node = node.parent;
+  return node;
+}
 
 /**
  * How a claim is started. `bypassGuard`: ignore the render-derived
@@ -231,7 +242,11 @@ export function useDraftAuthorityControl(args: {
       if (draftId === null || tabHostId === null) return null;
       const key = pendingClaimKey(tabHostId, draftId);
       const pending = inflight.current.get(key);
-      if (pending !== undefined && !fresh && pending.chain !== avoid) {
+      if (
+        pending !== undefined &&
+        !fresh &&
+        (avoid === null || chainRoot(pending.chain) !== chainRoot(avoid))
+      ) {
         return pending;
       }
       attemptCounter.current += 1;
@@ -280,20 +295,24 @@ export function useDraftAuthorityControl(args: {
             chain: entry.chain,
           });
           if (next === null) return null;
-          // One identity for the WHOLE chain being joined: the joined attempt
-          // may already have chained into successors of its own, and a
-          // successor left on the old identity could later rejoin the
-          // attempt it descends from (a B -> C -> B cycle).
-          for (
-            let link: PendingClaim | null = next;
-            link !== null;
-            link = link.chained
-          ) {
-            link.chain = entry.chain;
-            // Suppression travels with the identity: a submit that settled
-            // on this attempt must reach the LAST link of the chain it joins,
-            // or that link's refusal repairs under the deferred send.
-            if (entry.repairSuppressed) link.repairSuppressed = true;
+          // One identity for BOTH chains: the joined attempt may already
+          // have successors of its own and predecessors awaiting it, and any
+          // member left on another identity could later rejoin an attempt
+          // it is linked to (a B -> C -> B, or A -> B -> A, cycle).
+          const joined = chainRoot(next.chain);
+          const own = chainRoot(entry.chain);
+          if (joined !== own) joined.parent = own;
+          // Suppression travels to the LAST link: a submit that settled on
+          // this attempt is settling on the chain it joins, or that link's
+          // refusal would repair under the deferred send.
+          if (entry.repairSuppressed) {
+            for (
+              let link: PendingClaim | null = next;
+              link !== null;
+              link = link.chained
+            ) {
+              link.repairSuppressed = true;
+            }
           }
           // A submit that settled on this attempt is settling on the chain:
           // the re-claim inherits its suppression (a refusal there would
@@ -367,7 +386,7 @@ export function useDraftAuthorityControl(args: {
         tabHostId,
         draftId,
         chained: null,
-        chain: { root: attempt },
+        chain: { parent: null },
         outcome: "pending",
         repairGuard: { done: false },
         repairArmed: false,

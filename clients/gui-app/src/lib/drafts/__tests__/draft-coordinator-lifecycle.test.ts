@@ -1038,33 +1038,64 @@ function landingCloudDocument(
   };
 }
 
+/**
+ * An "own" landing document, as a host session's own bootstrap/live echo
+ * would apply it (`origin: "own"`) - unlike `landingCloudDocument`, whose
+ * `origin: "replica"` never reserves `landingOwnerAppliedSeq`. Applying this
+ * through `applyIncomingDraftDocument` is what populates that reservation
+ * for the admit-fence tests below.
+ */
+function landingOwnDocument(
+  draftId: string,
+  ownerHostId: string,
+  text: string,
+): DraftDocument {
+  return {
+    draftId,
+    kind: "landing",
+    target: { epicId: null, chatId: null, blockId: null },
+    revision: 1,
+    lastTouchedAt: 2,
+    workspace: null,
+    ownerHostId,
+    origin: "own",
+    adoption: { state: "adopted", hostId: ownerHostId },
+    publication: {
+      status: "current",
+      lastPublishedAt: 1,
+      publishedRevision: 1,
+      halted: null,
+    },
+    portable: {
+      content: typed(text),
+      selection: null,
+      runSettings: null,
+      composerMode: "chat",
+      blobHashes: [],
+      closed: false,
+    },
+  };
+}
+
 describe("ingestCloudDraftSummary admit fence", () => {
   it("does not overwrite a landing row this device already owns as its own", async () => {
     const id = "d1";
-    useLandingDraftStore.setState({
-      drafts: [
-        {
-          id,
-          content: typed("local own body"),
-          selection: null,
-          lastTouchedAt: 0,
-          settings: null,
-          composerMode: "chat",
-          workspace: emptyLandingDraftWorkspaceSnapshot(),
-          ...freshLandingMirrorState(),
-          adoption: { state: "adopted", hostId: "host-a" },
-          origin: "own",
-          ownerHostId: "host-a",
-        },
-      ],
-      activeDraftId: null,
-    });
+    // Routed through an actual apply (not a raw setState) so the fence's
+    // `landingOwnerAppliedSeq` reservation is populated for this row -
+    // otherwise it defaults to seq 0 and any non-negative snapshotSeq below
+    // would wrongly read as "not stale".
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-a", "local own body"),
+      null,
+    );
 
     const document = landingCloudDocument(id, "host-b", "cloud body");
     await ingestCloudDraftSummary({
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      // Predates the own-apply above: the fence's stale check rejects it.
+      snapshotSeq: 0,
     });
 
     const row = useLandingDraftStore
@@ -1086,6 +1117,7 @@ describe("ingestCloudDraftSummary admit fence", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
 
     const row = useLandingDraftStore
@@ -1121,6 +1153,7 @@ describe("ingestCloudDraftSummary admit fence", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
 
     const row = useLandingDraftStore
@@ -1160,6 +1193,7 @@ describe("ingestCloudDraftSummary admit fence", () => {
       hostId: "host-b",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
 
     const row = useLandingDraftStore
@@ -1173,36 +1207,117 @@ describe("ingestCloudDraftSummary admit fence", () => {
     // row's owner host (host-a). The fence still blocks the apply, exactly
     // as the first admit-fence test above.
     const id = "d5";
-    useLandingDraftStore.setState({
-      drafts: [
-        {
-          id,
-          content: typed("local own body on host-b"),
-          selection: null,
-          lastTouchedAt: 0,
-          settings: null,
-          composerMode: "chat",
-          workspace: emptyLandingDraftWorkspaceSnapshot(),
-          ...freshLandingMirrorState(),
-          adoption: { state: "adopted", hostId: "host-b" },
-          origin: "own",
-          ownerHostId: "host-b",
-        },
-      ],
-      activeDraftId: null,
-    });
+    // Routed through an actual apply so the fence's `landingOwnerAppliedSeq`
+    // reservation is populated - see the "d1" test above for why a raw
+    // setState row would not exercise the stale-snapshot rejection.
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-b", "local own body on host-b"),
+      null,
+    );
 
     const document = landingCloudDocument(id, "host-a", "cloud body host-a");
     await ingestCloudDraftSummary({
       hostId: "host-b",
       summary: landingCloudSummary(document),
       document,
+      // Predates the own-apply above: the fence's stale check rejects it.
+      snapshotSeq: 0,
     });
 
     const row = useLandingDraftStore
       .getState()
       .drafts.find((draft) => draft.id === id);
     expect(row?.content).toEqual(typed("local own body on host-b"));
+  });
+
+  it("rejects an ingest whose snapshot predates the apply that made this device own the row for the ingesting host", async () => {
+    const id = "fence-stale-snapshot";
+    // host-b becomes owner of this row via an apply (a host session's own
+    // echo), reserving `landingOwnerAppliedSeq` for it.
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-b", "host-b own body"),
+      null,
+    );
+
+    // A summary owned by a different host (host-a), but the snapshot that
+    // listed it (0) was dispatched BEFORE the own-apply above: stale, so the
+    // row stays own/host-b.
+    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(document),
+      document,
+      snapshotSeq: 0,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("own");
+    expect(row?.ownerHostId).toBe("host-b");
+    expect(row?.content).toEqual(typed("host-b own body"));
+  });
+
+  it("admits an ingest whose snapshot was dispatched after the apply that made this device own the row, adopting the new owner", async () => {
+    const id = "fence-newer-snapshot";
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-b", "host-b own body"),
+      null,
+    );
+    // A snapshot dispatched NOW, after the own-apply above.
+    const snapshotSeq = cloudDraftIngestSeq();
+
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(document),
+      document,
+      snapshotSeq,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.ownerHostId).toBe("host-c");
+    expect(row?.origin).toBe("replica");
+    expect(row?.content).toEqual(typed("cloud body host-c"));
+  });
+
+  it("admits a newer snapshot the same way over a dirty own row: local content survives, but the row adopts the new owner", async () => {
+    const id = "fence-newer-snapshot-dirty";
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-b", "host-b own body"),
+      null,
+    );
+    // Dirty the row locally (generation past syncedGeneration) before the
+    // newer-owner head arrives.
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === id
+          ? {
+              ...draft,
+              content: typed("locally edited body"),
+              generation: draft.generation + 1,
+            }
+          : draft,
+      ),
+    }));
+    const snapshotSeq = cloudDraftIngestSeq();
+
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(document),
+      document,
+      snapshotSeq,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.ownerHostId).toBe("host-c");
+    // Dirty rows adopt ownership without losing the uncommitted local edit.
+    expect(row?.content).toEqual(typed("locally edited body"));
   });
 });
 
@@ -1240,6 +1355,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
     const seqAfterIngest = cloudDraftIngestSeq();
     expect(seqAfterIngest).toBeGreaterThan(0);
@@ -1387,6 +1503,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
 
     expect(cloudDraftIngestSeq()).toBe(1);
@@ -1418,6 +1535,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
+      snapshotSeq: 0,
     });
 
     // The sequence is reserved synchronously, before the apply's await

@@ -1191,6 +1191,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       hostId: "host-a",
       summary,
       document,
+      snapshotSeq: 0,
     });
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
     expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([id]);
@@ -1203,6 +1204,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       hostId: "host-a",
       summary,
       document,
+      snapshotSeq: 0,
     });
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
   });

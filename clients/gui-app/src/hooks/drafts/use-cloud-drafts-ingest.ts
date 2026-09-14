@@ -187,7 +187,12 @@ export function useCloudDraftsIngest(
         // The key stays unsettled through the apply, so a teardown that
         // interrupts it still releases the guard.
         try {
-          await ingestCloudDraftSummary({ hostId, summary, document });
+          await ingestCloudDraftSummary({
+            hostId,
+            summary,
+            document,
+            snapshotSeq: snapshotIngestSeq(),
+          });
           settle();
         } catch (error: unknown) {
           // Re-read through the scope: the earlier check narrowed the

@@ -163,6 +163,14 @@ let landingAdoptionHostId: string | null = null;
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
 /**
+ * The sequence at which each landing row's ownership was last APPLIED here
+ * (the store mutation, not a reservation). The cloud-ingest fence over an
+ * own row of the ingesting host compares it with the dispatch fence of
+ * the directory snapshot the head came from: only a snapshot older than
+ * the apply is the stale summary that fence exists for.
+ */
+const landingOwnerAppliedSeq = new Map<string, number>();
+/**
  * Own landing rows whose edit `routeLocalEdit` withheld because their
  * adoption host is not the current placement (an auto-follow). Only these
  * are held back from the old host's dirty sweep: a row dirtied BEFORE the
@@ -483,6 +491,7 @@ async function applyHostDocument(
   document: DraftDocument,
   admit: (() => boolean) | null,
 ): Promise<void> {
+  let applySeq = 0;
   if (document.kind === "landing") {
     knownLandingDraftIds.add(document.draftId);
     // The absence-sweep fence is reserved here, synchronously at the start
@@ -490,6 +499,7 @@ async function applyHostDocument(
     // cloud-head ingest - and before the blob reads below: a directory
     // request dispatched earlier must not sweep a row this apply installs.
     cloudIngestSeq += 1;
+    applySeq = cloudIngestSeq;
     cloudIngestSeqByDraft.set(document.draftId, cloudIngestSeq);
   }
   if (rejectRetiredLandingDocument(document)) return;
@@ -525,6 +535,9 @@ async function applyHostDocument(
   }
   if (document.kind === "landing") {
     if (rejectRetiredLandingDocument(document)) return;
+    // This apply's own reservation, taken before its blob reads: a snapshot
+    // dispatched before it is older than the ownership it installs.
+    landingOwnerAppliedSeq.set(document.draftId, applySeq);
     applyLandingHostDocument(document, document.portable.content);
     return;
   }
@@ -923,6 +936,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   heldLandingEdits.clear();
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
+  landingOwnerAppliedSeq.clear();
   stashHostById.clear();
   stashSeenOnHost.clear();
   warnedUnboundComposer.clear();
@@ -983,6 +997,8 @@ export async function ingestCloudDraftSummary(input: {
   readonly hostId: string;
   readonly summary: CloudChatSummary;
   readonly document: DraftDocument;
+  /** The dispatch fence of the directory snapshot that listed the head. */
+  readonly snapshotSeq: number;
 }): Promise<void> {
   if (input.summary.ownerHostId === input.hostId) return;
   // A host-bound surface is never a replica here. `applyComposerHostDocument`
@@ -1001,15 +1017,20 @@ export async function ingestCloudDraftSummary(input: {
   // from the previous owner must not stamp the row back onto it. The fence
   // is scoped to the ingesting host: an own row of another host (the
   // placement auto-followed here, that host's session absent) is exactly
-  // what this directory legitimately supplies a newer head for.
+  // what this directory legitimately supplies a newer head for. And it is
+  // scoped in time: only a snapshot dispatched BEFORE the row's ownership
+  // was applied here carries the stale summary; a later snapshot listing
+  // another owner (a claim from elsewhere moved the row) is admitted, so a
+  // dirty row adopts that owner instead of routing through the stale one.
   await applyHostDocument(input.document, () => {
     const row = useLandingDraftStore
       .getState()
       .drafts.find((draft) => draft.id === input.document.draftId);
+    if (row === undefined || row.origin !== "own") return true;
+    if (row.ownerHostId !== input.hostId) return true;
     return (
-      row === undefined ||
-      row.origin !== "own" ||
-      row.ownerHostId !== input.hostId
+      (landingOwnerAppliedSeq.get(input.document.draftId) ?? 0) <=
+      input.snapshotSeq
     );
   });
 }

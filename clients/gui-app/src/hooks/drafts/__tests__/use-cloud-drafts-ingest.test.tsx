@@ -17,7 +17,7 @@ const reserveMock = vi.hoisted(() => ({
   reserve: vi.fn<(draftId: string) => void>(),
 }));
 const ingestMock = vi.hoisted(() => ({
-  ingest: vi.fn<() => Promise<void>>(),
+  ingest: vi.fn<(args: { snapshotSeq: number }) => Promise<void>>(),
 }));
 const sweepMock = vi.hoisted(() => ({
   sweep:
@@ -51,7 +51,8 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
   reserveCloudDraftIngestFence: (draftId: string): void =>
     reserveMock.reserve(draftId),
-  ingestCloudDraftSummary: (): Promise<void> => ingestMock.ingest(),
+  ingestCloudDraftSummary: (args: { snapshotSeq: number }): Promise<void> =>
+    ingestMock.ingest(args),
   sweepAbsentCloudDraftMirrors: (
     hostId: string,
     listed: ReadonlyMap<string, ReadonlySet<string>>,
@@ -351,10 +352,11 @@ describe("useCloudDraftsIngest", () => {
     });
   });
 
-  it("ingests the happy path exactly once per head across rerenders", async () => {
+  it("ingests the happy path exactly once per head across rerenders, passing the directory's snapshot seq", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     directoryMock.chats = [summary(DIGEST_ONE, null)];
+    directoryMock.snapshotSeq = 7;
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -362,6 +364,11 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
+    // The apply is fenced against the directory snapshot that listed the
+    // head, read through `snapshotIngestSeq()` at the moment of the apply.
+    expect(ingestMock.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotSeq: 7 }),
+    );
 
     // Same head, new array reference each time: the key is already marked
     // ingested, so no further ingest calls should happen.
