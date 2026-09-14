@@ -11,9 +11,9 @@ import { bindComposerDraftOwnership } from "@/stores/composer/composer-draft-sto
 
 function bindOwnership(document: DraftDocument, hostId: string): void {
   if (document.kind === "landing") {
-    bindLandingDraftOwnership(document.draftId, hostId);
+    bindLandingDraftOwnership(document.draftId, hostId, document.revision);
   } else if (document.kind === "chat-composer") {
-    bindComposerDraftOwnership(document.draftId, hostId);
+    bindComposerDraftOwnership(document.draftId, hostId, document.revision);
   }
 }
 

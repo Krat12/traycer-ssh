@@ -321,6 +321,7 @@ describe("composer draft store: bindComposerDraftOwnership", () => {
             draftId: "d-x",
             ownerHostId: "host-b",
             origin: "replica",
+            hostRevision: 9,
           },
         },
       };
@@ -331,11 +332,12 @@ describe("composer draft store: bindComposerDraftOwnership", () => {
       notified.push(draftId);
     });
 
-    bindComposerDraftOwnership("d-x", "host-a");
+    bindComposerDraftOwnership("d-x", "host-a", 1);
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.origin).toBe("own");
     expect(after?.ownerHostId).toBe("host-a");
+    expect(after?.hostRevision).toBe(1);
     expect(notified).toEqual(["d-x"]);
   });
 });

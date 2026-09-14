@@ -621,6 +621,7 @@ export function composerDraftRememberSynced(
 export function bindComposerDraftOwnership(
   draftId: string,
   hostId: string,
+  revision: number,
 ): void {
   const chatId = findComposerChatIdByDraftId(draftId);
   if (chatId === null) return;
@@ -629,7 +630,13 @@ export function bindComposerDraftOwnership(
     return {
       drafts: {
         ...state.drafts,
-        [chatId]: { ...current, ownerHostId: hostId, origin: "own" },
+        [chatId]: {
+          ...current,
+          ownerHostId: hostId,
+          origin: "own",
+          // Revisions are per owner (see `bindLandingDraftOwnership`).
+          hostRevision: revision,
+        },
       },
     };
   });

@@ -532,11 +532,12 @@ describe("landing draft store: bindLandingDraftOwnership", () => {
     setDraftLocalEditListener(null);
   });
 
-  it("adopts a replica row to the given host as own and notifies the local-edit listener", () => {
+  it("adopts a replica row to the given host as own, resets the host revision to the claimed one, and notifies the local-edit listener", () => {
     const draft = baseDraft("replica-1", {
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
       ownerHostId: "host-b",
+      hostRevision: 9,
       generation: 2,
       syncedGeneration: 2,
     });
@@ -545,7 +546,7 @@ describe("landing draft store: bindLandingDraftOwnership", () => {
     const notified: string[] = [];
     setDraftLocalEditListener((id) => notified.push(id));
 
-    bindLandingDraftOwnership("replica-1", "host-a");
+    bindLandingDraftOwnership("replica-1", "host-a", 1);
 
     const after = useLandingDraftStore
       .getState()
@@ -554,6 +555,8 @@ describe("landing draft store: bindLandingDraftOwnership", () => {
     expect(after?.adoption).toEqual({ state: "adopted", hostId: "host-a" });
     expect(after?.ownerHostId).toBe("host-a");
     expect(after?.origin).toBe("own");
+    // Revisions are per owner: host-b's 9 must not gate host-a's echoes.
+    expect(after?.hostRevision).toBe(1);
     expect(notified).toEqual(["replica-1"]);
   });
 });

@@ -1740,6 +1740,7 @@ export function landingDraftRememberSynced(
 export function bindLandingDraftOwnership(
   draftId: string,
   hostId: string,
+  revision: number,
 ): void {
   useLandingDraftStore.setState((state) => ({
     drafts: state.drafts.map((draft) =>
@@ -1749,6 +1750,9 @@ export function bindLandingDraftOwnership(
             adoption: { state: "adopted", hostId },
             ownerHostId: hostId,
             origin: "own",
+            // Revisions are per owner: the previous owner's high-water mark
+            // would make the stale-read guard reject the new owner's echoes.
+            hostRevision: revision,
           }
         : draft,
     ),

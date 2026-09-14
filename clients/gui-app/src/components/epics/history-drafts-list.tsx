@@ -103,7 +103,7 @@ export function HistoryDraftsList(props: {
             // The claim committed even though the local apply did not: bind
             // the row to this host so the delete below routes its tombstone
             // to the host that now owns the row, not the previous owner.
-            bindLandingDraftOwnership(draftId, hostId);
+            bindLandingDraftOwnership(draftId, hostId, result.draft.revision);
           }
           useLandingDraftStore.getState().deleteDraft(draftId);
           return;

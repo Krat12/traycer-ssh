@@ -829,6 +829,7 @@ describe("useDraftAuthorityControl", () => {
     expect(bindLandingOwnershipMock.bind).toHaveBeenCalledWith(
       "draft-1",
       "host-b",
+      1,
     );
     expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
 
@@ -1183,6 +1184,7 @@ describe("useDraftAuthorityControl", () => {
     expect(bindLandingOwnershipMock.bind).toHaveBeenCalledWith(
       "draft-1",
       "host-a",
+      1,
     );
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
