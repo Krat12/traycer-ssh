@@ -410,15 +410,26 @@ describe("<WelcomeProvidersPage />", () => {
     );
   });
 
-  it("shows the badge, subtitle and switch state per tile", () => {
+  it("shows the badge, subtitle and switch state per tile", async () => {
     renderPage();
     const claude = tile("claude-code");
     expect(
       within(claude).getByTestId("welcome-provider-badge").textContent,
     ).toBe("Installed");
+    const claudeSubtitle = within(claude).getByTestId(
+      "welcome-provider-subtitle",
+    );
+    expect(claudeSubtitle.textContent).toBe("jane@example.com");
+    // The account line is the one thing that truncates, so its full text is
+    // a hover away; the name never truncates (QA B9: "Claude…").
+    expect(claudeSubtitle.classList.contains("truncate")).toBe(true);
+    fireEvent.pointerMove(claudeSubtitle);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "jane@example.com",
+    );
     expect(
-      within(claude).getByTestId("welcome-provider-subtitle").textContent,
-    ).toBe("jane@example.com");
+      within(claude).getByText("Claude Code").classList.contains("truncate"),
+    ).toBe(false);
     expect(switchFor("Claude Code").getAttribute("aria-checked")).toBe("true");
 
     // Unauthenticated: enabled, no subtitle (the state lives in the tooltip).

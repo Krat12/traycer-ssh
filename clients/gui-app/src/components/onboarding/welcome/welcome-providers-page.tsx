@@ -153,9 +153,14 @@ export function WelcomeProvidersPage(props: {
             </Button>
           </div>
         ) : null}
+        {/* 18rem columns: six tiles as 3×2 across the 80vw dialog at both
+            1280 and 1512 px windows, wide enough that no name or badge
+            wraps there. The rows take their height from the tallest tile -
+            the dialog is 80vh and three rows fit, so the grid never has to
+            squeeze a tile to make room. */}
         <ul
           aria-label="Coding agents"
-          className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3"
+          className="grid shrink-0 grid-cols-[repeat(auto-fill,minmax(18rem,1fr))] gap-3"
         >
           {majorTiles.map((model) => renderTile(model, "tile"))}
         </ul>
