@@ -101,9 +101,29 @@ export function HistoryDraftsList(props: {
       }
       return;
     }
+    const ownerAtClaim = draft.ownerHostId;
     void claim(draftId).then(
       async (result) => {
         if (result.status === "ok" || result.status === "already-owned") {
+          // The row may have moved AGAIN while this response was in flight:
+          // another device's claim onto a third host, whose document already
+          // applied here. That newer ownership is kept - applying this stale
+          // response would erase it and delete through a host that no longer
+          // holds the row - and the delete is left pending on that host.
+          const current = useLandingDraftStore
+            .getState()
+            .drafts.find((entry) => entry.id === draftId);
+          const movedTo =
+            current !== undefined &&
+            current.ownerHostId !== null &&
+            current.ownerHostId !== hostId &&
+            current.ownerHostId !== ownerAtClaim
+              ? current.ownerHostId
+              : null;
+          if (movedTo !== null) {
+            deleteLandingDraftThroughHost(draftId, movedTo, null);
+            return;
+          }
           // The claim has committed on `hostId`; the delete below is routed
           // there explicitly (History runs on the app-wide host, which the
           // landing placement need not match). A failed local apply (a blob

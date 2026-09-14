@@ -3500,6 +3500,114 @@ describe("<EpicsListPanel />", () => {
     );
   });
 
+  it("routes the delete through a third host's newer ownership instead of applying a stale claim response", async () => {
+    // The claim resolves ok, but while it was in flight another device's
+    // claim landed its document onto a THIRD host ("host-c") - distinct from
+    // both the claiming host ("host-test") and the owner recorded before the
+    // claim ("host-b", from `seedForeignOwnedLandingDraft`). That newer
+    // ownership must win: the stale response is not applied, and the delete
+    // is left pending on "host-c" instead of completing through `hostId`.
+    const draftId = seedForeignOwnedLandingDraft("raced draft");
+    let resolveClaim: (value: {
+      status: "already-owned";
+      draft: {
+        draftId: string;
+        kind: "landing";
+        target: { epicId: null; chatId: null; blockId: null };
+        revision: number;
+        lastTouchedAt: number;
+        workspace: null;
+        ownerHostId: string;
+        origin: "own";
+        adoption: { state: "adopted"; hostId: string };
+        publication: {
+          status: "unpublished";
+          lastPublishedAt: null;
+          publishedRevision: null;
+          halted: null;
+        };
+        portable: {
+          content: JsonContent;
+          selection: null;
+          runSettings: null;
+          composerMode: "chat";
+          blobHashes: string[];
+          closed: boolean;
+        };
+      };
+    }) => void = () => undefined;
+    const pendingClaim = new Promise((resolve) => {
+      resolveClaim = resolve;
+    });
+    draftClaimTestState.claim.mockImplementation(() => pendingClaim);
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+    });
+
+    // A third host's document applies here while the claim is still
+    // in flight - simulating another device's claim completing first.
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === draftId
+          ? {
+              ...draft,
+              ownerHostId: "host-c",
+              adoption: { state: "adopted" as const, hostId: "host-c" },
+            }
+          : draft,
+      ),
+    }));
+
+    resolveClaim({
+      status: "already-owned",
+      draft: {
+        draftId,
+        kind: "landing",
+        target: { epicId: null, chatId: null, blockId: null },
+        revision: 1,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: "host-test",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-test" },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: { type: "doc", content: [] },
+          selection: null,
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(applyIncomingDraftDocumentMock.apply).not.toHaveBeenCalled();
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      "host-c",
+      false,
+    );
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-c");
+  });
+
   it("deletes an own row already owned by the History host through that host, even though the landing placement points elsewhere", async () => {
     // The placement-based authority (`deleteDraft` consults it) would call
     // this row foreign, since the placement reader names a different host
