@@ -3,21 +3,19 @@ import type { HostClient } from "@traycer-clients/shared/host-client/host-client
 import type { DraftDocument } from "@traycer/protocol/host";
 import type { HostRpcRegistry } from "@/lib/host";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
-import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
+import {
+  applyIncomingDraftDocument,
+  bindClaimedDraftOwnership,
+} from "@/lib/drafts/draft-mirror-coordinator";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
-import {
-  bindLandingDraftOwnership,
-  deleteClaimedRetiredLandingDraft,
-} from "@/stores/home/landing-draft-store";
-import { bindComposerDraftOwnership } from "@/stores/composer/composer-draft-store";
+import { deleteClaimedRetiredLandingDraft } from "@/stores/home/landing-draft-store";
 
 function bindOwnership(document: DraftDocument, hostId: string): void {
-  if (document.kind === "landing") {
-    bindLandingDraftOwnership(document.draftId, hostId, document.revision);
-  } else if (document.kind === "chat-composer") {
-    bindComposerDraftOwnership(document.draftId, hostId, document.revision);
-  }
+  // Through the coordinator: the binding must be recorded as the row's
+  // latest ownership apply, or a directory snapshot dispatched before the
+  // claim could restore the previous owner's head over it.
+  bindClaimedDraftOwnership(document, hostId);
 }
 
 export interface DraftAuthorityControl {

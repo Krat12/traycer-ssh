@@ -4,6 +4,7 @@ import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
   acquireDraftMirrorSession,
   applyIncomingDraftDocument,
+  bindClaimedDraftOwnership,
   bindComposerDraftHost,
   bindInterviewDraftHost,
   bindLandingAdoptionHost,
@@ -1318,6 +1319,125 @@ describe("ingestCloudDraftSummary admit fence", () => {
     expect(row?.ownerHostId).toBe("host-c");
     // Dirty rows adopt ownership without losing the uncommitted local edit.
     expect(row?.content).toEqual(typed("locally edited body"));
+  });
+
+  it("bindClaimedDraftOwnership migrates a replica of another host to own on the claiming host, fencing a pre-claim snapshot but admitting a newer one", async () => {
+    const id = "fence-claim-migrate";
+    const initialDocument = landingCloudDocument(id, "host-a", "replica body");
+    await ingestCloudDraftSummary({
+      hostId: "host-x",
+      summary: landingCloudSummary(initialDocument),
+      document: initialDocument,
+      snapshotSeq: 0,
+    });
+    let row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("replica");
+    expect(row?.ownerHostId).toBe("host-a");
+
+    bindClaimedDraftOwnership(
+      landingOwnDocument(id, "host-b", "claimed body"),
+      "host-b",
+    );
+
+    row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("own");
+    expect(row?.ownerHostId).toBe("host-b");
+
+    // A pre-claim snapshot (dispatched before the claim above) still names
+    // host-a as owner: stale, so the row stays own/host-b.
+    const preClaimDocument = landingCloudDocument(
+      id,
+      "host-a",
+      "pre-claim body",
+    );
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(preClaimDocument),
+      document: preClaimDocument,
+      snapshotSeq: 0,
+    });
+    row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("own");
+    expect(row?.ownerHostId).toBe("host-b");
+
+    // Contrast: a snapshot dispatched after the claim is admitted, adopting
+    // the new (older) owner's head.
+    const snapshotSeq = cloudDraftIngestSeq();
+    const postClaimDocument = landingCloudDocument(
+      id,
+      "host-a",
+      "post-claim body",
+    );
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(postClaimDocument),
+      document: postClaimDocument,
+      snapshotSeq,
+    });
+    row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("replica");
+    expect(row?.ownerHostId).toBe("host-a");
+    expect(row?.content).toEqual(typed("post-claim body"));
+  });
+
+  it("cross-host: a third host's ingest is fenced by an own row's apply seq regardless of which host ingests it, and admitted once the snapshot postdates it", async () => {
+    const id = "fence-cross-host";
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-b", "host-b own body"),
+      null,
+    );
+
+    // host-c ingests a document owned by host-a whose snapshot predates the
+    // host-b apply above: stale, so the row stays own/host-b regardless of
+    // the ingesting host being neither the row's owner nor the document's
+    // owner.
+    const preApplyDocument = landingCloudDocument(
+      id,
+      "host-a",
+      "pre-apply body host-a",
+    );
+    await ingestCloudDraftSummary({
+      hostId: "host-c",
+      summary: landingCloudSummary(preApplyDocument),
+      document: preApplyDocument,
+      snapshotSeq: 0,
+    });
+    let row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("own");
+    expect(row?.ownerHostId).toBe("host-b");
+    expect(row?.content).toEqual(typed("host-b own body"));
+
+    // Contrast: a snapshot dispatched after the host-b apply is admitted,
+    // even though the ingesting host (host-c) is neither the row's prior
+    // owner nor the document's new owner.
+    const snapshotSeq = cloudDraftIngestSeq();
+    const postApplyDocument = landingCloudDocument(
+      id,
+      "host-a",
+      "post-apply body host-a",
+    );
+    await ingestCloudDraftSummary({
+      hostId: "host-c",
+      summary: landingCloudSummary(postApplyDocument),
+      document: postApplyDocument,
+      snapshotSeq,
+    });
+    row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("replica");
+    expect(row?.ownerHostId).toBe("host-a");
+    expect(row?.content).toEqual(typed("post-apply body host-a"));
   });
 });
 

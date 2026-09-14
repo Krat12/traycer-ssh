@@ -26,6 +26,7 @@ import {
   adoptLandingDraft,
   applyLandingHostDelete,
   applyLandingHostDocument,
+  bindLandingDraftOwnership,
   collectLandingDirtyWrites,
   collectUnadoptedLandingDrafts,
   deleteLandingDraftOnHost,
@@ -39,6 +40,7 @@ import {
 import {
   applyComposerHostDelete,
   applyComposerHostDocument,
+  bindComposerDraftOwnership,
   collectComposerDirtyWrites,
   composerDraftIsDirty,
   composerDraftRememberSynced,
@@ -1026,8 +1028,13 @@ export async function ingestCloudDraftSummary(input: {
     const row = useLandingDraftStore
       .getState()
       .drafts.find((draft) => draft.id === input.document.draftId);
+    // Any own row, whichever host owns it: a snapshot dispatched before
+    // that ownership was applied here carries the previous owner's head,
+    // and admitting it would turn the row into that owner's replica. A
+    // snapshot dispatched after it is admitted regardless of host (an own
+    // row of another host, placement auto-followed here, takes that host's
+    // newer head this way).
     if (row === undefined || row.origin !== "own") return true;
-    if (row.ownerHostId !== input.hostId) return true;
     return (
       (landingOwnerAppliedSeq.get(input.document.draftId) ?? 0) <=
       input.snapshotSeq
@@ -1072,6 +1079,27 @@ export function deleteLandingDraftThroughHost(
         error: describeLogError(error),
       });
     });
+}
+
+/**
+ * A claim committed on `hostId` but its document could not be applied
+ * here (a blob read that threw): bind the row's ownership without the
+ * document AND record it as the row's latest ownership apply, so a
+ * directory snapshot dispatched before the claim cannot restore the
+ * previous owner's head over it. The host's next echo brings the content.
+ */
+export function bindClaimedDraftOwnership(
+  document: DraftDocument,
+  hostId: string,
+): void {
+  if (document.kind === "landing") {
+    cloudIngestSeq += 1;
+    cloudIngestSeqByDraft.set(document.draftId, cloudIngestSeq);
+    landingOwnerAppliedSeq.set(document.draftId, cloudIngestSeq);
+    bindLandingDraftOwnership(document.draftId, hostId, document.revision);
+  } else if (document.kind === "chat-composer") {
+    bindComposerDraftOwnership(document.draftId, hostId, document.revision);
+  }
 }
 
 /** The current ingest sequence; a directory captures it at dispatch. */

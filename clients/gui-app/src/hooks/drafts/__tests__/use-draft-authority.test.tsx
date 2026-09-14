@@ -11,7 +11,7 @@ const applyIncomingMock = vi.hoisted(() => ({
   apply: vi.fn<(draft: DraftDocument, admit: () => boolean) => Promise<void>>(),
 }));
 const bindLandingOwnershipMock = vi.hoisted(() => ({
-  bind: vi.fn<(draftId: string, hostId: string) => void>(),
+  bind: vi.fn<(draftId: string, hostId: string, revision: number) => void>(),
 }));
 const deleteClaimedRetiredLandingDraftMock = vi.hoisted(() => ({
   delete: vi.fn<(draftId: string, hostId: string) => void>(),
@@ -28,13 +28,24 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     draft: DraftDocument,
     admit: () => boolean,
   ): Promise<void> => applyIncomingMock.apply(draft, admit),
+  bindClaimedDraftOwnership: (
+    document: DraftDocument,
+    hostId: string,
+  ): void => {
+    if (document.kind === "landing") {
+      bindLandingOwnershipMock.bind(
+        document.draftId,
+        hostId,
+        document.revision,
+      );
+    }
+  },
 }));
 vi.mock("@/stores/home/landing-draft-store", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/stores/home/landing-draft-store")>();
   return {
     ...actual,
-    bindLandingDraftOwnership: bindLandingOwnershipMock.bind,
     deleteClaimedRetiredLandingDraft:
       deleteClaimedRetiredLandingDraftMock.delete,
   };
