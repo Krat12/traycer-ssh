@@ -1,10 +1,21 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
+import type { DraftDocument } from "@traycer/protocol/host";
 import type { HostRpcRegistry } from "@/lib/host";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
+import { bindLandingDraftOwnership } from "@/stores/home/landing-draft-store";
+import { bindComposerDraftOwnership } from "@/stores/composer/composer-draft-store";
+
+function bindOwnership(document: DraftDocument, hostId: string): void {
+  if (document.kind === "landing") {
+    bindLandingDraftOwnership(document.draftId, hostId);
+  } else if (document.kind === "chat-composer") {
+    bindComposerDraftOwnership(document.draftId, hostId);
+  }
+}
 
 export interface DraftAuthorityControl {
   /**
@@ -109,8 +120,14 @@ export function useDraftAuthorityControl(args: {
   useLayoutEffect(() => {
     currentHostRef.current = args.tabHostId;
   }, [args.tabHostId]);
-  // The latest `noteEdit`, for a settlement that finds its host superseded.
+  // The latest `noteEdit` and the draft the surface shows now, for a
+  // settlement that finds its host superseded: the re-claim is for THIS
+  // draft only - a move to another draft is not an edit of that draft.
   const noteEditRef = useRef<() => void>(() => undefined);
+  const currentDraftRef = useRef(args.draftId);
+  useLayoutEffect(() => {
+    currentDraftRef.current = args.draftId;
+  }, [args.draftId]);
   const repairRef = useRef<{
     readonly draftId: string;
     readonly tabHostId: string;
@@ -168,11 +185,19 @@ export function useDraftAuthorityControl(args: {
       const stillCurrent = (): boolean =>
         currentHostRef.current === tabHostId &&
         (latestApplied.current.get(draftId) ?? 0) <= attempt;
+      const reclaimOnCurrentHost = (): void => {
+        // The surface moved hosts and no further edit started that host's
+        // claim: start it now, for this same draft, so the edit that began
+        // this claim is not stranded on the old host.
+        if (
+          currentHostRef.current !== tabHostId &&
+          currentDraftRef.current === draftId
+        ) {
+          noteEditRef.current();
+        }
+      };
       if (!stillCurrent()) {
-        // If the surface moved hosts and no further edit started that host's
-        // claim, start it now: the edit that began this claim was consumed
-        // by the watcher and must not be stranded on the old host.
-        if (currentHostRef.current !== tabHostId) noteEditRef.current();
+        reclaimOnCurrentHost();
         return true;
       }
       // Re-asked by the coordinator after its blob reads, right before the
@@ -186,9 +211,19 @@ export function useDraftAuthorityControl(args: {
         appLogger.warn("[draft-authority] claimed document did not apply", {
           error: describeLogError(error),
         });
+        // The claim committed: bind the row to its new owner without the
+        // document so a deferred submit's delete routes to the host that
+        // holds the row, not the previous owner.
+        if (stillCurrent()) bindOwnership(result.draft, tabHostId);
         return true;
       }
-      if (stillCurrent()) latestApplied.current.set(draftId, attempt);
+      if (stillCurrent()) {
+        latestApplied.current.set(draftId, attempt);
+      } else {
+        // The coordinator declined the mutation after its blob reads: the
+        // surface moved during the apply, past the pre-await check.
+        reclaimOnCurrentHost();
+      }
       return true;
     })();
     const entry: PendingClaim = {

@@ -1722,6 +1722,31 @@ export function landingDraftRememberSynced(
   }));
 }
 
+/**
+ * Bind a row to `hostId` as that host's own row without a document: the
+ * claim committed but its document could not be applied locally (a blob
+ * read that threw). The host's next echo brings the content; until then the
+ * row must not read as the previous owner's, or a delete would route there.
+ */
+export function bindLandingDraftOwnership(
+  draftId: string,
+  hostId: string,
+): void {
+  useLandingDraftStore.setState((state) => ({
+    drafts: state.drafts.map((draft) =>
+      draft.id === draftId
+        ? {
+            ...draft,
+            adoption: { state: "adopted", hostId },
+            ownerHostId: hostId,
+            origin: "own",
+          }
+        : draft,
+    ),
+  }));
+  notifyDraftLocalEdit(draftId);
+}
+
 export function adoptLandingDraft(draftId: string, hostId: string): void {
   useLandingDraftStore.setState((state) => ({
     drafts: state.drafts.map((draft) =>

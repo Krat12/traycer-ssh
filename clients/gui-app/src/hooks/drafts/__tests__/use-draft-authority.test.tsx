@@ -10,6 +10,9 @@ const claimMock = vi.hoisted(() => ({
 const applyIncomingMock = vi.hoisted(() => ({
   apply: vi.fn<(draft: DraftDocument, admit: () => boolean) => Promise<void>>(),
 }));
+const bindLandingOwnershipMock = vi.hoisted(() => ({
+  bind: vi.fn<(draftId: string, hostId: string) => void>(),
+}));
 
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   useDraftClaim: () => ({
@@ -23,6 +26,14 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     admit: () => boolean,
   ): Promise<void> => applyIncomingMock.apply(draft, admit),
 }));
+vi.mock("@/stores/home/landing-draft-store", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/stores/home/landing-draft-store")>();
+  return {
+    ...actual,
+    bindLandingDraftOwnership: bindLandingOwnershipMock.bind,
+  };
+});
 
 const { useDraftAuthorityControl } =
   await import("@/hooks/drafts/use-draft-authority");
@@ -69,6 +80,7 @@ function deferred<T>(): {
 afterEach(() => {
   claimMock.claim.mockReset();
   applyIncomingMock.apply.mockReset();
+  bindLandingOwnershipMock.bind.mockReset();
 });
 
 describe("useDraftAuthorityControl", () => {
@@ -936,5 +948,167 @@ describe("useDraftAuthorityControl", () => {
     expect(claimMock.claim).toHaveBeenCalledTimes(1);
     expect(repairOnEdit).not.toHaveBeenCalled();
     expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+  });
+
+  it("a draft-and-host switch does not claim the new draft", async () => {
+    const repairOnEditA = vi.fn();
+    const repairOnEditB = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        draftId: string;
+        ownerHostId: string;
+        tabHostId: string;
+        repairOnEdit: () => void;
+      }) =>
+        useDraftAuthorityControl({
+          draftId: props.draftId,
+          ownerHostId: props.ownerHostId,
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit: props.repairOnEdit,
+        }),
+      {
+        initialProps: {
+          draftId: "draft-a",
+          ownerHostId: "host-b",
+          tabHostId: "host-a",
+          repairOnEdit: repairOnEditA,
+        },
+      },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-a");
+
+    // The surface switches to a different, unowned draft AND a different
+    // host, with no edit on the new surface.
+    view.rerender({
+      draftId: "draft-b",
+      ownerHostId: "host-c",
+      tabHostId: "host-b",
+      repairOnEdit: repairOnEditB,
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // draft-a's claim (made through host-a) resolving ok must not claim
+    // draft-b: the pending claim's continuation only ever re-claims its own
+    // draft, never the one the surface has since moved to.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEditA).not.toHaveBeenCalled();
+    expect(repairOnEditB).not.toHaveBeenCalled();
+  });
+
+  it("a host move during the apply re-claims on the current host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    const applyDeferred = deferred<void>();
+    const capturedApply: { admit: (() => boolean) | null } = { admit: null };
+    applyIncomingMock.apply.mockImplementation((_draft, admit) => {
+      capturedApply.admit = admit;
+      return applyDeferred.promise;
+    });
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalled();
+    });
+    expect(capturedApply.admit).not.toBeNull();
+
+    // The composer moves to another host while the apply's own async blob
+    // reads are still in flight.
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    act(() => {
+      view.rerender({ tabHostId: "host-b" });
+    });
+    expect(capturedApply.admit?.()).toBe(false);
+
+    // The apply resolves after the move: `stillCurrent()` now reads false,
+    // so the continuation re-claims on the current host via the latest
+    // `noteEdit` instead of leaving the edit stranded on host-a.
+    await act(async () => {
+      applyDeferred.resolve();
+      await applyDeferred.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+  });
+
+  it("a failed apply binds ownership", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockRejectedValueOnce(
+      new Error("blob read failed"),
+    );
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    let settled: SettledOwnership | null = null;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    expect(settled).not.toBeNull();
+    expect(bindLandingOwnershipMock.bind).toHaveBeenCalledTimes(1);
+    expect(bindLandingOwnershipMock.bind).toHaveBeenCalledWith(
+      "draft-1",
+      "host-a",
+    );
+    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 });

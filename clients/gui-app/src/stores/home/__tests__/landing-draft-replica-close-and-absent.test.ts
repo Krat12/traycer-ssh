@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import {
   applyLandingHostDocument,
+  bindLandingDraftOwnership,
   collectLandingDirtyWrites,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
@@ -456,5 +457,43 @@ describe("landing draft store: collectLandingDirtyWrites excludes replica rows",
 
     expect(ids).not.toContain("dirty-replica");
     expect(ids).toContain("dirty-own");
+  });
+});
+
+describe("landing draft store: bindLandingDraftOwnership", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalEditListener(null);
+  });
+
+  it("adopts a replica row to the given host as own and notifies the local-edit listener", () => {
+    const draft = baseDraft("replica-1", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: null });
+
+    const notified: string[] = [];
+    setDraftLocalEditListener((id) => notified.push(id));
+
+    bindLandingDraftOwnership("replica-1", "host-a");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-1");
+    expect(after).toBeDefined();
+    expect(after?.adoption).toEqual({ state: "adopted", hostId: "host-a" });
+    expect(after?.ownerHostId).toBe("host-a");
+    expect(after?.origin).toBe("own");
+    expect(notified).toEqual(["replica-1"]);
   });
 });

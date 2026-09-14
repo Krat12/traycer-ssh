@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import {
   applyComposerHostDocument,
+  bindComposerDraftOwnership,
   collectComposerDirtyWrites,
+  EMPTY_COMPOSER_DRAFT,
   useComposerDraftStore,
 } from "@/stores/composer/composer-draft-store";
 import { setDraftLocalEditListener } from "@/lib/drafts/draft-local-edits";
@@ -265,5 +267,75 @@ describe("composer draft store: applyComposerHostDocument after detachDraftIdent
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.origin).toBe("own");
     expect(notified).toEqual([currentId]);
+  });
+});
+
+describe("composer draft store: applyComposerHostDocument ignores a pending submitted delete", () => {
+  it("ignores a chat-composer document for a draftId fenced by fenceAndDetachSubmittedDraft", () => {
+    const chatId = "chat-fence-apply";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    useComposerDraftStore.setState((state) => {
+      const current = state.drafts[chatId];
+      if (current === undefined) return state;
+      return {
+        drafts: {
+          ...state.drafts,
+          [chatId]: { ...current, draftId: "d-old" },
+        },
+      };
+    });
+
+    useComposerDraftStore.getState().clearDraft(chatId);
+    useComposerDraftStore
+      .getState()
+      .fenceAndDetachSubmittedDraft(chatId, "d-old", "host-a");
+
+    const beforeApply = useComposerDraftStore.getState().drafts[chatId];
+    expect(beforeApply?.draftId).toBeNull();
+    expect(beforeApply?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
+
+    applyComposerHostDocument(chatComposerDocument(chatId, "d-old", "own"));
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.draftId).toBeNull();
+    expect(after?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
+  });
+});
+
+describe("composer draft store: bindComposerDraftOwnership", () => {
+  it("binds a replica row to the given host as own and notifies the local-edit listener", () => {
+    const chatId = "chat-bind-ownership";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    useComposerDraftStore.setState((state) => {
+      const current = state.drafts[chatId];
+      if (current === undefined) return state;
+      return {
+        drafts: {
+          ...state.drafts,
+          [chatId]: {
+            ...current,
+            draftId: "d-x",
+            ownerHostId: "host-b",
+            origin: "replica",
+          },
+        },
+      };
+    });
+
+    const notified: string[] = [];
+    setDraftLocalEditListener((draftId) => {
+      notified.push(draftId);
+    });
+
+    bindComposerDraftOwnership("d-x", "host-a");
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.origin).toBe("own");
+    expect(after?.ownerHostId).toBe("host-a");
+    expect(notified).toEqual(["d-x"]);
   });
 });

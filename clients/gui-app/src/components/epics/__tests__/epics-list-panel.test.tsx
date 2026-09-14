@@ -52,6 +52,7 @@ import { harnessDisplayName } from "@/components/session-import/session-import-m
 import { DEFAULT_HISTORY_SEARCH } from "@/lib/history-search";
 import {
   landingDraftIsRetired,
+  pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
 } from "@/lib/drafts/landing-draft-retirement";
 import type { JsonContent } from "@traycer/protocol/common/registry";
@@ -3552,6 +3553,7 @@ describe("<EpicsListPanel />", () => {
       ).toBe(false);
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
   });
 
   it("leaves a replica draft in place when there is no resolved host (host-scoped delete cannot tell whether it needs a claim)", async () => {

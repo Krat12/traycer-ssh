@@ -613,6 +613,29 @@ export function composerDraftRememberSynced(
   });
 }
 
+/**
+ * Bind a chat draft to `hostId` as that host's own row without a document:
+ * the claim committed but its document could not be applied locally. The
+ * host's next echo brings the content.
+ */
+export function bindComposerDraftOwnership(
+  draftId: string,
+  hostId: string,
+): void {
+  const chatId = findComposerChatIdByDraftId(draftId);
+  if (chatId === null) return;
+  useComposerDraftStore.setState((state) => {
+    const current = ensureDraft(state.drafts, chatId);
+    return {
+      drafts: {
+        ...state.drafts,
+        [chatId]: { ...current, ownerHostId: hostId, origin: "own" },
+      },
+    };
+  });
+  notifyDraftLocalEdit(draftId);
+}
+
 export function applyComposerHostDocument(document: DraftDocument): void {
   if (document.kind !== "chat-composer") return;
   const chatId = document.target.chatId;
@@ -622,6 +645,9 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   // already in flight; the host only ever echoes ids this client minted.
   const before = ensureDraft(useComposerDraftStore.getState().drafts, chatId);
   if (before.draftId !== null && before.draftId !== document.draftId) return;
+  // An id fenced by a submit is on its way to a tombstone; its late echo
+  // must not put the sent content back into the cleared composer.
+  if (composerSubmittedDraftDeleteIsPending(document.draftId)) return;
   useComposerDraftStore.setState((state) => {
     const current = ensureDraft(state.drafts, chatId);
     if (current.generation > current.syncedGeneration) {
