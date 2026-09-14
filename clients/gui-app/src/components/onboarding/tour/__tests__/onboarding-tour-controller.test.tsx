@@ -190,7 +190,7 @@ describe("run gating and controlled props", () => {
     expect(p.options?.disableFocusTrap).toBe(true);
     expect(p.options?.overlayClickAction).toBe(false);
     expect(p.options?.zIndex).toBe(45);
-    expect(p.options?.targetWaitTimeout).toBe(8000);
+    expect(p.options?.targetWaitTimeout).toBe(1500);
     expect(p.options?.dismissKeyAction).toBe("close");
     expect(useOnboardingPresenceStore.getState().tourBusy).toBe(true);
   });
@@ -404,14 +404,34 @@ describe("targets and presentation", () => {
     expect(step.placement).toBe("bottom");
   });
 
-  it("keeps resolving (anchored step, null target) while the target is missing; target_not_found swaps in the centred fallback without touching progress", () => {
+  it("a missing target is the centred, undimmed card at once (B3) - never a bare dim - and the anchor mounting later re-anchors it", async () => {
     render(<OnboardingTour />);
     startChain("no-sessions");
-    const step = props().steps.at(0);
-    if (step === undefined || typeof step.target !== "function") {
+    const missing = props().steps.at(0);
+    expect(missing?.id).toBe("add-folder");
+    expect(missing?.placement).toBe("center");
+    expect(missing?.hideOverlay).toBe(true);
+    expect(missing?.target).toBeTypeOf("function");
+    expect(flow().activeTourId).toBe("add-folder");
+    const epochBefore = joyride.mounts;
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
+    await mutate(() => undefined);
+    const anchored = props().steps.at(0);
+    if (anchored === undefined || typeof anchored.target !== "function") {
       throw new Error("expected a function target");
     }
-    expect(step.target()).toBeNull();
+    expect(anchored.placement).toBe("bottom");
+    expect(anchored.target()).toBe(surface.anchors["landing-folder-add"]);
+    expect(joyride.mounts).toBeGreaterThan(epochBefore);
+  });
+
+  it("a node Joyride refuses (target_not_found on its wait) swaps in the centred fallback without touching progress; Next still acknowledges", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    expect(props().steps.at(0)?.placement).toBe("bottom");
     const epochBefore = joyride.mounts;
     emit(
       { type: "error:target_not_found", lifecycle: "ready" },
@@ -423,7 +443,6 @@ describe("targets and presentation", () => {
     expect(fallback?.id).toBe("add-folder");
     expect(joyride.mounts).toBeGreaterThan(epochBefore);
     expect(flow().activeTourId).toBe("add-folder");
-    // Next on the unanchored card still acknowledges the lesson.
     next();
     expect(flow().activeTourId).toBe("terminal-mode");
   });
@@ -935,10 +954,7 @@ describe("lesson predicates", () => {
     render(<OnboardingTour />);
     startChain("sessions");
     let step = props().steps.at(props().stepIndex ?? 0);
-    if (step === undefined || typeof step.target !== "function") {
-      throw new Error("expected a function target");
-    }
-    expect(step.target()).toBeNull();
+    expect(step?.placement).toBe("center");
     const imported = sized(document.createElement("li"));
     imported.setAttribute("data-epic-id", EPIC_ID);
     await mutate(() => {

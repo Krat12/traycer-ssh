@@ -510,15 +510,17 @@ function buildSteps(
   lessonKey: string | null,
 ): Step[] {
   if (activeTourId === null) return [];
-  // A snapshot resolved for a previous lesson/context never anchors this
-  // one: until the tracker has re-resolved, the step resolves to nothing
-  // (Joyride waits) rather than to the previous lesson's node.
+  // Anchored only on a node resolved for THIS lesson/context. Anything else
+  // - a snapshot from the previous lesson, no node yet, a node Joyride
+  // refused - is the unanchored card at once: the same lesson, centred, no
+  // dim, Next / Skip / Esc live. Never a bare dim while a target is missing
+  // (an anchor that mounts later re-presents under a new epoch).
   const fresh = target.key === lessonKey;
-  if (fresh && target.unanchored) {
+  const node = fresh && !target.unanchored ? target.node : null;
+  if (node === null) {
     return buildTourSteps(order, activeTourId, { kind: "unanchored" });
   }
-  const node = fresh ? target.node : null;
-  const scrollNode = fresh ? target.scrollNode : null;
+  const { scrollNode } = target;
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
@@ -665,8 +667,9 @@ function useEventAdapter(
           `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
         );
       } else if (data.type === EVENTS.TARGET_NOT_FOUND) {
-        // F4: upstream leaves a full dim with no card here. Same lesson,
-        // centred card, no cutout; progress untouched.
+        // F4: Joyride refused a node the resolver accepted, and upstream
+        // would leave a full dim with no card. Same lesson, centred card,
+        // no cutout; progress untouched.
         tracker.markUnanchored();
       } else if (data.type === EVENTS.STEP_AFTER) {
         handleStepAfter(data, active, guardedAdvance);
@@ -863,7 +866,7 @@ function presentationOf(
   if (modalSuspended) return "modal-suspended";
   const { target, lessonKey } = tracking;
   if (target.key !== lessonKey) return "resolving";
-  if (target.unanchored) return "unanchored";
+  if (target.unanchored || target.node === null) return "unanchored";
   return target.presented ? "presenting" : "resolving";
 }
 

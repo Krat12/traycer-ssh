@@ -18,8 +18,14 @@ export const TOUR_SPOTLIGHT_PADDING_PX = 8;
 export const TOUR_SPOTLIGHT_RADIUS_PX = 8;
 /** Overlay 45 / card 46: above the app, below every `z-50` Dialog. */
 export const TOUR_Z_INDEX = 45;
-/** How long a lesson waits for its anchor before the unanchored card. */
-export const TOUR_TARGET_WAIT_TIMEOUT_MS = 8000;
+/**
+ * How long Joyride polls for an anchor the controller handed it before
+ * `error:target_not_found`. Short on purpose: the controller only hands
+ * over a node its own presentability filter accepted, so this wait covers
+ * the rare disagreement with Joyride's visibility check - a lesson whose
+ * anchor is missing never reaches it (the unanchored card shows at once).
+ */
+export const TOUR_TARGET_WAIT_TIMEOUT_MS = 1500;
 export const TOUR_SCROLL_DURATION_MS = 300;
 
 export interface TourLesson {

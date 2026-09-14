@@ -183,7 +183,7 @@ export interface TargetSnapshot {
   readonly key: string | null;
   readonly node: HTMLElement | null;
   readonly scrollNode: HTMLElement | null;
-  /** The same lesson shown centred with no cutout. */
+  /** Joyride refused `node` (its target wait timed out): shown centred. */
   readonly unanchored: boolean;
   /** The anchored card has presented at least once for this key. */
   readonly presented: boolean;
@@ -202,7 +202,7 @@ export interface TargetTracker {
   readonly track: (key: string, resolve: () => TargetResolution) => () => void;
   /** Joyride presented the anchored card for the current key. */
   readonly markPresented: () => void;
-  /** The target wait timed out: same lesson, centred card, no cutout. */
+  /** Joyride's target wait timed out on the node: centred card, no cutout. */
   readonly markUnanchored: () => void;
   /** No lesson is being tracked. */
   readonly reset: () => void;
@@ -224,9 +224,10 @@ const EMPTY_SNAPSHOT: TargetSnapshot = {
  *
  * - the chosen node changing (including to null) re-presents under a new
  *   epoch - Joyride does not move or drop the card on its own (spike F5);
- * - a node that vanishes AFTER it presented drops to the unanchored card at
- *   once (no stale hole); one that never presented keeps resolving, and
- *   Joyride's own target wait decides (F4 handles the timeout);
+ * - no node (missing at entry, or vanished since - stale hole included) is
+ *   the unanchored card at once; the tracker keeps resolving underneath;
+ * - `unanchored` marks a node Joyride itself refused (its target wait timed
+ *   out, F4): the card stays centred until the CHOSEN node changes;
  * - a node that comes back re-anchors the same lesson; progress is never
  *   touched here.
  */
@@ -246,13 +247,12 @@ export function createTargetTracker(): TargetTracker {
     if (next.node === current.node && next.scrollNode === current.scrollNode) {
       return;
     }
-    const unanchored =
-      next.node !== null ? false : current.presented || current.unanchored;
     publish({
       ...current,
       node: next.node,
       scrollNode: next.scrollNode,
-      unanchored,
+      // A refusal was about the previous node; the new one gets its try.
+      unanchored: false,
       presented: next.node === null ? false : current.presented,
       epoch: current.epoch + 1,
     });
