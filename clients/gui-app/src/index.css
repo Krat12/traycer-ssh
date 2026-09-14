@@ -754,6 +754,17 @@
   }
 }
 
+/* The dim is a hint, never a click shield (onboarding decision 7: an
+   outside click is a no-op for the TOUR, not for the app). react-joyride
+   paints the dim as an SVG path with an inline `pointer-events: auto` so its
+   `overlayClickAction` can fire; with that action off the path would only
+   swallow every click outside the cutout - Start, the address bar, the chat
+   textarea. `styles.overlay` reaches the wrapper div (already `none`), not
+   the path, so this is the one place that can let clicks through. */
+#react-joyride-portal .react-joyride__spotlight path {
+  pointer-events: none !important;
+}
+
 /*
  * Device safe-area insets, named once so no surface ever writes a raw `env()`.
  *

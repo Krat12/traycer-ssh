@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   act,
   cleanup,
@@ -43,6 +45,28 @@ vi.mock("@/lib/analytics", async (importOriginal) => {
 });
 
 const DRAFT_ID = "draft-real";
+
+const INDEX_CSS = readFileSync(
+  path.resolve(__dirname, "../../../../index.css"),
+  "utf8",
+);
+
+/**
+ * The `pointer-events: none` rule that lets clicks through the dim, as
+ * authored in `index.css` (jsdom cannot hit-test; the rule and the DOM it
+ * targets are pinned separately and joined by the selector).
+ */
+function overlayPathRule(): { selector: string; body: string } | null {
+  for (const match of INDEX_CSS.matchAll(
+    /([^{}]*react-joyride__spotlight path[^{}]*)\{([^}]*)\}/g,
+  )) {
+    const body = match[2];
+    if (/pointer-events\s*:\s*none\s*!important/.test(body)) {
+      return { selector: match[1].trim(), body };
+    }
+  }
+  return null;
+}
 
 function mountAnchor(): HTMLElement {
   const surface = document.createElement("div");
@@ -190,6 +214,26 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     await waitFor(() => {
       expect(flow().chain).toBe("paused");
     });
+    expect(flow().activeTourId).toBe("add-folder");
+  });
+
+  it("the dim never swallows a click: the overlay path Joyride paints with inline pointer-events:auto is matched by the index.css rule that turns it off (B1)", async () => {
+    await startAndPresent();
+    const overlayPath = await waitFor(() => {
+      const found = document.querySelector<SVGPathElement>(
+        '[data-testid="spotlight"] path',
+      );
+      if (found === null) throw new Error("overlay path not painted yet");
+      return found;
+    });
+    // Upstream's inline style - the reason a stylesheet rule with
+    // `!important` is the only thing that can reach it.
+    expect(overlayPath.style.pointerEvents).toBe("auto");
+    const rule = overlayPathRule();
+    expect(rule).not.toBeNull();
+    expect(rule?.selector).toContain("#react-joyride-portal");
+    expect(overlayPath.matches(rule?.selector ?? "")).toBe(true);
+    // And the tour itself still treats an outside click as a no-op.
     expect(flow().activeTourId).toBe("add-folder");
   });
 

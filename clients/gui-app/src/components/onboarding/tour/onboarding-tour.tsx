@@ -73,6 +73,9 @@ export function OnboardingTour(): React.ReactElement | null {
           buttons: ["primary", "skip", "close"],
           skipBeacon: true,
           disableFocusTrap: true,
+          // No dismissal on an outside click - and no click shield either:
+          // `index.css` takes the dim's SVG path out of hit-testing, so the
+          // app under it stays clickable (decision 7 is about the tour).
           overlayClickAction: false,
           blockTargetInteraction: false,
           dismissKeyAction: controller.modalSuspended ? false : "close",
