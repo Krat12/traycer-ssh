@@ -290,10 +290,27 @@ const applyIncomingDraftDocumentMock = vi.hoisted(() => ({
     Promise.resolve(),
   ),
 }));
-vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
-  applyIncomingDraftDocument: (draft: unknown, admit: unknown): Promise<void> =>
-    applyIncomingDraftDocumentMock.apply(draft, admit),
+const deleteThroughHostMock = vi.hoisted(() => ({
+  record:
+    vi.fn<(draftId: string, hostId: string, hasClient: boolean) => void>(),
 }));
+vi.mock("@/lib/drafts/draft-mirror-coordinator", async () => {
+  const store = await import("@/stores/home/landing-draft-store");
+  return {
+    applyIncomingDraftDocument: (
+      draft: unknown,
+      admit: unknown,
+    ): Promise<void> => applyIncomingDraftDocumentMock.apply(draft, admit),
+    deleteLandingDraftThroughHost: (
+      draftId: string,
+      hostId: string,
+      client: unknown,
+    ): void => {
+      deleteThroughHostMock.record(draftId, hostId, client !== null);
+      store.deleteLandingDraftOnHost(draftId, hostId);
+    },
+  };
+});
 
 function historyItem(overrides: Partial<HistoryItem>): HistoryItem {
   return {
@@ -489,6 +506,7 @@ describe("<EpicsListPanel />", () => {
     applyIncomingDraftDocumentMock.apply.mockImplementation(() =>
       Promise.resolve(),
     );
+    deleteThroughHostMock.record.mockReset();
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     queryClient.clear();
@@ -3473,6 +3491,13 @@ describe("<EpicsListPanel />", () => {
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
+    // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
+    // resolves null here - the call still names hostId, just with no client.
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      testState.hostId,
+      false,
+    );
   });
 
   it("deletes an own row already owned by the History host through that host, even though the landing placement points elsewhere", async () => {
@@ -3498,6 +3523,13 @@ describe("<EpicsListPanel />", () => {
     expect(draftClaimTestState.claim).not.toHaveBeenCalled();
     expect(landingDraftIsRetired(draftId)).toBe(true);
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
+    // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
+    // resolves null here - the call still names hostId, just with no client.
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      testState.hostId,
+      false,
+    );
   });
 
   it("contrast: retires a never-adopted own row locally with a null pending host", async () => {
@@ -3611,6 +3643,13 @@ describe("<EpicsListPanel />", () => {
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
+    // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
+    // resolves null here - the call still names hostId, just with no client.
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      testState.hostId,
+      false,
+    );
   });
 
   it("leaves a replica draft in place when there is no resolved host (host-scoped delete cannot tell whether it needs a claim)", async () => {

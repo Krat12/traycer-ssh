@@ -18,6 +18,7 @@ import {
   blobHashesOfDocument,
 } from "./draft-write-codec";
 import { draftKindIsHostBound } from "./draft-portability";
+import { isDraftsCapabilityMissing } from "./draft-capability";
 
 import { interviewDraftBindingKey } from "./draft-ids";
 import { EMPTY_LANDING_DRAFT_CONTENT } from "@/stores/home/landing-draft-content";
@@ -27,6 +28,7 @@ import {
   applyLandingHostDocument,
   collectLandingDirtyWrites,
   collectUnadoptedLandingDrafts,
+  deleteLandingDraftOnHost,
   dropForeignLandingMirrorsAbsent,
   dropLandingAbsentFromList,
   landingDraftIsDirty,
@@ -970,6 +972,43 @@ export async function ingestCloudDraftSummary(input: {
       row.ownerHostId !== input.hostId
     );
   });
+}
+
+/**
+ * Delete a landing draft through `hostId` from a surface that holds that
+ * host's client but need not have a mirror session mounted: History runs on
+ * the app-wide host, and only the landing placement and mounted tabs
+ * acquire sessions, so with the composer pinned elsewhere the routed
+ * delete (`notifyDraftLocalDelete` -> `routeLocalDelete`) has no session to
+ * reach. A mounted session is preferred (it serializes the tombstone
+ * behind in-flight upserts); otherwise the tombstone goes out on the
+ * client directly. The receipt stays pending until the host answers, so a
+ * failure is retried by whichever session for that host mounts later.
+ */
+export function deleteLandingDraftThroughHost(
+  draftId: string,
+  hostId: string,
+  client: HostRequester<HostRpcRegistry> | null,
+): void {
+  deleteLandingDraftOnHost(draftId, hostId);
+  if (sessions.has(hostId) || client === null) return;
+  if (pendingLandingDraftDeleteHostId(draftId) !== hostId) return;
+  void client
+    .request("drafts.delete", { draftId })
+    .then(() => {
+      // `deleted: false` means the host never had the row: nothing is left
+      // to delete there either way.
+      completeLandingDraftDelete(draftId);
+    })
+    .catch((error: unknown) => {
+      if (isDraftsCapabilityMissing(error)) {
+        completeLandingDraftDelete(draftId);
+        return;
+      }
+      appLogger.warn("[draft-mirror] direct drafts.delete failed", {
+        error: describeLogError(error),
+      });
+    });
 }
 
 /** The current ingest sequence; a directory captures it at dispatch. */

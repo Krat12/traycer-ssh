@@ -9,6 +9,7 @@ import {
   bindLandingAdoptionHost,
   cloudDraftIngestSeq,
   collectDraftMirrorDirtyWrites,
+  deleteLandingDraftThroughHost,
   ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
@@ -18,6 +19,10 @@ import {
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
 import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
+import {
+  pendingLandingDraftDeleteHostId,
+  resetLandingDraftRetirementsForTests,
+} from "@/lib/drafts/landing-draft-retirement";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import { useInterviewDraftStore } from "@/stores/composer/interview-draft-store";
 import {
@@ -103,6 +108,7 @@ afterEach(() => {
   });
   useInterviewDraftStore.setState({ draftsByChat: {} });
   useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+  resetLandingDraftRetirementsForTests();
 });
 
 describe("interview host binding", () => {
@@ -548,6 +554,166 @@ describe("submitComposerDraft", () => {
 
     expect(readDraft().content).not.toEqual(typed("submitted"));
     expect(readDraft().resetEpoch).toBe(epochAfterSubmit);
+  });
+});
+
+describe("deleteLandingDraftThroughHost", () => {
+  const HOST_B = "host-b";
+
+  function ownAdoptedLandingRow(id: string, hostId: string) {
+    return {
+      id,
+      content: typed("own body"),
+      selection: null,
+      lastTouchedAt: 0,
+      settings: null,
+      composerMode: "chat" as const,
+      workspace: emptyLandingDraftWorkspaceSnapshot(),
+      ...freshLandingMirrorState(),
+      adoption: { state: "adopted" as const, hostId },
+      origin: "own" as const,
+      ownerHostId: hostId,
+      closed: true,
+    };
+  }
+
+  function mountHostSession(hostId: string, log: HostLog) {
+    return acquireDraftMirrorSession({
+      hostId,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.delete") {
+            const draftId = (params as { draftId: string }).draftId;
+            log.deletes.push(draftId);
+            log.rows = log.rows.filter((row) => row.draftId !== draftId);
+            return Promise.resolve({ deleted: true });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+  }
+
+  function fakeDirectClient(
+    respond: (draftId: string) => Promise<{ deleted: boolean }>,
+  ) {
+    return {
+      request: (method: string, params: unknown) => {
+        if (method === "drafts.delete") {
+          return respond((params as { draftId: string }).draftId);
+        }
+        return Promise.reject(new Error(`unexpected ${String(method)}`));
+      },
+    } as never;
+  }
+
+  it("no session mounted: a resolved drafts.delete({ deleted: true }) removes the row, sends { draftId }, and completes the receipt", async () => {
+    const id = "direct-delete-true";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    const requested: string[] = [];
+    const client = fakeDirectClient((draftId) => {
+      requested.push(draftId);
+      return Promise.resolve({ deleted: true });
+    });
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+
+    expect(
+      useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
+    ).toBe(false);
+
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+    expect(requested).toEqual([id]);
+  });
+
+  it("no session mounted: a resolved drafts.delete({ deleted: false }) also completes the receipt", async () => {
+    const id = "direct-delete-false";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    const client = fakeDirectClient(() => Promise.resolve({ deleted: false }));
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+  });
+
+  it("no session mounted: a rejected drafts.delete leaves the receipt pending on host-b", async () => {
+    const id = "direct-delete-rejects";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    const client = fakeDirectClient(() => Promise.reject(new Error("offline")));
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+
+    // Let the rejected direct request settle before asserting the receipt is
+    // still pending - nothing else would flip it here.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+  });
+
+  it("a mounted session for host-b handles the delete itself; the direct client is never called", async () => {
+    const id = "session-mounted-delete";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_B, log);
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    const client = fakeDirectClient(() => {
+      throw new Error(
+        "must not call the direct client while a session is mounted",
+      );
+    });
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+  });
+
+  it("client is null and no session is mounted: the row is removed locally, the receipt stays pending on host-b, and nothing throws", () => {
+    const id = "null-client-no-session";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+
+    expect(() => deleteLandingDraftThroughHost(id, HOST_B, null)).not.toThrow();
+
+    expect(
+      useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
+    ).toBe(false);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
   });
 });
 

@@ -15,17 +15,17 @@ import { useDraftClaim } from "@/hooks/drafts/use-draft-claim";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import { openLandingDraftFromHistory } from "@/lib/commands/actions/open-landing-draft-from-history";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
-import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
+import {
+  applyIncomingDraftDocument,
+  deleteLandingDraftThroughHost,
+} from "@/lib/drafts/draft-mirror-coordinator";
 import {
   listHistoryLandingDrafts,
   type HistoryLandingDraft,
 } from "@/lib/history-landing-drafts";
 import { cn } from "@/lib/utils";
 import { useDraftSurfaceId } from "@/providers/draft-surface-hooks";
-import {
-  deleteLandingDraftOnHost,
-  useLandingDraftStore,
-} from "@/stores/home/landing-draft-store";
+import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 
 const DRAFTS_PREVIEW_LIMIT = 5;
 
@@ -70,7 +70,8 @@ export function HistoryDraftsList(props: {
   // one - this host offline, too old, not yet publishing - leaves the row
   // where it is for the next attempt rather than hiding a draft that still
   // exists.
-  const { claim } = useDraftClaim(useHostClientForHostId(hostId));
+  const hostClient = useHostClientForHostId(hostId);
+  const { claim } = useDraftClaim(hostClient);
   const confirmDelete = useCallback(() => {
     if (pendingDelete === null) return;
     const draftId = pendingDelete.id;
@@ -94,7 +95,7 @@ export function HistoryDraftsList(props: {
       // while History runs on the app-wide host. A row no host has adopted
       // yet has nowhere to route and retires locally as before.
       if (draft.ownerHostId === hostId) {
-        deleteLandingDraftOnHost(draftId, hostId);
+        deleteLandingDraftThroughHost(draftId, hostId, hostClient);
       } else {
         useLandingDraftStore.getState().deleteDraft(draftId);
       }
@@ -113,7 +114,7 @@ export function HistoryDraftsList(props: {
           } catch {
             // Deleted through `hostId` regardless.
           }
-          deleteLandingDraftOnHost(draftId, hostId);
+          deleteLandingDraftThroughHost(draftId, hostId, hostClient);
           return;
         }
         if (
@@ -125,7 +126,7 @@ export function HistoryDraftsList(props: {
       },
       () => undefined,
     );
-  }, [claim, hostId, pendingDelete]);
+  }, [claim, hostClient, hostId, pendingDelete]);
 
   if (items.length === 0) return null;
 
