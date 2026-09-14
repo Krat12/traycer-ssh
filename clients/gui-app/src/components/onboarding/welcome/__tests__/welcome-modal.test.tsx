@@ -696,6 +696,57 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(flow().branch).toBe("no-sessions");
     });
 
+    it("moves to page 2's already-running notice when a run is in flight on the host, even over an empty scan", () => {
+      // The run controller attached to a run in flight on connect (Settings'
+      // wizard in another window, say). Page 1 has no status probe of its
+      // own, so the store is what it reads: the shortcut would otherwise
+      // send the user down the no-sessions tours while imported rows land.
+      useSessionImportRunStore.setState({
+        runs: new Map([
+          ["host-a", { ...SESSION_IMPORT_RUN_IDLE, status: "running" }],
+        ]),
+      });
+      signIn();
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
+      act(() => {
+        callbacks().onStarted(["claude"]);
+        callbacks().onComplete(ZERO_TOTALS);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(flow().modal).toBe("in-progress");
+      expect(flow().modalPage).toBe(2);
+      expect(
+        screen.getByTestId("welcome-sessions-already-running"),
+      ).not.toBeNull();
+      expect(screen.queryByTestId("welcome-sessions-empty")).toBeNull();
+      // Page 2's Continue over the notice is the `sessions` branch: the
+      // run's rows are the recent work the tours point at.
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(flow().modal).toBe("done");
+      expect(flow().branch).toBe("sessions");
+      expect(screen.queryByTestId("welcome-modal")).toBeNull();
+    });
+
+    it("still shortcuts to no-sessions over an empty scan when the store holds no run for this host", () => {
+      // A run on ANOTHER host is not this host's run, and a finished one is
+      // not in flight: neither holds page 1 back from the shortcut.
+      useSessionImportRunStore.setState({
+        runs: new Map([
+          ["host-b", { ...SESSION_IMPORT_RUN_IDLE, status: "running" }],
+          ["host-a", { ...SESSION_IMPORT_RUN_IDLE, status: "complete" }],
+        ]),
+      });
+      signIn();
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
+      act(() => {
+        callbacks().onStarted(["claude"]);
+        callbacks().onComplete(ZERO_TOTALS);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(flow().modal).toBe("done");
+      expect(flow().branch).toBe("no-sessions");
+    });
+
     it("moves to page 2 while the scan is still running", () => {
       signIn();
       render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
