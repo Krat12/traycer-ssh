@@ -208,31 +208,34 @@ describe("submitComposerDraft", () => {
     store.fenceAndDetachSubmittedDraft(CHAT_ID, draftId, HOST_ID);
     const epochAfterSubmit = readDraft().resetEpoch;
 
-    await applyIncomingDraftDocument({
-      draftId,
-      kind: "chat-composer",
-      target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
-      revision: 3,
-      lastTouchedAt: 1,
-      workspace: null,
-      ownerHostId: HOST_ID,
-      origin: "own",
-      adoption: { state: "adopted", hostId: HOST_ID },
-      publication: {
-        status: "unpublished",
-        lastPublishedAt: null,
-        publishedRevision: null,
-        halted: null,
+    await applyIncomingDraftDocument(
+      {
+        draftId,
+        kind: "chat-composer",
+        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
+        revision: 3,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: HOST_ID,
+        origin: "own",
+        adoption: { state: "adopted", hostId: HOST_ID },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: typed("submitted"),
+          selection: { from: 1, to: 10 },
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
       },
-      portable: {
-        content: typed("submitted"),
-        selection: { from: 1, to: 10 },
-        runSettings: null,
-        composerMode: "chat",
-        blobHashes: [],
-        closed: false,
-      },
-    });
+      null,
+    );
 
     expect(readDraft().content).not.toEqual(typed("submitted"));
     expect(readDraft().resetEpoch).toBe(epochAfterSubmit);

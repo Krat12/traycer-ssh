@@ -132,8 +132,11 @@ export function useDraftAuthorityControl(args: {
       // Superseded: the surface moved to another host while this claim ran.
       // Its document names this host as owner and would route the dirty row
       // back here; the current host's claim is the one that counts.
-      if (currentHostRef.current !== tabHostId) return true;
-      await applyIncomingDraftDocument(result.draft);
+      const stillCurrent = (): boolean => currentHostRef.current === tabHostId;
+      if (!stillCurrent()) return true;
+      // Re-asked by the coordinator after its blob reads, right before the
+      // store mutation: the surface can move while the fetch is in flight.
+      await applyIncomingDraftDocument(result.draft, stillCurrent);
       return true;
     })();
     const entry: PendingClaim = {

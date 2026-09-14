@@ -362,7 +362,7 @@ const sink: DraftMirrorSink = {
     useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
   },
   applyUpsert(document) {
-    return applyHostDocument(document);
+    return applyHostDocument(document, null);
   },
   applyDelete(draftId) {
     // A tombstone can arrive while the first landing upsert awaits its images,
@@ -420,7 +420,16 @@ function rejectRetiredLandingDocument(document: DraftDocument): boolean {
   return true;
 }
 
-async function applyHostDocument(document: DraftDocument): Promise<void> {
+/**
+ * `admit` is re-asked immediately before the store mutation, after the blob
+ * reads have awaited: a caller whose reason to apply can lapse meanwhile (a
+ * claim made through a host the surface has since left) fences here rather
+ * than only before the await. `null` applies unconditionally.
+ */
+async function applyHostDocument(
+  document: DraftDocument,
+  admit: (() => boolean) | null,
+): Promise<void> {
   if (document.kind === "landing") knownLandingDraftIds.add(document.draftId);
   if (rejectRetiredLandingDocument(document)) return;
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) {
@@ -436,11 +445,13 @@ async function applyHostDocument(document: DraftDocument): Promise<void> {
       hashes,
     );
     rememberLandingBlobsOnHost(document.draftId, [...images.keys()]);
+    if (admit !== null && !admit()) return;
     if (document.kind === "stash-entry") {
       await ingestStashDocument(document, images);
       return;
     }
   }
+  if (admit !== null && !admit()) return;
   if (document.kind === "stash-entry") {
     await ingestStashDocument(document, new Map());
     return;
@@ -835,8 +846,9 @@ export function collectDraftMirrorDirtyWrites(
 
 export async function applyIncomingDraftDocument(
   document: DraftDocument,
+  admit: (() => boolean) | null,
 ): Promise<void> {
-  await applyHostDocument(document);
+  await applyHostDocument(document, admit);
 }
 
 export async function ingestCloudDraftSummary(input: {
@@ -853,7 +865,7 @@ export async function ingestCloudDraftSummary(input: {
   // naming the tab's own host. Every tile mount re-ran this, which is why the
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
-  await applyHostDocument(input.document);
+  await applyHostDocument(input.document, null);
 }
 
 registerExtraImageRootSource({

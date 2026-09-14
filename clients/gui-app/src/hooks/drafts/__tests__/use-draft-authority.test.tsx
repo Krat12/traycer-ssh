@@ -7,7 +7,7 @@ const claimMock = vi.hoisted(() => ({
   claim: vi.fn<(draftId: string) => Promise<DraftClaimResult>>(),
 }));
 const applyIncomingMock = vi.hoisted(() => ({
-  apply: vi.fn<(draft: DraftDocument) => Promise<void>>(),
+  apply: vi.fn<(draft: DraftDocument, admit: () => boolean) => Promise<void>>(),
 }));
 
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
@@ -17,8 +17,10 @@ vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   }),
 }));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
-  applyIncomingDraftDocument: (draft: DraftDocument): Promise<void> =>
-    applyIncomingMock.apply(draft),
+  applyIncomingDraftDocument: (
+    draft: DraftDocument,
+    admit: () => boolean,
+  ): Promise<void> => applyIncomingMock.apply(draft, admit),
 }));
 
 const { useDraftAuthorityControl } =
@@ -132,7 +134,10 @@ describe("useDraftAuthorityControl", () => {
     });
 
     await waitFor(() => {
-      expect(applyIncomingMock.apply).toHaveBeenCalledWith(STUB_DRAFT);
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
     });
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
@@ -333,7 +338,10 @@ describe("useDraftAuthorityControl", () => {
     });
 
     await waitFor(() => {
-      expect(applyIncomingMock.apply).toHaveBeenCalledWith(STUB_DRAFT);
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
     });
     expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
     expect(repairOnEdit).not.toHaveBeenCalled();
@@ -584,6 +592,58 @@ describe("useDraftAuthorityControl", () => {
       expect(repairOnEditA).toHaveBeenCalledTimes(1);
     });
     expect(repairOnEditB).not.toHaveBeenCalled();
+  });
+
+  it("the apply fence reports a host swap that happens during the apply", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    const captured: { admit: (() => boolean) | null } = { admit: null };
+    applyIncomingMock.apply.mockImplementation((_draft, admit) => {
+      captured.admit = admit;
+      return Promise.resolve();
+    });
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-b",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalled();
+    });
+
+    expect(captured.admit).not.toBeNull();
+    expect(captured.admit?.()).toBe(true);
+
+    // The composer moves to another host during the apply's own async
+    // blob reads - the coordinator re-asks this same `admit` right before
+    // its store mutation, and it must now report the swap.
+    act(() => {
+      view.rerender({ tabHostId: "host-b" });
+    });
+
+    await waitFor(() => {
+      expect(captured.admit?.()).toBe(false);
+    });
   });
 
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {

@@ -92,7 +92,7 @@ export function HistoryDraftsList(props: {
     void claim(draftId).then(
       async (result) => {
         if (result.status === "ok" || result.status === "already-owned") {
-          await applyIncomingDraftDocument(result.draft);
+          await applyIncomingDraftDocument(result.draft, null);
           useLandingDraftStore.getState().deleteDraft(draftId);
           return;
         }

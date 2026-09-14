@@ -650,26 +650,29 @@ describe("landing draft host-mirror bookkeeping", () => {
         closed: false,
       },
     };
-    await applyIncomingDraftDocument(initial);
+    await applyIncomingDraftDocument(initial, null);
     expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
 
-    const delayed = applyIncomingDraftDocument({
-      ...initial,
-      revision: 2,
-      portable: {
-        ...initial.portable,
-        blobHashes: [hash],
-        content: {
-          type: "doc",
-          content: [
-            {
-              type: "paragraph",
-              content: [{ type: "text", text: "old host body" }],
-            },
-          ],
+    const delayed = applyIncomingDraftDocument(
+      {
+        ...initial,
+        revision: 2,
+        portable: {
+          ...initial.portable,
+          blobHashes: [hash],
+          content: {
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "old host body" }],
+              },
+            ],
+          },
         },
       },
-    });
+      null,
+    );
     await vi.waitFor(() => {
       expect(readBlobStarted).toBe(true);
     });
@@ -979,7 +982,7 @@ describe("landing draft host-mirror bookkeeping", () => {
         closed: false,
       },
     };
-    await applyIncomingDraftDocument(incoming);
+    await applyIncomingDraftDocument(incoming, null);
 
     await vi.waitFor(() => {
       expect(deletes).toEqual([id]);
