@@ -255,6 +255,90 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEditB).not.toHaveBeenCalled();
   });
 
+  it("an edit that joins a submit-started claim arms the repair once", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    // The submit path starts the claim; no edit has touched it yet.
+    act(() => {
+      void view.result.current.settleOwnership();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Two edits join the same pending claim; the repair must arm once.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(repairOnEdit).toHaveBeenCalledTimes(1);
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it("a submit-started claim that succeeds after an edit joined it does not repair", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      void view.result.current.settleOwnership();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(STUB_DRAFT);
+    });
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
     const repairOnEdit = vi.fn();
     claimMock.claim.mockResolvedValueOnce({

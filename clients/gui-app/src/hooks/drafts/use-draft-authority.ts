@@ -49,9 +49,13 @@ export function useDraftAuthorityControl(args: {
   // Keyed by the draft it is for: this hook instance can move to another
   // draft while a claim is pending (a chat draft's identity is re-minted by
   // the repair), and B must not ride A's outcome.
+  // `repairArmed` records whether an edit has attached the refusal repair
+  // to this attempt: a claim the submit path started has none, and the
+  // first edit that joins it arms exactly one.
   const inflight = useRef<{
     readonly draftId: string;
     readonly promise: Promise<boolean>;
+    repairArmed: boolean;
   } | null>(null);
   // Read through a ref by the in-flight continuation: the repair belongs to
   // the render that observes the refusal, not the one that started the claim
@@ -67,6 +71,11 @@ export function useDraftAuthorityControl(args: {
     repairRef.current = { draftId: args.draftId, fn: args.repairOnEdit };
   }, [args.draftId, args.repairOnEdit]);
 
+  const repairFor = useCallback((draftId: string): void => {
+    const repair = repairRef.current;
+    if (repair !== null && repair.draftId === draftId) repair.fn();
+  }, []);
+
   const runClaim = useCallback((): Promise<boolean> => {
     const draftId = args.draftId;
     if (draftId === null) return Promise.resolve(false);
@@ -80,7 +89,7 @@ export function useDraftAuthorityControl(args: {
       await applyIncomingDraftDocument(result.draft);
       return true;
     })();
-    const entry = { draftId, promise };
+    const entry = { draftId, promise, repairArmed: false };
     void promise.finally(() => {
       if (inflight.current === entry) inflight.current = null;
     });
@@ -90,16 +99,29 @@ export function useDraftAuthorityControl(args: {
 
   const noteEdit = useCallback((): void => {
     if (!unowned) return;
+    // `unowned` narrows `args.draftId` to a string.
     const draftId = args.draftId;
     const pending = inflight.current;
-    if (pending !== null && pending.draftId === draftId) return;
-    void runClaim().then((owned) => {
-      if (owned) return;
-      if (repairRef.current !== null && repairRef.current.draftId === draftId) {
-        repairRef.current.fn();
-      }
+    // An edit joins a claim already in flight - one the submit path or an
+    // earlier edit started - and arms the repair on it once. Dropping the
+    // edit instead would leave it on the unowned identity if that claim is
+    // refused.
+    if (pending !== null && pending.draftId === draftId) {
+      if (pending.repairArmed) return;
+      pending.repairArmed = true;
+      void pending.promise.then((owned) => {
+        if (!owned) repairFor(draftId);
+      });
+      return;
+    }
+    void runClaim();
+    const started = inflight.current;
+    if (started === null || started.draftId !== draftId) return;
+    started.repairArmed = true;
+    void started.promise.then((owned) => {
+      if (!owned) repairFor(draftId);
     });
-  }, [args.draftId, runClaim, unowned]);
+  }, [args.draftId, repairFor, runClaim, unowned]);
 
   const settleOwnership = useCallback(async (): Promise<void> => {
     if (!unowned) return;

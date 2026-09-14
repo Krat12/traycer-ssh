@@ -288,6 +288,9 @@ export function LandingComposer(props: LandingComposerProps) {
     if (draftId === null) return 0;
     return state.drafts.find((entry) => entry.id === draftId)?.generation ?? 0;
   });
+  // Edits made while no host is resolved are not consumed: `unowned` cannot
+  // be judged without a host, so the watch holds the mark and revisits it
+  // the moment a host resolves, claiming (or repairing) then.
   const seenGeneration = useRef<number | null>(null);
   useEffect(() => {
     if (seenGeneration.current === null) {
@@ -295,9 +298,10 @@ export function LandingComposer(props: LandingComposerProps) {
       return;
     }
     if (landingGeneration <= seenGeneration.current) return;
+    if (resolvedHostId === null) return;
     seenGeneration.current = landingGeneration;
     authority.noteEdit();
-  }, [authority, landingGeneration]);
+  }, [authority, landingGeneration, resolvedHostId]);
   const handleToolbarSettingsChange = useCallback(
     (settings: ChatRunSettings) => {
       authority.noteEdit();
