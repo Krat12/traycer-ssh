@@ -680,6 +680,7 @@ function useEventAdapter(
 
 interface PredicateArgs {
   readonly chainActive: boolean;
+  readonly chainScope: "branch" | "single";
   readonly active: ActiveStep | null;
   readonly activation: number;
   readonly lesson: LessonContext;
@@ -724,17 +725,57 @@ function useFolderPredicate(args: PredicateArgs): void {
 }
 
 /**
- * terminal-mode: the bound draft's composer is in terminal mode (already
- * there at entry counts too). Never resets the mode.
+ * terminal-mode: the bound draft's composer is in terminal mode. Never
+ * resets the mode. In the branch chain, already there at entry counts too
+ * (the user did the thing during an earlier lesson). A Settings replay of
+ * the one lesson needs a CHANGE after activation - a composer left in
+ * Terminal would otherwise complete the replay in the tick it started,
+ * with no card ever shown - so it advances only on a switch INTO terminal
+ * mode observed since entry; Next still acknowledges.
  */
 function useTerminalModePredicate(args: PredicateArgs): void {
-  const { chainActive, active, inputs, guardedAdvance } = args;
+  const {
+    chainActive,
+    chainScope,
+    active,
+    activation,
+    lesson,
+    inputs,
+    guardedAdvance,
+  } = args;
   const { composerMode, pendingAttempt } = inputs;
+  const baselineRef = useRef<{ key: string; sawOtherMode: boolean } | null>(
+    null,
+  );
+  const key =
+    chainActive && active?.tourId === "terminal-mode"
+      ? `${activation}|${lesson.draftId ?? ""}`
+      : null;
   useEffect(() => {
-    if (!chainActive || active?.tourId !== "terminal-mode") return;
-    if (pendingAttempt || composerMode !== "terminal") return;
+    if (key === null || active === null) {
+      baselineRef.current = null;
+      return;
+    }
+    const baseline =
+      baselineRef.current?.key === key
+        ? baselineRef.current
+        : { key, sawOtherMode: false };
+    baselineRef.current = baseline;
+    if (composerMode !== "terminal") {
+      baseline.sawOtherMode = true;
+      return;
+    }
+    if (pendingAttempt) return;
+    if (chainScope === "single" && !baseline.sawOtherMode) return;
     guardedAdvance(active.tourId, active.stepId, "auto");
-  }, [chainActive, active, pendingAttempt, composerMode, guardedAdvance]);
+  }, [
+    key,
+    chainScope,
+    active,
+    pendingAttempt,
+    composerMode,
+    guardedAdvance,
+  ]);
 }
 
 /**
@@ -926,6 +967,7 @@ export function useOnboardingTourController(): OnboardingTourController {
   );
   const predicateArgs: PredicateArgs = {
     chainActive,
+    chainScope: flow.chainScope,
     active,
     activation,
     lesson,

@@ -661,6 +661,52 @@ describe("lesson predicates", () => {
     ).toBe("terminal");
   });
 
+  it("terminal-mode: a Settings replay with the composer ALREADY in terminal does not self-complete (B7); a switch into terminal after entry does, and Next still works", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true));
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
+    });
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().skipChain();
+      flow().replayTour("terminal-mode");
+    });
+    expect(flow().context?.draftId).toBe(DRAFT_ID);
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("terminal-mode");
+    expect(props().steps.at(0)?.placement).toBe("top");
+    // Chat and back: a switch into terminal observed since entry.
+    act(() => {
+      useLandingDraftStore.getState().setDraftComposerMode(DRAFT_ID, "chat");
+    });
+    expect(flow().chain).toBe("active");
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
+    });
+    expect(flow().chain).toBe("completed");
+
+    // Next acknowledges a replay that never flips.
+    act(() => {
+      flow().replayTour("terminal-mode");
+    });
+    expect(flow().chain).toBe("active");
+    next();
+    expect(flow().chain).toBe("completed");
+
+    // The branch chain keeps "already there at entry counts".
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().setContext({ draftId: DRAFT_ID, hostId: HOST_ID });
+      flow().advance("add-folder", "add-folder", "next");
+    });
+    expect(flow().activeTourId).toBe("submit-prompt");
+  });
+
   it("submit-prompt: only a prompt-accepted receipt matching draft/host/attempt advances and records the destination; optimistic navigation does not", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-send"], true));
     render(<OnboardingTour />);
