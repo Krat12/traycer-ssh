@@ -865,7 +865,15 @@ export async function ingestCloudDraftSummary(input: {
   // naming the tab's own host. Every tile mount re-ran this, which is why the
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
-  await applyHostDocument(input.document, null);
+  // Re-asked right before the store mutation, after the head's blob reads: a
+  // claim that landed meanwhile made this device the owner, and a replica
+  // head from the previous owner must not stamp the row back onto it.
+  await applyHostDocument(input.document, () => {
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === input.document.draftId);
+    return row === undefined || row.origin !== "own";
+  });
 }
 
 registerExtraImageRootSource({

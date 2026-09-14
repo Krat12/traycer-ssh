@@ -1946,9 +1946,14 @@ function evictAdoptedLandingMirrors(
   drafts: ReadonlyArray<LandingDraftTab>,
 ): ReadonlyArray<LandingDraftTab> {
   const activeId = useLandingDraftStore.getState().activeDraftId;
+  // Replicas are the account directory's projection on this device and are
+  // not counted: the History list is the only place they show, so evicting
+  // one would silently drop a draft from the list while its cloud row
+  // remains. Own mirrors keep the cap.
   const adopted = drafts.filter(
     (draft) =>
       draft.adoption.state === "adopted" &&
+      draft.origin !== "replica" &&
       draft.id !== activeId &&
       draft.generation <= draft.syncedGeneration,
   );

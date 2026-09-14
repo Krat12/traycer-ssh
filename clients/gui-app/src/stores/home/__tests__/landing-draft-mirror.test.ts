@@ -419,6 +419,139 @@ describe("landing draft host-mirror bookkeeping", () => {
     expect(ids).not.toContain("with-images");
   });
 
+  it("does not count replica mirrors toward the cap, even when applying one more replica document", () => {
+    for (
+      let index = 0;
+      index <= MAX_LOCAL_ADOPTED_LANDING_MIRRORS;
+      index += 1
+    ) {
+      useLandingDraftStore.setState((state) => ({
+        drafts: [
+          ...state.drafts,
+          {
+            id: `replica-${index}`,
+            content: EMPTY_LANDING_DRAFT_CONTENT,
+            selection: null,
+            lastTouchedAt: index,
+            settings: null,
+            composerMode: "chat",
+            workspace: emptyLandingDraftWorkspaceSnapshot(),
+            ...freshLandingMirrorState(),
+            adoption: { state: "adopted", hostId: "host-b" },
+            origin: "replica",
+          },
+        ],
+      }));
+    }
+    // Seeded MAX_LOCAL_ADOPTED_LANDING_MIRRORS + 1 clean replica rows - already
+    // more than the cap, but replicas are never counted toward it.
+    const incoming: DraftDocument = {
+      draftId: "from-host-replica",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 1,
+      lastTouchedAt: 999,
+      workspace: null,
+      ownerHostId: "host-b",
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      publication: {
+        status: "unpublished",
+        lastPublishedAt: null,
+        publishedRevision: null,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+    applyLandingHostDocument(incoming, EMPTY_LANDING_DRAFT_CONTENT);
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    expect(ids).toHaveLength(MAX_LOCAL_ADOPTED_LANDING_MIRRORS + 2);
+    for (
+      let index = 0;
+      index <= MAX_LOCAL_ADOPTED_LANDING_MIRRORS;
+      index += 1
+    ) {
+      expect(ids).toContain(`replica-${index}`);
+    }
+    expect(ids).toContain("from-host-replica");
+  });
+
+  it("still evicts the oldest own mirror past the cap when an unrelated replica document arrives", () => {
+    for (
+      let index = 0;
+      index <= MAX_LOCAL_ADOPTED_LANDING_MIRRORS;
+      index += 1
+    ) {
+      useLandingDraftStore.setState((state) => ({
+        drafts: [
+          ...state.drafts,
+          {
+            id: `own-${index}`,
+            content: EMPTY_LANDING_DRAFT_CONTENT,
+            selection: null,
+            lastTouchedAt: index,
+            settings: null,
+            composerMode: "chat",
+            workspace: emptyLandingDraftWorkspaceSnapshot(),
+            ...freshLandingMirrorState(),
+            adoption: { state: "adopted", hostId: "host-a" },
+            origin: "own",
+          },
+        ],
+      }));
+    }
+    // Seeded MAX_LOCAL_ADOPTED_LANDING_MIRRORS + 1 clean own rows - already one
+    // over the cap on its own. The incoming document here is a REPLICA (a
+    // different id, different owning host), so it does not itself add to the
+    // counted own set; it only serves to trigger the eviction pass.
+    const incoming: DraftDocument = {
+      draftId: "from-host-replica-trigger",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 1,
+      lastTouchedAt: 999,
+      workspace: null,
+      ownerHostId: "host-b",
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      publication: {
+        status: "unpublished",
+        lastPublishedAt: null,
+        publishedRevision: null,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+    applyLandingHostDocument(incoming, EMPTY_LANDING_DRAFT_CONTENT);
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    expect(ids).not.toContain("own-0");
+    for (
+      let index = 1;
+      index <= MAX_LOCAL_ADOPTED_LANDING_MIRRORS;
+      index += 1
+    ) {
+      expect(ids).toContain(`own-${index}`);
+    }
+    expect(ids).toContain("from-host-replica-trigger");
+    expect(ids.filter((id) => id.startsWith("own-"))).toHaveLength(
+      MAX_LOCAL_ADOPTED_LANDING_MIRRORS,
+    );
+  });
+
   it("adopts a landing draft created after bind on the first dirty sync, not on bind", async () => {
     bindLandingAdoptionHost("host-a");
     const id = useLandingDraftStore.getState().createDraft(null);

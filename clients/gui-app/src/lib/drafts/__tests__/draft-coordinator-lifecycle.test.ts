@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { DraftDocument, DraftWrite } from "@traycer/protocol/host";
+import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
   acquireDraftMirrorSession,
   applyIncomingDraftDocument,
   bindComposerDraftHost,
   bindInterviewDraftHost,
   collectDraftMirrorDirtyWrites,
+  ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
   submitComposerDraft,
@@ -14,6 +16,11 @@ import {
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import { useInterviewDraftStore } from "@/stores/composer/interview-draft-store";
+import {
+  emptyLandingDraftWorkspaceSnapshot,
+  freshLandingMirrorState,
+  useLandingDraftStore,
+} from "@/stores/home/landing-draft-store";
 
 const HOST_ID = "host-lifecycle";
 const CHAT_ID = "chat-1";
@@ -91,6 +98,7 @@ afterEach(() => {
     pendingSubmittedDraftDeletes: {},
   });
   useInterviewDraftStore.setState({ draftsByChat: {} });
+  useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
 });
 
 describe("interview host binding", () => {
@@ -239,6 +247,154 @@ describe("submitComposerDraft", () => {
 
     expect(readDraft().content).not.toEqual(typed("submitted"));
     expect(readDraft().resetEpoch).toBe(epochAfterSubmit);
+  });
+});
+
+function landingCloudSummary(document: DraftDocument): CloudChatSummary {
+  return {
+    identity: {
+      taskId: "scp_TESTDRAFTSSCOPEID000001",
+      chatId: document.draftId,
+      ownerUserId: "user-1",
+    },
+    ownerHostId: document.ownerHostId,
+    createdAt: 1,
+    visibility: "private",
+    title: null,
+    isTitleEditedByUser: false,
+    parentChatId: null,
+    isArchived: false,
+    runSettingsSummary: null,
+    metadataUpdatedAt: 1,
+    headSha256: "ab".repeat(32),
+    publishedAt: 1,
+    throughRecordSeq: 1,
+    isOwnedByViewer: true,
+  };
+}
+
+function landingCloudDocument(
+  draftId: string,
+  ownerHostId: string,
+  text: string,
+): DraftDocument {
+  return {
+    draftId,
+    kind: "landing",
+    target: { epicId: null, chatId: null, blockId: null },
+    revision: 1,
+    lastTouchedAt: 2,
+    workspace: null,
+    ownerHostId,
+    origin: "replica",
+    adoption: { state: "adopted", hostId: ownerHostId },
+    publication: {
+      status: "current",
+      lastPublishedAt: 1,
+      publishedRevision: null,
+      halted: null,
+    },
+    portable: {
+      content: typed(text),
+      selection: null,
+      runSettings: null,
+      composerMode: "chat",
+      blobHashes: [],
+      closed: false,
+    },
+  };
+}
+
+describe("ingestCloudDraftSummary admit fence", () => {
+  it("does not overwrite a landing row this device already owns as its own", async () => {
+    const id = "d1";
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id,
+          content: typed("local own body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "own",
+          ownerHostId: "host-a",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const document = landingCloudDocument(id, "host-b", "cloud body");
+    await ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("own");
+    expect(row?.ownerHostId).toBe("host-a");
+    expect(row?.content).toEqual(typed("local own body"));
+  });
+
+  it("applies the incoming document when no local landing row exists yet", async () => {
+    const id = "d2";
+    expect(
+      useLandingDraftStore.getState().drafts.find((draft) => draft.id === id),
+    ).toBeUndefined();
+
+    const document = landingCloudDocument(id, "host-b", "cloud body");
+    await ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("replica");
+    expect(row?.content).toEqual(typed("cloud body"));
+  });
+
+  it("applies the incoming document when the local landing row is already a replica", async () => {
+    const id = "d3";
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id,
+          content: typed("stale replica body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-b" },
+          origin: "replica",
+          ownerHostId: "host-b",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const document = landingCloudDocument(id, "host-b", "cloud body");
+    await ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.origin).toBe("replica");
+    expect(row?.content).toEqual(typed("cloud body"));
   });
 });
 
