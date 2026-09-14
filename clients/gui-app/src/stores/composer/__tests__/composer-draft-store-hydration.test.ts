@@ -58,6 +58,7 @@ afterEach(() => {
   useComposerDraftStore.setState({
     drafts: {},
     pendingSubmittedDraftDeletes: {},
+    retiredDraftIds: {},
   });
 });
 
@@ -230,6 +231,39 @@ describe("composer draft store hydration", () => {
     expect(
       useComposerDraftStore.getState().pendingSubmittedDraftDeletes[draftId],
     ).toEqual({ hostId: "host-a" });
+  });
+
+  it("hydrates retiredDraftIds, dropping the empty-string key", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        state: {
+          drafts: {},
+          retiredDraftIds: { "d-old": true, "": true },
+        },
+      }),
+    );
+
+    await useComposerDraftStore.persist.rehydrate();
+
+    expect(useComposerDraftStore.getState().retiredDraftIds).toEqual({
+      "d-old": true,
+    });
+  });
+
+  it("hydrates an empty retiredDraftIds map when the persisted state carries none", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        state: { drafts: {} },
+      }),
+    );
+
+    await useComposerDraftStore.persist.rehydrate();
+
+    expect(useComposerDraftStore.getState().retiredDraftIds).toEqual({});
   });
 });
 

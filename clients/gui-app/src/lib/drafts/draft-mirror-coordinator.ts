@@ -417,7 +417,9 @@ const sink: DraftMirrorSink = {
     // re-routes rather than completes. Composer: a retired submitted id is
     // done once the host has answered anything but a failure.
     settleLandingDeleteOutcome(draftId, hostId, outcome);
-    useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(draftId, hostId, outcome);
   },
   applyUpsert(document) {
     return applyHostDocument(document, null);
@@ -427,7 +429,9 @@ const sink: DraftMirrorSink = {
     // before there is any local row for applyLandingHostDelete to remove.
     if (knownLandingDraftIds.has(draftId)) retireLandingDraft(draftId, null);
     completeLandingDraftDelete(draftId);
-    useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(draftId, null, "deleted");
     applyLandingHostDelete(draftId);
     applyComposerHostDelete(draftId);
     applyInterviewHostDelete(draftId);
@@ -977,8 +981,11 @@ async function retrySubmittedDraftDelete(draftId: string): Promise<void> {
   if (hostId === null) return;
   const session = sessions.get(hostId)?.session;
   if (session === undefined) return;
-  if (await session.deleteOnHost(draftId)) {
-    useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
+  const outcome = await session.deleteOnHostOutcome(draftId);
+  if (outcome !== "failed") {
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(draftId, hostId, outcome);
   }
 }
 

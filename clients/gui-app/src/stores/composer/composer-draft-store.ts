@@ -84,6 +84,19 @@ interface ComposerDraftStore {
     Record<string, PendingSubmittedDraftDelete>
   >;
   /**
+   * Ids retired here - by `detachDraftIdentity` (a repair) or by
+   * `fenceAndDetachSubmittedDraft` (a submit). Their pending delete is not
+   * serialized with a concurrent claim of the same id from another view:
+   * the host can answer `absent` first (which completes the pending entry),
+   * or the delete can complete before the other claim's response arrives,
+   * and that claim then commits. A host document for a retired id is never
+   * applied (a submitted id would resurrect the sent text as a clean draft);
+   * it re-arms the delete on the document's owner instead. Persisted, so a
+   * reload between the answer and the late document keeps the fence; an id
+   * is forgotten once a host actually deleted its row.
+   */
+  readonly retiredDraftIds: Partial<Record<string, true>>;
+  /**
    * Records a real document mutation - callers must only invoke this from the
    * editor boundary's document-change signal (never a selection-only echo),
    * so every call unconditionally bumps `revision` without comparing content.
@@ -171,7 +184,17 @@ interface ComposerDraftStore {
     draftId: string,
     hostId: string,
   ) => void;
-  readonly completeSubmittedDraftDelete: (draftId: string) => void;
+  /**
+   * A host answered the pending delete for `draftId`. `hostId` null is a
+   * host tombstone (authoritative); otherwise only the host the receipt
+   * currently names completes it. `deleted` also drops the retirement
+   * fence for the id.
+   */
+  readonly completeSubmittedDraftDelete: (
+    draftId: string,
+    hostId: string | null,
+    outcome: "deleted" | "absent" | "unsupported",
+  ) => void;
   readonly bindTarget: (chatId: string, epicId: string) => void;
 }
 const EMPTY_COMPOSER_CONTENT: JsonContent = {
@@ -180,20 +203,8 @@ const EMPTY_COMPOSER_CONTENT: JsonContent = {
 };
 const EMPTY_COMPOSER_SELECTION: DraftSelection = { from: 1, to: 1 };
 
-/**
- * Ids retired this session - by `detachDraftIdentity` (a repair) or by
- * `fenceAndDetachSubmittedDraft` (a submit). Their pending delete is not
- * serialized with a concurrent claim of the same id from another view: the
- * host can answer `absent` first (which completes the pending entry), or
- * the delete can complete before the other claim's response arrives, and
- * that claim then commits. A host document for a retired id is never
- * applied (a submitted id would resurrect the sent text as a clean draft);
- * it re-arms the delete on the document's owner instead.
- */
-const retiredDraftIds = new Set<string>();
-
 export function resetComposerDetachedDraftIdsForTests(): void {
-  retiredDraftIds.clear();
+  useComposerDraftStore.setState({ retiredDraftIds: {} });
 }
 
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
@@ -245,6 +256,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
     (set, get) => ({
       drafts: {},
       pendingSubmittedDraftDeletes: {},
+      retiredDraftIds: {},
       setSnapshot: (chatId, content, selection) => {
         const draftId = touchLocalComposerDraft(chatId, {
           content,
@@ -375,11 +387,11 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         // until the user typed again.
         const previousId = ensureDraft(get().drafts, chatId).draftId;
         if (previousId === null) return;
-        retiredDraftIds.add(previousId);
         const draftId = mintDraftId();
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
           return {
+            retiredDraftIds: { ...state.retiredDraftIds, [previousId]: true },
             pendingSubmittedDraftDeletes: {
               ...state.pendingSubmittedDraftDeletes,
               [previousId]: { hostId },
@@ -404,11 +416,11 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         notifyDraftLocalEdit(draftId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {
-        retiredDraftIds.add(draftId);
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
           if (current.draftId !== draftId) return state;
           return {
+            retiredDraftIds: { ...state.retiredDraftIds, [draftId]: true },
             pendingSubmittedDraftDeletes: {
               ...state.pendingSubmittedDraftDeletes,
               [draftId]: { hostId },
@@ -428,16 +440,25 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           };
         });
       },
-      completeSubmittedDraftDelete: (draftId) => {
+      completeSubmittedDraftDelete: (draftId, hostId, outcome) => {
         set((state) => {
-          if (state.pendingSubmittedDraftDeletes[draftId] === undefined) {
-            return state;
-          }
+          const pending = state.pendingSubmittedDraftDeletes[draftId];
+          if (pending === undefined) return state;
+          // Only the host the receipt currently names completes it: a late
+          // answer from a host the delete was since retargeted away from
+          // says nothing about the row where it lives now. A host
+          // tombstone (`hostId` null) is authoritative.
+          if (hostId !== null && pending.hostId !== hostId) return state;
           const pendingSubmittedDraftDeletes = {
             ...state.pendingSubmittedDraftDeletes,
           };
           delete pendingSubmittedDraftDeletes[draftId];
-          return { pendingSubmittedDraftDeletes };
+          if (outcome !== "deleted") return { pendingSubmittedDraftDeletes };
+          // The row is gone from the host that held it: nothing can bring
+          // this id back, so its retirement fence can go too.
+          const retiredDraftIds = { ...state.retiredDraftIds };
+          delete retiredDraftIds[draftId];
+          return { pendingSubmittedDraftDeletes, retiredDraftIds };
         });
       },
       bindTarget: (chatId, epicId) => {
@@ -515,7 +536,18 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             pendingSubmittedDraftDeletes[draftId] = { hostId };
           }
         }
-        return { ...currentState, drafts, pendingSubmittedDraftDeletes };
+        const retiredDraftIds: Partial<Record<string, true>> = {};
+        if (isRecord(persistedState.retiredDraftIds)) {
+          for (const draftId of Object.keys(persistedState.retiredDraftIds)) {
+            if (draftId.length > 0) retiredDraftIds[draftId] = true;
+          }
+        }
+        return {
+          ...currentState,
+          drafts,
+          pendingSubmittedDraftDeletes,
+          retiredDraftIds,
+        };
       },
     },
   ),
@@ -695,10 +727,16 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   // re-armed there and routed; the document is never applied. Checked
   // before the id-mismatch guard, which a submit's null `draftId` bypasses.
   if (
-    retiredDraftIds.has(document.draftId) &&
+    useComposerDraftStore.getState().retiredDraftIds[document.draftId] ===
+      true &&
     before.draftId !== document.draftId
   ) {
-    if (!composerSubmittedDraftDeleteIsPending(document.draftId)) {
+    // Re-armed on the document's owner: no pending delete, or one that
+    // names another host (the row moved after that delete was routed).
+    if (
+      pendingSubmittedDraftDeleteHostId(document.draftId) !==
+      document.ownerHostId
+    ) {
       useComposerDraftStore.setState((state) => ({
         pendingSubmittedDraftDeletes: {
           ...state.pendingSubmittedDraftDeletes,

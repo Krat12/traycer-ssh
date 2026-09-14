@@ -363,7 +363,9 @@ describe("composer draft store: completeSubmittedDraftDelete after detachDraftId
 
     expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
 
-    useComposerDraftStore.getState().completeSubmittedDraftDelete(oldId);
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(oldId, "host-a", "absent");
 
     expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
     expect(pendingSubmittedDraftDeleteHostId(oldId)).toBeNull();
@@ -436,7 +438,9 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(deleteNotifications).toEqual([oldId]);
 
     // The delete answers `absent` first; the pending entry clears.
-    useComposerDraftStore.getState().completeSubmittedDraftDelete(oldId);
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(oldId, "host-a", "absent");
     expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
 
     // A claim of the old id commits elsewhere, under a different host.
@@ -485,8 +489,8 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(deleteNotifications).toEqual([]);
   });
 
-  it("does not double-register or re-notify when the detached id's pending delete is still pending", () => {
-    const chatId = "chat-detach-still-pending";
+  it("does not double-register or re-notify when the document's owner matches the still-pending host", () => {
+    const chatId = "chat-detach-still-pending-same-host";
     useComposerDraftStore
       .getState()
       .setSnapshot(chatId, DOC, { from: 1, to: 3 });
@@ -511,10 +515,11 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
     expect(deleteNotifications).toEqual([oldId]);
 
-    // The pending delete is still outstanding; a mismatched document for the
-    // same detached id must not re-register or re-notify.
+    // The pending delete is still outstanding, on the SAME host as the
+    // document's owner: `pendingSubmittedDraftDeleteHostId(id) ===
+    // document.ownerHostId`, so nothing is re-registered or re-notified.
     applyComposerHostDocument(
-      chatComposerDocument(chatId, oldId, "own", "host-b"),
+      chatComposerDocument(chatId, oldId, "own", "host-a"),
     );
 
     const after = useComposerDraftStore.getState().drafts[chatId];
@@ -523,6 +528,48 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
     expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
     expect(deleteNotifications).toEqual([oldId]);
+  });
+
+  it("retargets the pending delete and re-notifies when the document's owner differs from the pending host", () => {
+    const chatId = "chat-detach-still-pending-other-host";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const oldId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    expect(oldId).not.toBeNull();
+    if (oldId === null || oldId === undefined) {
+      throw new Error("expected a draftId before detach");
+    }
+
+    const deleteNotifications: string[] = [];
+    setDraftLocalDeleteListener((draftId) => {
+      deleteNotifications.push(draftId);
+    });
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
+    const afterDetach = useComposerDraftStore.getState().drafts[chatId];
+    const newId = afterDetach?.draftId ?? null;
+    expect(newId).not.toBeNull();
+    if (newId === null) throw new Error("expected a new draftId");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
+    expect(deleteNotifications).toEqual([oldId]);
+
+    // The pending delete is still outstanding, but on a DIFFERENT host than
+    // the document's owner: the pending entry is retargeted to that owner
+    // and the delete listener fires again for the same id. The document
+    // itself is never applied.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, oldId, "own", "host-b"),
+    );
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.draftId).toBe(newId);
+    expect(after?.content).toEqual(DOC);
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-b");
+    expect(deleteNotifications).toEqual([oldId, oldId]);
   });
 
   it("re-registers the pending delete on the new owner when a submitted draft's claim commits after its delete completed", () => {
@@ -557,7 +604,9 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(true);
     expect(pendingSubmittedDraftDeleteHostId("d-sub")).toBe("host-a");
 
-    useComposerDraftStore.getState().completeSubmittedDraftDelete("d-sub");
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete("d-sub", "host-a", "absent");
     expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(false);
 
     // A late claim of the submitted id commits elsewhere, under a different
@@ -575,5 +624,80 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(true);
     expect(pendingSubmittedDraftDeleteHostId("d-sub")).toBe("host-b");
     expect(deleteNotifications).toEqual(["d-sub"]);
+  });
+});
+
+describe("composer draft store: completeSubmittedDraftDelete outcome vs retiredDraftIds after a retarget", () => {
+  /**
+   * Detach, retarget the pending delete to host-b (a claim of the old id
+   * committed there while the delete was still pending on host-a), then a
+   * late answer from the now-superseded host-a must not touch the receipt.
+   * Returns the retargeted `oldId` and `newId` for the caller's assertions.
+   */
+  function detachAndRetargetToHostB(chatId: string): {
+    readonly oldId: string;
+    readonly newId: string;
+  } {
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const oldId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    if (oldId === null || oldId === undefined) {
+      throw new Error("expected a draftId before detach");
+    }
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
+    const afterDetach = useComposerDraftStore.getState().drafts[chatId];
+    const newId = afterDetach?.draftId ?? null;
+    if (newId === null) throw new Error("expected a new draftId");
+
+    // Retarget: a claim of the old id commits under host-b while the
+    // delete is still pending on host-a.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, oldId, "own", "host-b"),
+    );
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-b");
+
+    // A late answer from the superseded host-a is a no-op: the receipt
+    // still names host-b, so it stays pending there untouched.
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(oldId, "host-a", "absent");
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-b");
+
+    return { oldId, newId };
+  }
+
+  it("a `deleted` answer from the retargeted host clears the pending entry and drops the retirement fence", () => {
+    const chatId = "chat-retarget-deleted";
+    const { oldId } = detachAndRetargetToHostB(chatId);
+
+    expect(useComposerDraftStore.getState().retiredDraftIds[oldId]).toBe(true);
+
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(oldId, "host-b", "deleted");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBeNull();
+    expect(
+      useComposerDraftStore.getState().retiredDraftIds[oldId],
+    ).toBeUndefined();
+  });
+
+  it("an `absent` answer from the retargeted host clears the pending entry but keeps the retirement fence", () => {
+    const chatId = "chat-retarget-absent";
+    const { oldId } = detachAndRetargetToHostB(chatId);
+
+    expect(useComposerDraftStore.getState().retiredDraftIds[oldId]).toBe(true);
+
+    useComposerDraftStore
+      .getState()
+      .completeSubmittedDraftDelete(oldId, "host-b", "absent");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBeNull();
+    expect(useComposerDraftStore.getState().retiredDraftIds[oldId]).toBe(true);
   });
 });
