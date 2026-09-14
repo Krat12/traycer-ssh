@@ -19,6 +19,8 @@ export interface CloudDraftsDirectory {
    * cloud-chat "absent section, not a broken tab" contract.
    */
   readonly visible: boolean;
+  /** The list has been fetched at least once; `chats` is the directory. */
+  readonly settled: boolean;
   readonly scopeId: string | null;
   readonly chats: ReadonlyArray<CloudChatSummary>;
 }
@@ -70,5 +72,5 @@ export function useCloudDraftsDirectory(
   const chats = visible
     ? (query.data?.chats ?? EMPTY_CLOUD_DRAFTS)
     : EMPTY_CLOUD_DRAFTS;
-  return { visible, scopeId, chats };
+  return { visible, settled: visible && query.isSuccess, scopeId, chats };
 }

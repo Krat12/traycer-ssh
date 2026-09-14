@@ -6,6 +6,7 @@ import { DRAFT_HEAD_DIALECT } from "@traycer/protocol/persistence/draft/version"
 
 const directoryMock = vi.hoisted(() => ({
   chats: [] as ReadonlyArray<CloudChatSummary>,
+  settled: true,
 }));
 const readMock = vi.hoisted(() => ({
   read: vi.fn<() => Promise<{ kind: string; record: unknown }>>(),
@@ -13,10 +14,14 @@ const readMock = vi.hoisted(() => ({
 const ingestMock = vi.hoisted(() => ({
   ingest: vi.fn<() => Promise<void>>(),
 }));
+const dropForeignMock = vi.hoisted(() => ({
+  drop: vi.fn<(hostId: string, listedIds: ReadonlySet<string>) => void>(),
+}));
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
     visible: true,
+    settled: directoryMock.settled,
     scopeId: "scp_1",
     chats: directoryMock.chats,
   }),
@@ -30,6 +35,12 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
 }));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
   ingestCloudDraftSummary: (): Promise<void> => ingestMock.ingest(),
+}));
+vi.mock("@/stores/home/landing-draft-store", () => ({
+  dropForeignLandingMirrorsAbsent: (
+    hostId: string,
+    listedIds: ReadonlySet<string>,
+  ): void => dropForeignMock.drop(hostId, listedIds),
 }));
 
 const { useCloudDraftsIngest } =
@@ -92,8 +103,10 @@ const CLIENT = { request: () => Promise.reject(new Error("unused")) };
 
 afterEach(() => {
   directoryMock.chats = [];
+  directoryMock.settled = true;
   readMock.read.mockReset();
   ingestMock.ingest.mockReset();
+  dropForeignMock.drop.mockReset();
   vi.useRealTimers();
 });
 
@@ -204,6 +217,37 @@ describe("useCloudDraftsIngest", () => {
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(readMock.read).toHaveBeenCalledTimes(MAX_HEAD_READ_ATTEMPTS);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("calls dropForeignLandingMirrorsAbsent once with the foreign summary ids when the directory is settled", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.settled = true;
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(dropForeignMock.drop).toHaveBeenCalledTimes(1);
+    });
+    expect(dropForeignMock.drop).toHaveBeenCalledWith(
+      HOST_ID,
+      new Set(["draft-1"]),
+    );
+  });
+
+  it("does not call dropForeignLandingMirrorsAbsent while the directory is unsettled", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.settled = false;
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(dropForeignMock.drop).not.toHaveBeenCalled();
   });
 
   it("clears a pending retry timer on unmount, so it never fires a read", async () => {

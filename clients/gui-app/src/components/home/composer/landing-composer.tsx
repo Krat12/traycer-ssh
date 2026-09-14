@@ -944,12 +944,17 @@ export function LandingComposer(props: LandingComposerProps) {
     },
     [actions, draftId, raiseHostNotice],
   );
-  const handleStartTerminalRef = useRef<(launch: TerminalAgentLaunch) => void>(
-    () => undefined,
-  );
+  const handleStartTerminalRef = useRef<
+    (launch: TerminalAgentLaunch, assembledFor: string | null) => void
+  >(() => undefined);
   const handleStartTerminal = useCallback(
-    (launch: TerminalAgentLaunch) => {
+    (launch: TerminalAgentLaunch, assembledFor: string | null) => {
       if (!workspaceCanStart || isSubmitting) return;
+      // A launch names a harness, model and profile out of the host's own
+      // catalog. One assembled for a host the placement has since left is
+      // dropped rather than forwarded to a host whose catalog may not hold
+      // them.
+      if (assembledFor !== null && assembledFor !== resolvedHostId) return;
       // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
       // is restated here: an agent is created off the draft.
       if (authority.unowned && ownershipSettledFor.current !== resolvedHostId) {
@@ -960,7 +965,7 @@ export function LandingComposer(props: LandingComposerProps) {
           ownershipSettling.current = false;
           ownershipSettledFor.current = settledFor;
           try {
-            handleStartTerminalRef.current(launch);
+            handleStartTerminalRef.current(launch, settledFor);
           } finally {
             ownershipSettledFor.current = null;
           }
@@ -980,6 +985,13 @@ export function LandingComposer(props: LandingComposerProps) {
   useLayoutEffect(() => {
     handleStartTerminalRef.current = handleStartTerminal;
   }, [handleStartTerminal]);
+  // The toolbar assembles the launch from the host the composer shows now.
+  const startTerminalFromToolbar = useCallback(
+    (launch: TerminalAgentLaunch) => {
+      handleStartTerminal(launch, resolvedHostId);
+    },
+    [handleStartTerminal, resolvedHostId],
+  );
 
   const handleRemoveImage = useCallback(
     (id: string) => {
@@ -1093,7 +1105,7 @@ export function LandingComposer(props: LandingComposerProps) {
       hostId={resolvedHostId}
       terminalLoginSurface={terminalLoginSurface}
       onSubmit={handleSubmit}
-      onStartTerminal={handleStartTerminal}
+      onStartTerminal={startTerminalFromToolbar}
       onDocumentChange={handleDocumentChange}
       onSelectionChange={handleSelectionChange}
     />

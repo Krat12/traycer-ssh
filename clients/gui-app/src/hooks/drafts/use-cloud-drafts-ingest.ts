@@ -15,6 +15,7 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import { ingestCloudDraftSummary } from "@/lib/drafts/draft-mirror-coordinator";
+import { dropForeignLandingMirrorsAbsent } from "@/stores/home/landing-draft-store";
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
@@ -67,6 +68,15 @@ export function useCloudDraftsIngest(
     const foreign = directory.chats.filter(
       (chat) => chat.ownerHostId !== hostId,
     );
+    // A replica whose row the directory no longer lists was deleted on its
+    // owner; drop the mirror so it leaves the list here too. Only against a
+    // fetched directory - an empty pending one lists nothing.
+    if (directory.settled) {
+      dropForeignLandingMirrorsAbsent(
+        hostId,
+        new Set(foreign.map((chat) => chat.identity.chatId)),
+      );
+    }
     for (const summary of foreign) {
       // The owner-led identity key plus the head. Both halves are
       // load-bearing. `headSha256` is there because the identity alone is
@@ -141,5 +151,5 @@ export function useCloudDraftsIngest(
       for (const pendingKey of unsettledKeys) ingestedKeys.delete(pendingKey);
       unsettledKeys.clear();
     };
-  }, [client, directory.chats, directory.visible, hostId]);
+  }, [client, directory.chats, directory.settled, directory.visible, hostId]);
 }

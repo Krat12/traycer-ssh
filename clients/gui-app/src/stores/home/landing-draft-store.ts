@@ -650,17 +650,28 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
           if (get().activeDraftId === id) set({ activeDraftId: null });
           return;
         }
+        // A row this host does not own closes as local view state only: the
+        // owner keeps its own tab state, and dirtying a replica would leave
+        // an edit bound to the previous owner's adoption host that nothing
+        // here can claim or flush.
+        const local = closing.origin === "replica";
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
-              ? { ...d, closed: true, generation: d.generation + 1 }
+              ? {
+                  ...d,
+                  closed: true,
+                  generation: local ? d.generation : d.generation + 1,
+                }
               : d,
           ),
           activeDraftId:
             state.activeDraftId === id ? null : state.activeDraftId,
         }));
-        notifyDraftLocalEdit(id);
-        notifyDraftLocalFlush(id);
+        if (!local) {
+          notifyDraftLocalEdit(id);
+          notifyDraftLocalFlush(id);
+        }
         // Retained drafts stay in `currentDrafts()` so this sweep must not
         // reap their image hashes. The call still drops session entries of
         // a runtime that just closed.
@@ -1837,6 +1848,27 @@ export function collectUnadoptedLandingDrafts(): ReadonlyArray<LandingDraftTab> 
         draft.adoption.state === "unadopted" &&
         draft.generation > draft.syncedGeneration,
     );
+}
+
+/**
+ * Replicas whose cloud row is no longer listed: the owner deleted the draft
+ * on its device, so the mirror here goes too. Only clean rows adopted on a
+ * host other than the ingesting one - a dirty replica carries a local edit
+ * still waiting for its claim.
+ */
+export function dropForeignLandingMirrorsAbsent(
+  hostId: string,
+  listedIds: ReadonlySet<string>,
+): void {
+  const drafts = useLandingDraftStore.getState().drafts;
+  for (const draft of drafts) {
+    if (draft.origin !== "replica") continue;
+    if (draft.adoption.state !== "adopted") continue;
+    if (draft.adoption.hostId === hostId) continue;
+    if (draft.generation > draft.syncedGeneration) continue;
+    if (listedIds.has(draft.id)) continue;
+    useLandingDraftStore.getState().dropLocalMirror(draft.id);
+  }
 }
 
 export function dropLandingAbsentFromList(
