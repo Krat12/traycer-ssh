@@ -3300,6 +3300,55 @@ function pointInRect(point: OfficePoint, rect: OfficeRect): boolean {
   );
 }
 
+/** Where a point falls against one segment of a projected path. */
+interface SegmentProjection {
+  /**
+   * The perpendicular foot as a FRACTION of the segment - under 0 or over 1
+   * where the point lies past one of its ends.
+   */
+  readonly progress: number;
+  /** The point at that fraction, off the segment's end where it is past one. */
+  readonly at: OfficePoint;
+  /** How far along the segment the point lands, in pixels, clamped into it. */
+  readonly along: number;
+  /** How far the point is from the segment itself, in pixels. */
+  readonly off: number;
+}
+
+/**
+ * The segment-distance primitive both projected-path questions here share.
+ *
+ * A WALKER'S sprite corner against the leg of the route it should be on reads
+ * `progress` and `at`, and allows itself a two-pixel box either way, because a
+ * sample is a drawn sprite's corner (`rectOnProjectedPath`). A VEHICLE'S foot
+ * against the leg of the road it drives off on reads `off` and `along` and wants
+ * an equality, because a foot point IS the projection of a fractional tile and
+ * every projector here is affine. One formula behind both, and the reason the
+ * two differ is their sample rather than their geometry.
+ *
+ * `null` for a segment of no length: a path that repeats a tile has nothing to
+ * measure a point against, and the caller moves on to the next leg.
+ */
+function projectOntoSegment(
+  from: OfficePoint,
+  to: OfficePoint,
+  point: OfficePoint,
+): SegmentProjection | null {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const square = dx * dx + dy * dy;
+  if (square === 0) return null;
+  const progress = ((point.x - from.x) * dx + (point.y - from.y) * dy) / square;
+  const held = Math.min(1, Math.max(0, progress));
+  const on: OfficePoint = { x: from.x + dx * held, y: from.y + dy * held };
+  return {
+    progress,
+    at: { x: from.x + dx * progress, y: from.y + dy * progress },
+    along: Math.sqrt(square) * held,
+    off: Math.hypot(on.x - point.x, on.y - point.y),
+  };
+}
+
 /** Where a chair's own foot point actually projects to, identity or not. */
 function chairPoint(layout: OfficeLayout, agentId: string): OfficePoint {
   const desk = layout.desks.get(agentId);
@@ -4100,16 +4149,16 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       }
       const end = points.at(index + 1);
       if (end === undefined) continue;
-      const dx = end.x - start.x;
-      const dy = end.y - start.y;
-      const lengthSquared = dx * dx + dy * dy;
-      if (lengthSquared === 0) continue;
-      const progress =
-        ((rect.x - start.x) * dx + (rect.y - start.y) * dy) / lengthSquared;
-      if (progress < -0.01 || progress > 1.01) continue;
+      const onto = projectOntoSegment(
+        { x: start.x, y: start.y },
+        { x: end.x, y: end.y },
+        { x: rect.x, y: rect.y },
+      );
+      if (onto === null) continue;
+      if (onto.progress < -0.01 || onto.progress > 1.01) continue;
       if (
-        Math.abs(rect.x - (start.x + progress * dx)) <= 2 &&
-        Math.abs(rect.y - (start.y + progress * dy)) <= 2
+        Math.abs(rect.x - onto.at.x) <= 2 &&
+        Math.abs(rect.y - onto.at.y) <= 2
       ) {
         return true;
       }
@@ -8155,33 +8204,104 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
   }
 
   /**
-   * Whether this point is on the line THIS STOREY'S road projects to.
+   * How far a departure may be from its own route: float noise, and nothing a
+   * reader could see.
    *
-   * The box over the road's own tiles, one tile proud: a departing vehicle is
-   * interpolated between tiles rather than standing on one, so a set of tile
-   * points would not contain it. What the box does answer is the question worth
-   * asking - whether the trip is driving on its own host's route or on somebody
-   * else's storey.
+   * Every projector here is AFFINE in `(col, row)` - identity times the tile on
+   * the four square views, `(col - row, col + row)` scaled on the two
+   * isometric ones - so a fractional tile between two road tiles projects to
+   * exactly the interpolation of those two tiles' points. "On the route" is
+   * therefore an equality, and the only slack it needs is the last bits of the
+   * division that produced the fraction: measured over the whole drive in all
+   * five views, the worst sample is 1.4e-14 px off.
    */
-  function onRoadOf(
+  const ROUTE_TOLERANCE_PX = 0.01;
+
+  /**
+   * The line a DEPARTURE is interpolated along on this storey: the foot points
+   * of its road's tiles from its ward's kerb to the road's last tile, which is
+   * the span `tileAlong` walks once the phase turns.
+   */
+  function departRouteOf(
     scene: OfficeScene,
     hostId: string,
-    point: OfficePoint,
-  ): boolean {
-    const road = floorOfHost(scene, hostId).floor.road;
-    if (road === null) return false;
+  ): ReadonlyArray<OfficePoint> | null {
+    const { floor } = floorOfHost(scene, hostId);
+    const road = floor.road;
+    const ward = floor.civic.find((room) => room.kind === "infirmary");
+    const kerb = ward?.kerbTile ?? null;
+    if (road === null || kerb === null) return null;
+    const at = road.tiles.findIndex(
+      (tile) => tile.col === kerb.col && tile.row === kerb.row,
+    );
+    if (at < 0) return null;
     const projector = view.painter.projector(layoutOf(scene));
-    const points = road.tiles.map((tile) =>
-      projector.project(tile.col + 0.5, tile.row + 1),
-    );
-    const xs = points.map((one) => one.x);
-    const ys = points.map((one) => one.y);
-    return (
-      point.x >= Math.min(...xs) - OFFICE_TILE &&
-      point.x <= Math.max(...xs) + OFFICE_TILE &&
-      point.y >= Math.min(...ys) - OFFICE_TILE &&
-      point.y <= Math.max(...ys) + OFFICE_TILE
-    );
+    return road.tiles
+      .slice(at)
+      .map((tile) => projector.project(tile.col + 0.5, tile.row + 1));
+  }
+
+  /**
+   * This point against the whole route: its distance from the NEAREST segment,
+   * and how far along the polyline that segment puts it.
+   *
+   * The nearest segment rather than a box over all of them, which is what read
+   * AD caught: the box the road projects to, even one tile proud, admits points
+   * no segment of it ever reaches - a departing van drawn twelve pixels below
+   * its own road is inside it at every step - and a route claim has to be about
+   * the line the trip drives on. `+Infinity` for a route of one point, which
+   * would be a road whose kerb is its last tile; no view has one, and a case
+   * that met one would say so rather than pass.
+   */
+  function againstRoute(
+    route: ReadonlyArray<OfficePoint>,
+    point: OfficePoint,
+  ): { readonly off: number; readonly along: number } {
+    let best = { off: Number.POSITIVE_INFINITY, along: 0 };
+    let base = 0;
+    for (let at = 0; at + 1 < route.length; at += 1) {
+      const from = route[at];
+      const to = route[at + 1];
+      const onto = projectOntoSegment(from, to, point);
+      if (onto !== null && onto.off < best.off) {
+        best = { off: onto.off, along: base + onto.along };
+      }
+      base += Math.hypot(to.x - from.x, to.y - from.y);
+    }
+    return best;
+  }
+
+  /**
+   * Every sampled point that is not driving away along `route`: off its line,
+   * or no further along it than the point before it.
+   *
+   * One list for both, because they are one question - a van beside the line and
+   * a van that never advances down it are both failing to drive off on this
+   * storey's road - and because a `toEqual([])` then says which sample and by
+   * how much. Taken together with a sample count above one, they are what makes
+   * the claim about a POSITIVELY DISPLACED point on the route rather than about
+   * the frame the phase turned on, where the vehicle is still standing at its
+   * kerb with nothing travelled.
+   */
+  function offTheRoute(
+    route: ReadonlyArray<OfficePoint>,
+    points: ReadonlyArray<OfficePoint>,
+  ): ReadonlyArray<string> {
+    const failed: string[] = [];
+    let last = -1;
+    for (const point of points) {
+      const { off, along } = againstRoute(route, point);
+      const where = `${String(point.x)},${String(point.y)}`;
+      if (off > ROUTE_TOLERANCE_PX) {
+        failed.push(`${where} is ${off.toFixed(2)} px off the route`);
+      } else if (along <= last) {
+        failed.push(
+          `${where} is ${along.toFixed(1)} px along, not past ${last.toFixed(1)}`,
+        );
+      }
+      last = along;
+    }
+    return failed;
   }
 
   /** Every vehicle in the frame, by kind - the whole road, in draw order. */
@@ -8278,20 +8398,36 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     return -1;
   }
 
-  /** Whether an ambulance has moved off this point yet, and where it went. */
-  function drivenOffTheKerb(
+  /**
+   * WHERE THE DEPARTURE GOES, every tick of it: the ambulance's point on each
+   * frame from the first one off this kerb until the road is done with it.
+   *
+   * The whole drive rather than the first point off the kerb, which is the other
+   * half of what read AD caught. The frame the phase TURNS on is not a departure
+   * yet - `advanceVehicle` sets `depart` and zeroes `elapsedMs` together, so
+   * `vehicleTileOf` still answers with the kerb tile - and a check that reads
+   * only the first point unequal to the kerb is therefore reading whatever a
+   * defect did to that standing frame, not where the van drove.
+   *
+   * `vanishedAtKerb` separates the trip ending from the van being dropped where
+   * it stood, which are the same absence on one frame.
+   */
+  function departureSamples(
     scene: OfficeScene,
     kerb: OfficePoint,
-  ): { readonly left: OfficePoint | null; readonly vanished: boolean } {
+  ): {
+    readonly points: ReadonlyArray<OfficePoint>;
+    readonly vanishedAtKerb: boolean;
+  } {
+    const points: OfficePoint[] = [];
     for (let step = 0; step < 200; step += 1) {
       scene.tick(100);
       const at = ambulancePoint(scene);
-      if (at === null) return { left: null, vanished: true };
-      if (at.x !== kerb.x || at.y !== kerb.y) {
-        return { left: at, vanished: false };
-      }
+      if (at === null) return { points, vanishedAtKerb: points.length === 0 };
+      if (points.length === 0 && at.x === kerb.x && at.y === kerb.y) continue;
+      points.push(at);
     }
-    return { left: null, vanished: false };
+    return { points, vanishedAtKerb: false };
   }
 
   /**
@@ -8331,12 +8467,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    *              the kerb, and requires this one to still be standing there,
    *              inside the twelve second ceiling. Keeping the van but omitting
    *              the newcomer from `absorb` fails there.
-   *   THE ROUTE. Then it drives away, and where it drives is asserted against the
-   *              road of host-b's CURRENT storey. For the Floor and Campus that
-   *              route moved with the ward - the kerb goes 456,416 to 456,864 and
-   *              40,196 to 296,324 - so those two views are no longer skipped:
-   *              following a ward that itself moved is the same promise, read
-   *              against the plan in hand rather than against the one before it.
+   *   THE ROUTE. Then it drives away, and EVERY FRAME of the drive is read
+   *              against the kerb-to-exit line of host-b's CURRENT storey: on
+   *              the nearest segment of that polyline to within float noise, each
+   *              frame further along it than the one before, and the last of them
+   *              positively down it. Read AD is why it is the polyline and the
+   *              whole drive rather than a box and one sample: the box the road
+   *              projects to, a tile proud, admits a van drawn twelve pixels
+   *              below its own road - and the first frame unequal to the kerb is
+   *              not a departure at all under such a defect, because the phase
+   *              turns with `elapsedMs` zeroed and the van still standing on the
+   *              kerb tile. For the Floor and Campus the route moved with the
+   *              ward - the kerb goes 456,416 to 456,864 and 40,196 to 296,324 -
+   *              so those two views are no longer skipped: following a ward that
+   *              itself moved is the same promise, read against the plan in hand
+   *              rather than against the one before it.
    *
    * The premises are REPORTED rather than gated, in the message of every
    * assertion: Towers and Building keep their index under the carry, City freezes
@@ -8507,18 +8652,30 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
 
     // AND THEN IT DRIVES AWAY ON THIS STOREY'S ROAD, which is the other half of
     // following a ward that moved: it is not enough to be redrawn at the new
-    // kerb if the route under it still belongs to the storey it used to be.
-    const { left, vanished } = drivenOffTheKerb(scene, kerbAfter);
+    // kerb if the route under it still belongs to the storey it used to be. The
+    // whole drive is read, against the kerb-to-exit line of the plan in hand.
+    const route = departRouteOf(scene, "host-b");
+    if (route === null) throw new Error(`host-b lost its route (${note})`);
+    const { points, vanishedAtKerb } = departureSamples(scene, kerbAfter);
     expect(
-      vanished,
+      vanishedAtKerb,
       `the ambulance vanished at its kerb instead of driving off it (${note})`,
     ).toBe(false);
-    expect(left, `the ambulance never left the kerb (${note})`).not.toBeNull();
-    if (left === null) return;
     expect(
-      onRoadOf(scene, "host-b", left),
-      `the ambulance drove off host-b's own route, at ${JSON.stringify(left)} (${note})`,
-    ).toBe(true);
+      points.length,
+      `too few frames of the departure to read a route from (${note})`,
+    ).toBeGreaterThan(1);
+    expect(
+      offTheRoute(route, points),
+      `the ambulance did not drive away along host-b's own route, over ${String(points.length)} frames (${note})`,
+    ).toEqual([]);
+    // AND IT IS A POSITIVELY DISPLACED POINT that says so, not the frame the
+    // phase turned on: by here the last sample is strictly further down this
+    // route than the first, which was itself off the kerb.
+    expect(
+      againstRoute(route, points[points.length - 1]).along,
+      `the ambulance never got anywhere along host-b's route (${note})`,
+    ).toBeGreaterThan(0);
   });
 
   it("dispatches an ambulance for a failure that got a bed", (context) => {
