@@ -1867,7 +1867,144 @@ describe("useDraftAuthorityControl", () => {
     expect(deleteClaimedRetiredLandingDraftMock.delete).not.toHaveBeenCalled();
   });
 
-  it("abandon on a chain whose last link is still pending defers repair until it settles ok, and no repair ever fires", async () => {
+  it("settleOwnership on a refused attempt whose surface moved awaits the chained current-host re-claim before resolving, and resolves once that re-claim succeeds", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    // settleOwnership starts attempt 1 on host-b.
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then(() => {
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The surface moves to host-a; a replica origin keeps it unowned there
+    // too, so the refusal-path re-claim's own (unforced) guard passes.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 1 refuses: it chains (unforced) into attempt 2 on host-a
+    // instead of resolving on its own.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    // The settle promise has not resolved yet - it now awaits attempt 2.
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 resolves ok: the settle promise resolves along with it.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("contrast: settleOwnership on the same chained refusal resolves after the current-host re-claim is refused too", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then(() => {
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 is refused instead: the settle promise still resolves
+    // once it settles - a refusal there is not a hang.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+  });
+
+  it("abandon after a chained claim resolves ok is a no-op, and repair never fires", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     const second = deferred<DraftClaimResult>();
@@ -1918,41 +2055,39 @@ describe("useDraftAuthorityControl", () => {
     expect(view.result.current.unowned).toBe(true);
 
     // Attempt 1 is refused: its refusal-path re-claim on host-a (attempt 2)
-    // is started WITHOUT being awaited, so settleOwnership resolves right
-    // away even though attempt 2 is still pending.
+    // is chained into attempt 1's own promise, so settleOwnership now
+    // awaits attempt 2 too and stays pending until it settles.
     await act(async () => {
       first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 settles ok: the chain resolves owned, and settleOwnership
+    // resolves along with it.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
       await settlePromise;
     });
 
     expect(settleResolved).toBe(true);
     await waitFor(() => {
-      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
     });
     expect(repairOnEdit).not.toHaveBeenCalled();
     expect(settled).not.toBeNull();
 
-    // abandon() walks to attempt 2 - the chain's last link - and releases
-    // its suppression, but attempt 2 has not settled yet, so nothing
-    // repairs.
+    // abandon() after the chain already settled owned is a no-op.
     act(() => {
       settled?.abandon();
     });
     expect(repairOnEdit).not.toHaveBeenCalled();
-
-    // Attempt 2 settles ok: owned, so its own handler never repairs.
-    await act(async () => {
-      second.resolve({ status: "ok", draft: STUB_DRAFT });
-      await second.promise;
-    });
-
-    await waitFor(() => {
-      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
-    });
-    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
-  it("abandon on a chain whose last link is still pending, followed by that link's own refusal, repairs exactly once", async () => {
+  it("abandon after a chained claim resolves refused releases suppression and repairs exactly once", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     const second = deferred<DraftClaimResult>();
@@ -1997,32 +2132,41 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(view.result.current.unowned).toBe(true);
 
+    // Attempt 1 refuses and chains (unforced) into attempt 2 on host-a;
+    // settleOwnership now awaits the whole chain, so it stays pending
+    // until attempt 2 settles too.
     await act(async () => {
       first.resolve({ status: "unavailable", reason: "not-found" });
-      await settlePromise;
+      await first.promise;
     });
-    expect(settleResolved).toBe(true);
     await waitFor(() => {
       expect(claimMock.claim).toHaveBeenCalledTimes(2);
     });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 refuses too: it inherited attempt 1's suppression, so its
+    // own handler does not repair on its own - the whole chain resolves
+    // refused and settleOwnership resolves along with it.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
     expect(settled).not.toBeNull();
 
-    // abandon() releases attempt 2's inherited suppression while it is
-    // still pending - no repair yet, matching the sibling test above.
+    // abandon() walks to the last link (attempt 2), releases its
+    // (inherited) suppression and repairs it through the chain's guard.
     act(() => {
       settled?.abandon();
     });
-    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
 
-    // Attempt 2 now settles refused: its own handler repairs, since
-    // abandon already released the suppression it inherited.
-    await act(async () => {
-      second.resolve({ status: "unavailable", reason: "not-found" });
-      await second.promise;
+    // A second abandon() is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
     });
-
-    // Repairs exactly once - attempt 1's own refusal handler deferred to
-    // the chain when IT refused, so it never double-fires here.
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
 
@@ -2072,21 +2216,16 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(view.result.current.unowned).toBe(true);
 
+    // Attempt 1 refuses and chains (unforced) into attempt 2 on host-a.
+    // settleOwnership now awaits the whole chain, so it stays pending.
     await act(async () => {
       first.resolve({ status: "unavailable", reason: "not-found" });
-      await settlePromise;
+      await first.promise;
     });
-    expect(settleResolved).toBe(true);
     await waitFor(() => {
       expect(claimMock.claim).toHaveBeenCalledTimes(2);
     });
-    expect(settled).not.toBeNull();
-
-    // abandon() releases attempt 2's suppression while it is still pending.
-    act(() => {
-      settled?.abandon();
-    });
-    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settleResolved).toBe(false);
 
     // The surface moves again, to host-c, before attempt 2 settles.
     claimMock.claim.mockReturnValueOnce(third.promise);
@@ -2098,7 +2237,8 @@ describe("useDraftAuthorityControl", () => {
     expect(view.result.current.unowned).toBe(true);
 
     // Attempt 2's refusal now chains into attempt 3 on host-c instead of
-    // repairing itself: the chain has a new final link.
+    // repairing itself: the chain grows a new final link, and the whole
+    // outer promise (and settleOwnership with it) still awaits further.
     await act(async () => {
       second.resolve({ status: "unavailable", reason: "not-found" });
       await second.promise;
@@ -2106,15 +2246,27 @@ describe("useDraftAuthorityControl", () => {
     await waitFor(() => {
       expect(claimMock.claim).toHaveBeenCalledTimes(3);
     });
+    expect(settleResolved).toBe(false);
     expect(repairOnEdit).not.toHaveBeenCalled();
 
-    // Attempt 3 - the chain's new final link - refuses: it repairs,
-    // fenced to draft-1 on host-c, which the surface still shows.
+    // Attempt 3 - the chain's new final link - refuses: it inherited
+    // suppression through the chain, so its own handler does not repair,
+    // and the whole cascade finally resolves refused - settleOwnership
+    // resolves along with it.
     await act(async () => {
       third.resolve({ status: "unavailable", reason: "not-found" });
-      await third.promise;
+      await settlePromise;
     });
 
+    expect(settleResolved).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    // abandon() walks to attempt 3 - the chain's new final link - and
+    // repairs, fenced to draft-1 on host-c, which the surface still shows.
+    act(() => {
+      settled?.abandon();
+    });
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
 
@@ -2163,24 +2315,28 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(view.result.current.unowned).toBe(true);
 
+    // Attempt 1 refuses and chains (unforced) into attempt 2 on host-a;
+    // settleOwnership now awaits the whole chain, so it stays pending
+    // until attempt 2 settles too - it cannot resolve here on its own.
     await act(async () => {
       first.resolve({ status: "unavailable", reason: "not-found" });
-      await settlePromise;
+      await first.promise;
     });
-    expect(settleResolved).toBe(true);
     await waitFor(() => {
       expect(claimMock.claim).toHaveBeenCalledTimes(2);
     });
-    expect(settled).not.toBeNull();
+    expect(settleResolved).toBe(false);
 
-    // Attempt 2 refuses BEFORE abandon() runs: it inherited suppression
-    // from attempt 1, so its own handler does not repair yet even though
-    // it has already settled.
+    // Attempt 2 refuses too: it inherited suppression from attempt 1, so
+    // its own handler does not repair, and the chain resolves refused -
+    // settleOwnership resolves along with it.
     await act(async () => {
       second.resolve({ status: "unavailable", reason: "not-found" });
-      await second.promise;
+      await settlePromise;
     });
+    expect(settleResolved).toBe(true);
     expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
 
     // abandon() walks to the already-refused last link, releases its
     // suppression and repairs it through the chain's guard.

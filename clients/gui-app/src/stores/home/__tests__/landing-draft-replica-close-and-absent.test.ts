@@ -324,7 +324,7 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
 
     dropForeignLandingMirrorsAbsent(
       "host-a",
-      new Set(["listed-foreign"]),
+      new Map([["listed-foreign", new Set(["host-b"])]]),
       (draft) => draft.origin === "replica",
     );
 
@@ -349,10 +349,59 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
       activeDraftId: null,
     });
 
-    dropForeignLandingMirrorsAbsent("host-a", new Set(), () => false);
+    dropForeignLandingMirrorsAbsent("host-a", new Map(), () => false);
 
     const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
     expect(ids).toContain("clean-unlisted-foreign-rejected");
+  });
+
+  it("drops a clean foreign replica listed only under a different owner than its own, keeps it when listed under its own owner, and keeps an ownerHostId:null row listed under any owner", () => {
+    const listedUnderWrongOwner = baseDraft("listed-under-wrong-owner", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-a",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    const listedUnderOwnOwner = baseDraft("listed-under-own-owner", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-a",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    const nullOwnerListed = baseDraft("null-owner-listed", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: null,
+      generation: 2,
+      syncedGeneration: 2,
+    });
+
+    useLandingDraftStore.setState({
+      drafts: [listedUnderWrongOwner, listedUnderOwnOwner, nullOwnerListed],
+      activeDraftId: null,
+    });
+
+    dropForeignLandingMirrorsAbsent(
+      "host-a",
+      new Map([
+        ["listed-under-wrong-owner", new Set(["host-b"])],
+        ["listed-under-own-owner", new Set(["host-a"])],
+        ["null-owner-listed", new Set(["host-b"])],
+      ]),
+      (draft) => draft.origin === "replica",
+    );
+
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    // Same id listed, but only under an owner that is not this row's own
+    // owner: the row is not admitted as "listed" and is dropped.
+    expect(ids).not.toContain("listed-under-wrong-owner");
+    // Listed under its own owner: kept.
+    expect(ids).toContain("listed-under-own-owner");
+    // No recorded owner: matches by id alone regardless of which owner it
+    // is listed under.
+    expect(ids).toContain("null-owner-listed");
   });
 
   it("never consults admit for a listed row, a dirty row, or a same-host row - each is retained before admit is reached", () => {
@@ -385,7 +434,7 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
     const admitCalls: string[] = [];
     dropForeignLandingMirrorsAbsent(
       "host-a",
-      new Set(["listed-admit-not-consulted"]),
+      new Map([["listed-admit-not-consulted", new Set(["host-b"])]]),
       (draft) => {
         admitCalls.push(draft.id);
         return true;
@@ -409,6 +458,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
   afterEach(() => {
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     resetLandingDraftRetirementsForTests();
+    setLandingPlacementHostReader(null);
   });
 
   it("keeps a clean replica row's closed:true on an incoming replica document, then keeps closed:true when a later own document lands on the (still-replica-origin) row", () => {
@@ -548,6 +598,76 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
     // row's `origin` itself follows the incoming document to "own".
     expect(after?.closed).toBe(false);
     expect(after?.origin).toBe("own");
+  });
+
+  it("keeps an own row's closed:false when the landing placement has auto-followed away from its adoption host, then flips to the portable value once the placement matches it again", () => {
+    setLandingPlacementHostReader(() => "host-b");
+    const seeded = baseDraft("draft-3", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      hostRevision: 3,
+      generation: 2,
+      syncedGeneration: 2,
+      closed: false,
+    });
+    useLandingDraftStore.setState({ drafts: [seeded], activeDraftId: null });
+
+    const incomingOwnClosed: DraftDocument = {
+      draftId: "draft-3",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 4,
+      lastTouchedAt: 100,
+      workspace: null,
+      ownerHostId: "host-a",
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 4,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: true,
+      },
+    };
+
+    applyLandingHostDocument(incomingOwnClosed, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const afterForeign = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "draft-3");
+    expect(afterForeign).toBeDefined();
+    // The row is adopted on host-a but the placement has auto-followed to
+    // host-b: foreign to the placement, so the incoming own document's
+    // portable `closed:true` is not taken.
+    expect(afterForeign?.closed).toBe(false);
+
+    setLandingPlacementHostReader(() => "host-a");
+    const incomingOwnClosedAgain: DraftDocument = {
+      ...incomingOwnClosed,
+      revision: 5,
+    };
+
+    applyLandingHostDocument(
+      incomingOwnClosedAgain,
+      EMPTY_LANDING_DRAFT_CONTENT,
+    );
+
+    const afterPlacementMatches = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "draft-3");
+    expect(afterPlacementMatches).toBeDefined();
+    // Contrast: with the placement back on host-a, the row is no longer
+    // foreign, so the portable value is taken.
+    expect(afterPlacementMatches?.closed).toBe(true);
   });
 });
 

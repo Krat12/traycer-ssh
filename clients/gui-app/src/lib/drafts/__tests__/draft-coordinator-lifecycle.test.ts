@@ -1094,7 +1094,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       activeDraftId: null,
     });
 
-    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0);
 
     const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
     expect(ids).not.toContain("sweep-replica");
@@ -1111,12 +1111,12 @@ describe("sweepAbsentCloudDraftMirrors", () => {
     const seqAfterIngest = cloudDraftIngestSeq();
     expect(seqAfterIngest).toBeGreaterThan(0);
 
-    sweepAbsentCloudDraftMirrors("host-a", new Set(), seqAfterIngest - 1);
+    sweepAbsentCloudDraftMirrors("host-a", new Map(), seqAfterIngest - 1);
     expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
       id,
     );
 
-    sweepAbsentCloudDraftMirrors("host-a", new Set(), seqAfterIngest);
+    sweepAbsentCloudDraftMirrors("host-a", new Map(), seqAfterIngest);
     expect(
       useLandingDraftStore.getState().drafts.map((d) => d.id),
     ).not.toContain(id);
@@ -1148,7 +1148,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       activeDraftId: null,
     });
 
-    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0);
 
     expect(
       useLandingDraftStore.getState().drafts.map((d) => d.id),
@@ -1181,7 +1181,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       activeDraftId: null,
     });
 
-    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0);
 
     expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
       "sweep-own-unpublished",
@@ -1239,7 +1239,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       timing: { debounceMs: 0, maxWaitMs: 0 },
     });
 
-    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0);
 
     expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
       "sweep-own-session-mounted",
@@ -1295,7 +1295,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
     // must not drop the pre-existing replica row for this draft id, even
     // though the row is not in its listed set: the just-reserved sequence
     // fences it.
-    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Map(), 0);
     expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
       id,
     );
@@ -1365,7 +1365,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
 
     // An older directory snapshot (fence 0) predates this apply's reserved
     // sequence, so it must not drop the row it just installed.
-    sweepAbsentCloudDraftMirrors("host-a", new Set(), 0);
+    sweepAbsentCloudDraftMirrors("host-a", new Map(), 0);
     expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
       id,
     );
@@ -1374,7 +1374,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
     // caught up to the reserved sequence, the row is an own row adopted on
     // host-b with no mirror session there and IS published - it is dropped.
     releaseDraftMirrorSession("host-b");
-    sweepAbsentCloudDraftMirrors("host-a", new Set(), cloudDraftIngestSeq());
+    sweepAbsentCloudDraftMirrors("host-a", new Map(), cloudDraftIngestSeq());
     expect(
       useLandingDraftStore.getState().drafts.map((d) => d.id),
     ).not.toContain(id);

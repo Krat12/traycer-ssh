@@ -258,9 +258,11 @@ export function useDraftAuthorityControl(args: {
         const result = await claimDraft(draftId);
         if (result.status !== "ok" && result.status !== "already-owned") {
           // A refusal is repaired on its own host (host-fenced); on a host the
-          // surface has left it repairs nothing, so the current host claims.
-          void reclaimOnCurrentHost(false);
-          return false;
+          // surface has left it repairs nothing, so the current host claims -
+          // and a settlement waits for THAT claim: a submit dispatching on the
+          // refusal would retire the draft under the re-claim, which then
+          // finds the surface gone and leaves the newly claimed row undeleted.
+          return (await reclaimOnCurrentHost(false)) ?? false;
         }
         // Superseded: the surface moved to another host while this claim ran.
         // Its document names this host as owner and would route the dirty row

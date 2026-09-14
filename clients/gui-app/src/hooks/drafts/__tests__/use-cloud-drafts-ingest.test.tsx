@@ -22,7 +22,11 @@ const ingestMock = vi.hoisted(() => ({
 const sweepMock = vi.hoisted(() => ({
   sweep:
     vi.fn<
-      (hostId: string, listedIds: ReadonlySet<string>, fenceSeq: number) => void
+      (
+        hostId: string,
+        listed: ReadonlyMap<string, ReadonlySet<string>>,
+        fenceSeq: number,
+      ) => void
     >(),
 }));
 
@@ -48,9 +52,9 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
   ingestCloudDraftSummary: (): Promise<void> => ingestMock.ingest(),
   sweepAbsentCloudDraftMirrors: (
     hostId: string,
-    listedIds: ReadonlySet<string>,
+    listed: ReadonlyMap<string, ReadonlySet<string>>,
     fenceSeq: number,
-  ): void => sweepMock.sweep(hostId, listedIds, fenceSeq),
+  ): void => sweepMock.sweep(hostId, listed, fenceSeq),
 }));
 
 const { useCloudDraftsIngest } =
@@ -290,7 +294,10 @@ describe("useCloudDraftsIngest", () => {
     });
     expect(sweepMock.sweep).toHaveBeenCalledWith(
       HOST_ID,
-      new Set(["draft-1", "draft-2"]),
+      new Map([
+        ["draft-1", new Set([OWNER_HOST_ID])],
+        ["draft-2", new Set([HOST_ID])],
+      ]),
       7,
     );
     // Only the foreign row (owned by another host) is head-ingested; the

@@ -82,11 +82,15 @@ export function useCloudDraftsIngest(
     // just claimed (from another window, or ahead of this window's
     // hydration) is listed under this host's ownership and is not absent.
     if (directory.settled) {
-      sweepAbsentCloudDraftMirrors(
-        hostId,
-        new Set(directory.chats.map((chat) => chat.identity.chatId)),
-        snapshotIngestSeq(),
-      );
+      // Every listed row, keyed by id with the owners it is listed under:
+      // cloud ids are host-minted, so absence is judged per (id, owner).
+      const listed = new Map<string, Set<string>>();
+      for (const chat of directory.chats) {
+        const owners = listed.get(chat.identity.chatId) ?? new Set<string>();
+        owners.add(chat.ownerHostId);
+        listed.set(chat.identity.chatId, owners);
+      }
+      sweepAbsentCloudDraftMirrors(hostId, listed, snapshotIngestSeq());
     }
     for (const summary of foreign) {
       // The owner-led identity key plus the head. Both halves are

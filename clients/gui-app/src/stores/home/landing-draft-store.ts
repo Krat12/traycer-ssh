@@ -1905,7 +1905,11 @@ function incomingClosedState(
   existing: LandingDraftTab | undefined,
 ): boolean {
   if (existing === undefined) return portableClosed;
-  if (origin === "replica" || existing.origin === "replica") {
+  // Foreign to the placement: a replica, or an own row adopted on a host
+  // the landing placement has auto-followed away from. Its close and
+  // reopen are local view state (`closeDraft` / `openDraft`), so the old
+  // host's echo must not undo them either.
+  if (origin === "replica" || landingRowIsForeign(existing)) {
     return existing.closed;
   }
   return portableClosed;
@@ -2013,7 +2017,7 @@ export function collectUnadoptedLandingDrafts(): ReadonlyArray<LandingDraftTab> 
  */
 export function dropForeignLandingMirrorsAbsent(
   hostId: string,
-  listedIds: ReadonlySet<string>,
+  listed: ReadonlyMap<string, ReadonlySet<string>>,
   admit: (draft: LandingDraftTab) => boolean,
 ): void {
   const drafts = useLandingDraftStore.getState().drafts;
@@ -2021,7 +2025,16 @@ export function dropForeignLandingMirrorsAbsent(
     if (draft.adoption.state !== "adopted") continue;
     if (draft.adoption.hostId === hostId) continue;
     if (draft.generation > draft.syncedGeneration) continue;
-    if (listedIds.has(draft.id)) continue;
+    // Listed by id AND owner: cloud ids are host-minted and a same id under
+    // another host says nothing about this row. A row with no recorded
+    // owner matches by id alone.
+    const owners = listed.get(draft.id);
+    if (
+      owners !== undefined &&
+      (draft.ownerHostId === null || owners.has(draft.ownerHostId))
+    ) {
+      continue;
+    }
     if (!admit(draft)) continue;
     useLandingDraftStore.getState().dropLocalMirror(draft.id);
   }
