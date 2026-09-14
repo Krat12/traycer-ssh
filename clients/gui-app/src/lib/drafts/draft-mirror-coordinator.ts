@@ -486,12 +486,10 @@ function collectAllDirtyWrites(hostId: string): readonly DraftDirtyWrite[] {
   for (const { draft } of collectLandingDirtyWrites(hostId)) {
     // An edit withheld by `routeLocalEdit` (placement moved elsewhere) is
     // not swept onto the old host either; the placement host's claim
-    // re-routes the row.
-    if (
-      heldLandingEdits.has(draft.id) &&
-      landingAdoptionHostId !== null &&
-      hostId !== landingAdoptionHostId
-    ) {
+    // re-routes the row. A cleared placement keeps the hold: the old
+    // session can outlive the landing mount (a tab mirror's reference)
+    // and its reconnect sweep must not deliver the edit there.
+    if (heldLandingEdits.has(draft.id) && hostId !== landingAdoptionHostId) {
       continue;
     }
     out.push({

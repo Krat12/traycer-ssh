@@ -261,6 +261,21 @@ describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placeme
     ).toEqual([preTransition]);
   });
 
+  it("a withheld row stays held when the landing placement is cleared", () => {
+    const id = "own-held-placement-cleared";
+    bindLandingAdoptionHost(HOST_B);
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+    notifyDraftLocalEdit(id);
+
+    // The landing mount unmounted; a tab mirror keeps host A's session
+    // alive and its reconnect sweep must not deliver the held edit there.
+    bindLandingAdoptionHost(null);
+    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
+  });
+
   it("a withheld row is swept again once the placement returns to its adoption host", () => {
     const id = "own-held-then-returned";
     bindLandingAdoptionHost(HOST_B);
