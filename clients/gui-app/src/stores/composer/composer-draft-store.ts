@@ -181,16 +181,19 @@ const EMPTY_COMPOSER_CONTENT: JsonContent = {
 const EMPTY_COMPOSER_SELECTION: DraftSelection = { from: 1, to: 1 };
 
 /**
- * Ids `detachDraftIdentity` retired this session. Their pending delete is
- * not serialized with a concurrent claim of the same id from another view:
- * the host can answer `absent` first (which completes the pending entry),
- * and the claim then commits. A host document for such an id re-arms the
- * delete on its owner instead of being dropped by the id-mismatch guard.
+ * Ids retired this session - by `detachDraftIdentity` (a repair) or by
+ * `fenceAndDetachSubmittedDraft` (a submit). Their pending delete is not
+ * serialized with a concurrent claim of the same id from another view: the
+ * host can answer `absent` first (which completes the pending entry), or
+ * the delete can complete before the other claim's response arrives, and
+ * that claim then commits. A host document for a retired id is never
+ * applied (a submitted id would resurrect the sent text as a clean draft);
+ * it re-arms the delete on the document's owner instead.
  */
-const detachedDraftIds = new Set<string>();
+const retiredDraftIds = new Set<string>();
 
 export function resetComposerDetachedDraftIdsForTests(): void {
-  detachedDraftIds.clear();
+  retiredDraftIds.clear();
 }
 
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
@@ -372,7 +375,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         // until the user typed again.
         const previousId = ensureDraft(get().drafts, chatId).draftId;
         if (previousId === null) return;
-        detachedDraftIds.add(previousId);
+        retiredDraftIds.add(previousId);
         const draftId = mintDraftId();
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
@@ -401,6 +404,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         notifyDraftLocalEdit(draftId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {
+        retiredDraftIds.add(draftId);
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
           if (current.draftId !== draftId) return state;
@@ -685,14 +689,16 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   // pulled back to a retired identity by an echo for the old id that was
   // already in flight; the host only ever echoes ids this client minted.
   const before = ensureDraft(useComposerDraftStore.getState().drafts, chatId);
-  if (before.draftId !== null && before.draftId !== document.draftId) {
-    // A detached id whose claim committed elsewhere after its first delete
-    // answered `absent` (see `detachedDraftIds`): the row is live on its
-    // owner now, so the delete is re-armed there and routed.
-    if (
-      detachedDraftIds.has(document.draftId) &&
-      !composerSubmittedDraftDeleteIsPending(document.draftId)
-    ) {
+  // A retired id (re-minted by a repair, or fenced by a submit) whose claim
+  // committed elsewhere after its delete already completed (see
+  // `retiredDraftIds`): the row is live on its owner now, so the delete is
+  // re-armed there and routed; the document is never applied. Checked
+  // before the id-mismatch guard, which a submit's null `draftId` bypasses.
+  if (
+    retiredDraftIds.has(document.draftId) &&
+    before.draftId !== document.draftId
+  ) {
+    if (!composerSubmittedDraftDeleteIsPending(document.draftId)) {
       useComposerDraftStore.setState((state) => ({
         pendingSubmittedDraftDeletes: {
           ...state.pendingSubmittedDraftDeletes,
@@ -703,6 +709,7 @@ export function applyComposerHostDocument(document: DraftDocument): void {
     }
     return;
   }
+  if (before.draftId !== null && before.draftId !== document.draftId) return;
   // An id fenced by a submit is on its way to a tombstone; its late echo
   // must not put the sent content back into the cleared composer.
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) return;

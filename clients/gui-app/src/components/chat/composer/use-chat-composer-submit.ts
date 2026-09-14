@@ -270,6 +270,13 @@ export function useChatComposerSubmit(
   // One send per settle: a second Enter while the claim is in flight would
   // attach a second continuation and send twice.
   const ownershipSettling = useRef(false);
+  // The latest ownership reading, for the annotation-preparation
+  // continuation: another host can claim the draft during that read, and
+  // the stale closure would send and delete through this host regardless.
+  const draftUnownedRef = useRef(draftUnowned);
+  useLayoutEffect(() => {
+    draftUnownedRef.current = draftUnowned;
+  }, [draftUnowned]);
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
@@ -421,6 +428,10 @@ export function useChatComposerSubmit(
 
       annotationPrepFlight.current = true;
       setAnnotationPreparationPending(true);
+      // Ownership as the read starts. A draft still unowned here is one whose
+      // settle was refused and whose send proceeds on the row as it is; only
+      // ownership LOST during the read sends the submit back through the gate.
+      const unownedAtPrepStart = draftUnownedRef.current;
       void (async () => {
         try {
           const annotationImages =
@@ -438,6 +449,17 @@ export function useChatComposerSubmit(
                 source: "Chat composer",
               },
             );
+            return;
+          }
+          // The draft lost its ownership while the images were read (another
+          // host claimed it): re-enter the LATEST handler, which settles it
+          // again before sending, instead of sending on the old closure. The
+          // parked abandon belongs to the superseded settlement and is
+          // dropped: the new settlement carries its own.
+          if (draftUnownedRef.current && !unownedAtPrepStart) {
+            annotationPrepFlight.current = false;
+            parkedAbandon.current = null;
+            submitDraftRef.current(source);
             return;
           }
           submitPreparedDraft(annotationImages);

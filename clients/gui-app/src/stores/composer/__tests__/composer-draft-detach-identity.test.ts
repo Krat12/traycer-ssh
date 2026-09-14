@@ -524,4 +524,56 @@ describe("composer draft store: applyComposerHostDocument re-arms a detached id'
     expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
     expect(deleteNotifications).toEqual([oldId]);
   });
+
+  it("re-registers the pending delete on the new owner when a submitted draft's claim commits after its delete completed", () => {
+    const chatId = "chat-submit-reclaim";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    useComposerDraftStore.setState((state) => {
+      const current = state.drafts[chatId];
+      if (current === undefined) return state;
+      return {
+        drafts: {
+          ...state.drafts,
+          [chatId]: { ...current, draftId: "d-sub" },
+        },
+      };
+    });
+
+    const deleteNotifications: string[] = [];
+    setDraftLocalDeleteListener((draftId) => {
+      deleteNotifications.push(draftId);
+    });
+
+    useComposerDraftStore.getState().clearDraft(chatId);
+    useComposerDraftStore
+      .getState()
+      .fenceAndDetachSubmittedDraft(chatId, "d-sub", "host-a");
+
+    const afterFence = useComposerDraftStore.getState().drafts[chatId];
+    expect(afterFence?.draftId).toBeNull();
+    expect(afterFence?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
+    expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId("d-sub")).toBe("host-a");
+
+    useComposerDraftStore.getState().completeSubmittedDraftDelete("d-sub");
+    expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(false);
+
+    // A late claim of the submitted id commits elsewhere, under a different
+    // host, after the delete already completed.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, "d-sub", "own", "host-b"),
+    );
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    // The document is not applied: the row stays on null id and empty content.
+    expect(after?.draftId).toBeNull();
+    expect(after?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
+
+    // The delete is re-armed, now routed to the new owner.
+    expect(composerSubmittedDraftDeleteIsPending("d-sub")).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId("d-sub")).toBe("host-b");
+    expect(deleteNotifications).toEqual(["d-sub"]);
+  });
 });
