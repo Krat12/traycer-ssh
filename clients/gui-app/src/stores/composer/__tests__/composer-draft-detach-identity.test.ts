@@ -7,6 +7,7 @@ import {
   composerSubmittedDraftDeleteIsPending,
   EMPTY_COMPOSER_DRAFT,
   pendingSubmittedDraftDeleteHostId,
+  resetComposerDetachedDraftIdsForTests,
   useComposerDraftStore,
 } from "@/stores/composer/composer-draft-store";
 import {
@@ -26,6 +27,7 @@ afterEach(() => {
   });
   setDraftLocalEditListener(null);
   setDraftLocalDeleteListener(null);
+  resetComposerDetachedDraftIdsForTests();
 });
 
 describe("composer draft store: detachDraftIdentity", () => {
@@ -403,5 +405,123 @@ describe("composer draft store: bindComposerDraftOwnership", () => {
     expect(after?.ownerHostId).toBe("host-a");
     expect(after?.hostRevision).toBe(1);
     expect(notified).toEqual(["d-x"]);
+  });
+});
+
+describe("composer draft store: applyComposerHostDocument re-arms a detached id's delete", () => {
+  it("re-registers the pending delete on the new owner when a claim of a detached id commits after its first delete answered absent", () => {
+    const chatId = "chat-detach-reclaim";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const oldId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    expect(oldId).not.toBeNull();
+    if (oldId === null || oldId === undefined) {
+      throw new Error("expected a draftId before detach");
+    }
+
+    const deleteNotifications: string[] = [];
+    setDraftLocalDeleteListener((draftId) => {
+      deleteNotifications.push(draftId);
+    });
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
+    const afterDetach = useComposerDraftStore.getState().drafts[chatId];
+    const newId = afterDetach?.draftId ?? null;
+    expect(newId).not.toBeNull();
+    if (newId === null) throw new Error("expected a new draftId");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
+    expect(deleteNotifications).toEqual([oldId]);
+
+    // The delete answers `absent` first; the pending entry clears.
+    useComposerDraftStore.getState().completeSubmittedDraftDelete(oldId);
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
+
+    // A claim of the old id commits elsewhere, under a different host.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, oldId, "own", "host-b"),
+    );
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    // The document is not applied: the row keeps the new id and content.
+    expect(after?.draftId).toBe(newId);
+    expect(after?.content).toEqual(DOC);
+
+    // The delete is re-armed, now routed to the new owner.
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-b");
+    expect(deleteNotifications).toEqual([oldId, oldId]);
+  });
+
+  it("ignores a mismatched document for an id that was never detached", () => {
+    const chatId = "chat-never-detached";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const currentId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    expect(currentId).not.toBeNull();
+    if (currentId === null || currentId === undefined) {
+      throw new Error("expected a draftId");
+    }
+
+    const deleteNotifications: string[] = [];
+    setDraftLocalDeleteListener((draftId) => {
+      deleteNotifications.push(draftId);
+    });
+
+    const strangerId = "d-stranger";
+    expect(composerSubmittedDraftDeleteIsPending(strangerId)).toBe(false);
+
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, strangerId, "own", "host-b"),
+    );
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.draftId).toBe(currentId);
+    expect(after?.content).toEqual(DOC);
+    expect(composerSubmittedDraftDeleteIsPending(strangerId)).toBe(false);
+    expect(deleteNotifications).toEqual([]);
+  });
+
+  it("does not double-register or re-notify when the detached id's pending delete is still pending", () => {
+    const chatId = "chat-detach-still-pending";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const oldId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    expect(oldId).not.toBeNull();
+    if (oldId === null || oldId === undefined) {
+      throw new Error("expected a draftId before detach");
+    }
+
+    const deleteNotifications: string[] = [];
+    setDraftLocalDeleteListener((draftId) => {
+      deleteNotifications.push(draftId);
+    });
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
+    const afterDetach = useComposerDraftStore.getState().drafts[chatId];
+    const newId = afterDetach?.draftId ?? null;
+    expect(newId).not.toBeNull();
+    if (newId === null) throw new Error("expected a new draftId");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
+    expect(deleteNotifications).toEqual([oldId]);
+
+    // The pending delete is still outstanding; a mismatched document for the
+    // same detached id must not re-register or re-notify.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, oldId, "own", "host-b"),
+    );
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.draftId).toBe(newId);
+    expect(after?.content).toEqual(DOC);
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBe("host-a");
+    expect(deleteNotifications).toEqual([oldId]);
   });
 });

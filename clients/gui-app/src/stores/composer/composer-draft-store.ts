@@ -180,6 +180,19 @@ const EMPTY_COMPOSER_CONTENT: JsonContent = {
 };
 const EMPTY_COMPOSER_SELECTION: DraftSelection = { from: 1, to: 1 };
 
+/**
+ * Ids `detachDraftIdentity` retired this session. Their pending delete is
+ * not serialized with a concurrent claim of the same id from another view:
+ * the host can answer `absent` first (which completes the pending entry),
+ * and the claim then commits. A host document for such an id re-arms the
+ * delete on its owner instead of being dropped by the id-mismatch guard.
+ */
+const detachedDraftIds = new Set<string>();
+
+export function resetComposerDetachedDraftIdsForTests(): void {
+  detachedDraftIds.clear();
+}
+
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
   content: EMPTY_COMPOSER_CONTENT,
   selection: null,
@@ -359,6 +372,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         // until the user typed again.
         const previousId = ensureDraft(get().drafts, chatId).draftId;
         if (previousId === null) return;
+        detachedDraftIds.add(previousId);
         const draftId = mintDraftId();
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
@@ -671,7 +685,24 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   // pulled back to a retired identity by an echo for the old id that was
   // already in flight; the host only ever echoes ids this client minted.
   const before = ensureDraft(useComposerDraftStore.getState().drafts, chatId);
-  if (before.draftId !== null && before.draftId !== document.draftId) return;
+  if (before.draftId !== null && before.draftId !== document.draftId) {
+    // A detached id whose claim committed elsewhere after its first delete
+    // answered `absent` (see `detachedDraftIds`): the row is live on its
+    // owner now, so the delete is re-armed there and routed.
+    if (
+      detachedDraftIds.has(document.draftId) &&
+      !composerSubmittedDraftDeleteIsPending(document.draftId)
+    ) {
+      useComposerDraftStore.setState((state) => ({
+        pendingSubmittedDraftDeletes: {
+          ...state.pendingSubmittedDraftDeletes,
+          [document.draftId]: { hostId: document.ownerHostId },
+        },
+      }));
+      notifyDraftLocalDelete(document.draftId);
+    }
+    return;
+  }
   // An id fenced by a submit is on its way to a tombstone; its late echo
   // must not put the sent content back into the cleared composer.
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) return;
