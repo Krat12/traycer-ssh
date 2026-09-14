@@ -201,6 +201,10 @@ export function useChatComposerSubmit(
   // Whether the re-entered send actually went out after an ownership settle;
   // a settle whose send then declined hands the refusal back to the repair.
   const dispatched = useRef(false);
+  // A settle's `abandon`, parked while the re-entered send is still preparing
+  // annotation images: whether it dispatches is only known when that
+  // preparation settles, so the refusal repair must wait for it.
+  const parkedAbandon = useRef<(() => void) | null>(null);
   const clearAcceptedDraft = useCallback((): void => {
     dispatched.current = true;
     void submitComposerDraft(taskId);
@@ -281,7 +285,12 @@ export function useChatComposerSubmit(
           } finally {
             ownershipSettled.current = false;
           }
-          if (!wasDispatched(dispatched)) settled.abandon();
+          if (wasDispatched(dispatched)) return;
+          if (annotationPrepFlight.current) {
+            parkedAbandon.current = settled.abandon;
+            return;
+          }
+          settled.abandon();
         });
         return;
       }
@@ -434,6 +443,9 @@ export function useChatComposerSubmit(
           submitPreparedDraft(annotationImages);
         } finally {
           annotationPrepFlight.current = false;
+          const parked = parkedAbandon.current;
+          parkedAbandon.current = null;
+          if (parked !== null && !wasDispatched(dispatched)) parked();
           setAnnotationPreparationPending(false);
         }
       })();

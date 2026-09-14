@@ -3,6 +3,7 @@ import type { HostClient } from "@traycer-clients/shared/host-client/host-client
 import type { HostRpcRegistry } from "@/lib/host";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
+import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
 
 export interface DraftAuthorityControl {
@@ -168,7 +169,17 @@ export function useDraftAuthorityControl(args: {
       if (!stillCurrent()) return true;
       // Re-asked by the coordinator after its blob reads, right before the
       // store mutation: the surface can move while the fetch is in flight.
-      await applyIncomingDraftDocument(result.draft, stillCurrent);
+      // A failed apply (a blob read that threw) does not undo the claim the
+      // cloud already granted: the host owns the row, and its next echo
+      // brings the document; the settle must not hang its callers on it.
+      try {
+        await applyIncomingDraftDocument(result.draft, stillCurrent);
+      } catch (error: unknown) {
+        appLogger.warn("[draft-authority] claimed document did not apply", {
+          error: describeLogError(error),
+        });
+        return true;
+      }
       if (stillCurrent()) latestApplied.current.set(draftId, attempt);
       return true;
     })();
