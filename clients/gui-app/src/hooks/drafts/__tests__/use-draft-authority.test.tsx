@@ -646,6 +646,62 @@ describe("useDraftAuthorityControl", () => {
     });
   });
 
+  it("an older attempt is rejected even after the surface returns to its host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Attempt 1: started on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Composer moves to host-b; attempt 2 starts there, also left pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // Composer returns to host-a - the surface that started attempt 1.
+    act(() => {
+      view.rerender({ tabHostId: "host-a" });
+    });
+
+    // Attempt 2 (host-b) settles first: host-b is no longer current, so its
+    // document must not be applied even though it is the newest attempt.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+
+    // Attempt 1 (host-a) settles next: host-a IS current again, but attempt 1
+    // is older than attempt 2 for this draft, so it must still be rejected.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
     const repairOnEdit = vi.fn();
     claimMock.claim.mockResolvedValueOnce({
