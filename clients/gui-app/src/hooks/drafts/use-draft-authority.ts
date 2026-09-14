@@ -109,6 +109,8 @@ export function useDraftAuthorityControl(args: {
   useLayoutEffect(() => {
     currentHostRef.current = args.tabHostId;
   }, [args.tabHostId]);
+  // The latest `noteEdit`, for a settlement that finds its host superseded.
+  const noteEditRef = useRef<() => void>(() => undefined);
   const repairRef = useRef<{
     readonly draftId: string;
     readonly tabHostId: string;
@@ -166,7 +168,13 @@ export function useDraftAuthorityControl(args: {
       const stillCurrent = (): boolean =>
         currentHostRef.current === tabHostId &&
         (latestApplied.current.get(draftId) ?? 0) <= attempt;
-      if (!stillCurrent()) return true;
+      if (!stillCurrent()) {
+        // If the surface moved hosts and no further edit started that host's
+        // claim, start it now: the edit that began this claim was consumed
+        // by the watcher and must not be stranded on the old host.
+        if (currentHostRef.current !== tabHostId) noteEditRef.current();
+        return true;
+      }
       // Re-asked by the coordinator after its blob reads, right before the
       // store mutation: the surface can move while the fetch is in flight.
       // A failed apply (a blob read that threw) does not undo the claim the
@@ -211,6 +219,10 @@ export function useDraftAuthorityControl(args: {
       if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
     });
   }, [args.draftId, args.tabHostId, repairFor, runClaim, unowned]);
+
+  useLayoutEffect(() => {
+    noteEditRef.current = noteEdit;
+  }, [noteEdit]);
 
   const settleOwnership = useCallback(async (): Promise<SettledOwnership> => {
     const noop: SettledOwnership = { abandon: () => undefined };

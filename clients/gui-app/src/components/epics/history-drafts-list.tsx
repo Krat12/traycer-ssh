@@ -22,7 +22,10 @@ import {
 } from "@/lib/history-landing-drafts";
 import { cn } from "@/lib/utils";
 import { useDraftSurfaceId } from "@/providers/draft-surface-hooks";
-import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
+import {
+  adoptLandingDraft,
+  useLandingDraftStore,
+} from "@/stores/home/landing-draft-store";
 
 const DRAFTS_PREVIEW_LIMIT = 5;
 
@@ -97,8 +100,10 @@ export function HistoryDraftsList(props: {
           try {
             await applyIncomingDraftDocument(result.draft, null);
           } catch {
-            // The delete below still retires the row locally and routes the
-            // host delete to whatever adoption the row carries.
+            // The claim committed even though the local apply did not: bind
+            // the row to this host so the delete below routes its tombstone
+            // to the host that now owns the row, not the previous owner.
+            adoptLandingDraft(draftId, hostId);
           }
           useLandingDraftStore.getState().deleteDraft(draftId);
           return;

@@ -283,8 +283,14 @@ vi.mock("@/hooks/drafts/use-draft-claim", () => ({
     claim: draftClaimTestState.claim,
   }),
 }));
+const applyIncomingDraftDocumentMock = vi.hoisted(() => ({
+  apply: vi.fn<(draft: unknown, admit: unknown) => Promise<void>>(() =>
+    Promise.resolve(),
+  ),
+}));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
-  applyIncomingDraftDocument: (): Promise<void> => Promise.resolve(),
+  applyIncomingDraftDocument: (draft: unknown, admit: unknown): Promise<void> =>
+    applyIncomingDraftDocumentMock.apply(draft, admit),
 }));
 
 function historyItem(overrides: Partial<HistoryItem>): HistoryItem {
@@ -477,6 +483,10 @@ describe("<EpicsListPanel />", () => {
     testState.openLandingDraftFromHistory.mockReset();
     testState.hostId = "host-test";
     draftClaimTestState.claim.mockReset();
+    applyIncomingDraftDocumentMock.apply.mockReset();
+    applyIncomingDraftDocumentMock.apply.mockImplementation(() =>
+      Promise.resolve(),
+    );
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     queryClient.clear();
@@ -3483,6 +3493,57 @@ describe("<EpicsListPanel />", () => {
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(landingDraftIsRetired(draftId)).toBe(true);
+  });
+
+  it("still removes the row when the claim succeeds but the local apply rejects, adopting the draft locally before the delete", async () => {
+    const draftId = seedForeignOwnedLandingDraft("apply-rejects draft");
+    draftClaimTestState.claim.mockResolvedValue({
+      status: "already-owned",
+      draft: {
+        draftId,
+        kind: "landing",
+        target: { epicId: null, chatId: null, blockId: null },
+        revision: 1,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: "host-test",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-test" },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: { type: "doc", content: [] },
+          selection: null,
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+    });
+    applyIncomingDraftDocumentMock.apply.mockRejectedValueOnce(
+      new Error("blob read failed"),
+    );
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+    });
     await waitFor(() => {
       expect(
         useLandingDraftStore

@@ -862,6 +862,55 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a claim dropped for a surface move to another host starts that host's claim via the latest noteEdit, and the dropped claim's success is not applied", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Claim 1: noteEdit on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The surface moves to host-b without any edit there yet - the draft is
+    // still unowned on host-b too (owner is host-c).
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Claim 1 resolves ok while host-b is current: it is superseded, so its
+    // document must not apply, and the continuation starts host-b's own
+    // claim via the latest `noteEdit` rather than stranding the edit on
+    // host-a.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
     const repairOnEdit = vi.fn();
     claimMock.claim.mockResolvedValueOnce({

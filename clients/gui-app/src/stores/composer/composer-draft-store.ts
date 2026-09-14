@@ -617,6 +617,11 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   if (document.kind !== "chat-composer") return;
   const chatId = document.target.chatId;
   if (chatId === null) return;
+  // A row re-minted by the repair (or fenced after a submit) must not be
+  // pulled back to a retired identity by an echo for the old id that was
+  // already in flight; the host only ever echoes ids this client minted.
+  const before = ensureDraft(useComposerDraftStore.getState().drafts, chatId);
+  if (before.draftId !== null && before.draftId !== document.draftId) return;
   useComposerDraftStore.setState((state) => {
     const current = ensureDraft(state.drafts, chatId);
     if (current.generation > current.syncedGeneration) {
@@ -657,6 +662,11 @@ export function applyComposerHostDocument(document: DraftDocument): void {
       },
     };
   });
+  // A replica's edit is held out of the sweep; when the claim makes the row
+  // this host's own, requeue it or the one-shot edit stays local.
+  if (before.origin === "replica" && document.origin === "own") {
+    notifyDraftLocalEdit(document.draftId);
+  }
 }
 
 export function applyComposerHostDelete(draftId: string): void {

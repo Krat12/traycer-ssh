@@ -1772,8 +1772,11 @@ function adoptOwnershipOverLocalEdit(
   // edit would sit local until the next keystroke.
   if (
     existing.adoption.state !== "adopted" ||
-    existing.adoption.hostId !== document.adoption.hostId
+    existing.adoption.hostId !== document.adoption.hostId ||
+    (existing.origin === "replica" && document.origin === "own")
   ) {
+    // The origin flip alone needs it too: a replica's edit is held out of
+    // the sweep while it is a replica, so the same host has nothing queued.
     notifyDraftLocalEdit(document.draftId);
   }
 }

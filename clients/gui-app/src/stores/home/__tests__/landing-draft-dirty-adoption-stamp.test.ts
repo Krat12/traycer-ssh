@@ -169,7 +169,7 @@ describe("applyLandingHostDocument - dirty local row", () => {
     expect(notified).toEqual(["draft-1"]);
   });
 
-  it("does not notify a local edit when the incoming document's adoption host is unchanged", () => {
+  it("does not notify a local edit when neither the adoption host nor the origin changes", () => {
     const localContent = {
       type: "doc" as const,
       content: [
@@ -191,7 +191,7 @@ describe("applyLandingHostDocument - dirty local row", () => {
           workspace: emptyLandingDraftWorkspaceSnapshot(),
           ...freshLandingMirrorState(),
           ownerHostId: "host-b",
-          origin: "replica",
+          origin: "own",
           adoption: { state: "adopted", hostId: "host-b" },
           // Dirty: generation ahead of syncedGeneration.
           generation: 2,
@@ -201,8 +201,8 @@ describe("applyLandingHostDocument - dirty local row", () => {
       activeDraftId: null,
     });
 
-    // Same adoption host as the existing row ("host-b") - only ownership
-    // fields differ, but the adoption target is unchanged.
+    // Same adoption host and same origin as the existing own row: an echo
+    // from the host that already holds the queued edit, nothing to requeue.
     const incoming: DraftDocument = {
       draftId: "draft-1",
       kind: "landing",
