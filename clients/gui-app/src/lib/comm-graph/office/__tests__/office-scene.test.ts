@@ -8398,6 +8398,21 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     return -1;
   }
 
+  /** How long a departure is given to finish before the case gives up on it. */
+  const DEPART_TICK_CAP = 200;
+
+  /**
+   * How far a vehicle travels in one of this case's 100 ms ticks, in TILES.
+   *
+   * The scene's `VEHICLE_TILES_PER_SECOND` is module-private - six tiles a
+   * second, twice a walker's three - so this is the one number here that is
+   * restated rather than derived. It is not taken on trust either: the case
+   * computes the step this implies from the ROUTE's own geometry and requires the
+   * van's longest actual advance to match it, so a trip that moved at some other
+   * speed reds instead of being handed the slack.
+   */
+  const DEPART_TILES_PER_TICK = 0.6;
+
   /**
    * WHERE THE DEPARTURE GOES, every tick of it: the ambulance's point on each
    * frame from the first one off this kerb until the road is done with it.
@@ -8409,8 +8424,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    * only the first point unequal to the kerb is therefore reading whatever a
    * defect did to that standing frame, not where the van drove.
    *
-   * `vanishedAtKerb` separates the trip ending from the van being dropped where
-   * it stood, which are the same absence on one frame.
+   * THREE ENDINGS, AND ONLY ONE OF THEM IS A DRIVE, which is what read AE caught
+   * in the first version of this: it answered the same shape whether the van
+   * finished, was dropped early, or was still on the road when the ticks ran out.
+   * `vanishedAtKerb` is the van dropped where it stood; `completed` is an absence
+   * OBSERVED after it had moved, so the cap answers `false` and a case that runs
+   * out of ticks fails instead of reading like a finished trip. Where the absence
+   * fell on the road is a question for the route itself - an early removal leaves
+   * perfectly good samples behind it - so the witness for that is the last
+   * painted frame's distance from the exit.
    */
   function departureSamples(
     scene: OfficeScene,
@@ -8418,16 +8440,78 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
   ): {
     readonly points: ReadonlyArray<OfficePoint>;
     readonly vanishedAtKerb: boolean;
+    readonly completed: boolean;
   } {
     const points: OfficePoint[] = [];
-    for (let step = 0; step < 200; step += 1) {
+    for (let step = 0; step < DEPART_TICK_CAP; step += 1) {
       scene.tick(100);
       const at = ambulancePoint(scene);
-      if (at === null) return { points, vanishedAtKerb: points.length === 0 };
+      if (at === null) {
+        return {
+          points,
+          vanishedAtKerb: points.length === 0,
+          completed: points.length > 0,
+        };
+      }
       if (points.length === 0 && at.x === kerb.x && at.y === kerb.y) continue;
       points.push(at);
     }
-    return { points, vanishedAtKerb: false };
+    return { points, vanishedAtKerb: false, completed: false };
+  }
+
+  /** How long this route is, in pixels of its own polyline. */
+  function routeLength(route: ReadonlyArray<OfficePoint>): number {
+    let total = 0;
+    for (let at = 0; at + 1 < route.length; at += 1) {
+      const from = route[at];
+      const to = route[at + 1];
+      total += Math.hypot(to.x - from.x, to.y - from.y);
+    }
+    return total;
+  }
+
+  /**
+   * One tick's travel down THIS route, in pixels, computed from the plan rather
+   * than from the drive under test.
+   *
+   * A road's tiles are adjacent, so each segment of the projected polyline is one
+   * tile, and every tile of it is the same screen length in every view here - 16
+   * px where the projector is the identity, `sqrt(320)` = 17.8885 on the two
+   * isometric ones, whichever way the road turns. Times the tick, that is the
+   * MOVEMENT STEP: 9.6 px and 10.7331 px respectively, measured.
+   *
+   * It is what the completion witness needs, because the last PAINTED frame
+   * cannot be at the exit - the tick that reaches the exit is the tick that
+   * removes the vehicle - and it has to be the expected step rather than the
+   * observed one, or a van that crawled would be handed exactly as much slack as
+   * it needed to look finished.
+   */
+  function tickStepOf(route: ReadonlyArray<OfficePoint>): number {
+    const tiles = route.length - 1;
+    if (tiles <= 0) return 0;
+    return (routeLength(route) / tiles) * DEPART_TILES_PER_TICK;
+  }
+
+  /**
+   * The longest single advance the van made down `route`, counting the kerb it
+   * started from as zero.
+   *
+   * The premise under the witness: it says the trip really did move at one step a
+   * tick, so the step the exit is measured against is the one this van drove at.
+   * Measured, it is exactly `tickStepOf` in all five views.
+   */
+  function longestAdvance(
+    route: ReadonlyArray<OfficePoint>,
+    points: ReadonlyArray<OfficePoint>,
+  ): number {
+    let last = 0;
+    let most = 0;
+    for (const point of points) {
+      const { along } = againstRoute(route, point);
+      most = Math.max(most, along - last);
+      last = along;
+    }
+    return most;
   }
 
   /**
@@ -8477,11 +8561,16 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    *              below its own road - and the first frame unequal to the kerb is
    *              not a departure at all under such a defect, because the phase
    *              turns with `elapsedMs` zeroed and the van still standing on the
-   *              kerb tile. For the Floor and Campus the route moved with the
-   *              ward - the kerb goes 456,416 to 456,864 and 40,196 to 296,324 -
-   *              so those two views are no longer skipped: following a ward that
-   *              itself moved is the same promise, read against the plan in hand
-   *              rather than against the one before it.
+   *              kerb tile. Read AE is why the DRIVE has to finish as well: an
+   *              early removal leaves real road behind it, so the trip's end is
+   *              required to be an observed absence and its last painted frame to
+   *              be within one of the van's own advances of the exit, which is as
+   *              close as a vehicle removed on reaching it can be drawn. For the
+   *              Floor and Campus the route moved with the ward - the kerb goes
+   *              456,416 to 456,864 and 40,196 to 296,324 - so those two views
+   *              are no longer skipped: following a ward that itself moved is the
+   *              same promise, read against the plan in hand rather than against
+   *              the one before it.
    *
    * The premises are REPORTED rather than gated, in the message of every
    * assertion: Towers and Building keep their index under the carry, City freezes
@@ -8656,7 +8745,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // whole drive is read, against the kerb-to-exit line of the plan in hand.
     const route = departRouteOf(scene, "host-b");
     if (route === null) throw new Error(`host-b lost its route (${note})`);
-    const { points, vanishedAtKerb } = departureSamples(scene, kerbAfter);
+    const { points, vanishedAtKerb, completed } = departureSamples(
+      scene,
+      kerbAfter,
+    );
     expect(
       vanishedAtKerb,
       `the ambulance vanished at its kerb instead of driving off it (${note})`,
@@ -8672,10 +8764,33 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     // AND IT IS A POSITIVELY DISPLACED POINT that says so, not the frame the
     // phase turned on: by here the last sample is strictly further down this
     // route than the first, which was itself off the kerb.
+    const lastAlong = againstRoute(route, points[points.length - 1]).along;
     expect(
-      againstRoute(route, points[points.length - 1]).along,
+      lastAlong,
       `the ambulance never got anywhere along host-b's route (${note})`,
     ).toBeGreaterThan(0);
+
+    // AND IT DRIVES THE WHOLE ROUTE, which read AE is why: every assertion above
+    // is happy with a van removed two frames in, since what it left behind is
+    // real road. So the trip has to END - an absence OBSERVED, never the tick cap
+    // expiring - and its last PAINTED frame has to be within one expected tick of
+    // this route's own exit, because the tick that reaches the exit is the tick
+    // that removes the vehicle before it is ever drawn there.
+    expect(
+      completed,
+      `the ambulance was still on host-b's road after ${String(DEPART_TICK_CAP)} ticks (${note})`,
+    ).toBe(true);
+    const exit = routeLength(route);
+    const step = tickStepOf(route);
+    const advance = longestAdvance(route, points);
+    expect(
+      Math.abs(advance - step),
+      `the ambulance did not drive host-b's road at one tick a tick: ${advance.toFixed(4)} px against the ${step.toFixed(4)} px this route implies (${note})`,
+    ).toBeLessThanOrEqual(ROUTE_TOLERANCE_PX);
+    expect(
+      exit - lastAlong,
+      `the ambulance stopped being drawn ${(exit - lastAlong).toFixed(1)} px short of host-b's exit at ${exit.toFixed(1)} px, after ${String(points.length)} frames at a ${step.toFixed(1)} px step (${note})`,
+    ).toBeLessThanOrEqual(step + ROUTE_TOLERANCE_PX);
   });
 
   it("dispatches an ambulance for a failure that got a bed", (context) => {
