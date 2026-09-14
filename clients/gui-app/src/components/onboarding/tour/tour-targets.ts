@@ -153,9 +153,7 @@ export function resolveLatestHistoryEpicId(
 ): string | null {
   const container = resolveAnchor(scope, "landing-history");
   if (container === null) return null;
-  for (const row of container.querySelectorAll<HTMLElement>(
-    "[data-epic-id]",
-  )) {
+  for (const row of container.querySelectorAll<HTMLElement>("[data-epic-id]")) {
     if (presentableElement(row) === null) continue;
     const epicId = row.dataset.epicId;
     if (epicId !== undefined && epicId.length > 0) return epicId;

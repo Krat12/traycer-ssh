@@ -518,14 +518,24 @@ interface UnboundPresentation {
   readonly action: TourStepAction | null;
 }
 
-function buildSteps(
-  order: ReadonlyArray<TourId>,
-  activeTourId: TourId | null,
-  target: TargetSnapshot,
-  lessonKey: string | null,
-  unbound: UnboundPresentation | null,
-  spotlightSuspended: boolean,
-): Step[] {
+interface StepsInput {
+  readonly order: ReadonlyArray<TourId>;
+  readonly activeTourId: TourId | null;
+  readonly target: TargetSnapshot;
+  readonly lessonKey: string | null;
+  readonly unbound: UnboundPresentation | null;
+  readonly spotlightSuspended: boolean;
+}
+
+function buildSteps(input: StepsInput): Step[] {
+  const {
+    order,
+    activeTourId,
+    target,
+    lessonKey,
+    unbound,
+    spotlightSuspended,
+  } = input;
   if (activeTourId === null) return [];
   // Anchored only on a node resolved for THIS lesson/context, and only
   // while a spotlight can be drawn. Anything else - a snapshot from the
@@ -715,13 +725,16 @@ interface EventAdapter {
  * built for: a late event from a replaced renderer, a stale replay or
  * another lesson reaches no store action.
  */
-function useEventAdapter(
-  active: ActiveStep | null,
-  activation: number,
-  tracking: TargetTracking,
-  guardedAdvance: GuardedAdvance,
-  onHistoryNext: () => void,
-): EventAdapter {
+interface EventAdapterInput {
+  readonly active: ActiveStep | null;
+  readonly activation: number;
+  readonly tracking: TargetTracking;
+  readonly guardedAdvance: GuardedAdvance;
+  readonly onHistoryNext: () => void;
+}
+
+function useEventAdapter(input: EventAdapterInput): EventAdapter {
+  const { active, activation, tracking, guardedAdvance, onHistoryNext } = input;
   const { tracker, target } = tracking;
   const epoch = target.epoch;
   const [announcement, setAnnouncement] = useState<string | null>(null);
@@ -760,11 +773,13 @@ function useEventAdapter(
  * left as the panels lesson's task instead.
  */
 function useHistoryNext(
-  target: TargetSnapshot,
+  tracking: TargetTracking,
   historyEpicIds: ReadonlyArray<string>,
   openEpicTab: (epicId: string) => void,
 ): () => void {
-  const rowEpicId = target.node?.dataset.epicId ?? null;
+  const { target, lessonKey } = tracking;
+  const rowEpicId =
+    target.key === lessonKey ? (target.node?.dataset.epicId ?? null) : null;
   return useCallback(() => {
     const focused = selectHostFocusedRef(useTabsStore.getState());
     if (focused !== null && focused.kind === "epic") return;
@@ -863,14 +878,7 @@ function useTerminalModePredicate(args: PredicateArgs): void {
     if (pendingAttempt) return;
     if (chainScope === "single" && !baseline.sawOtherMode) return;
     guardedAdvance(active.tourId, active.stepId, "auto");
-  }, [
-    key,
-    chainScope,
-    active,
-    pendingAttempt,
-    composerMode,
-    guardedAdvance,
-  ]);
+  }, [key, chainScope, active, pendingAttempt, composerMode, guardedAdvance]);
 }
 
 /**
@@ -988,13 +996,17 @@ function useHistoryPredicate(args: PredicateArgs): void {
   }, [key, active, setContext, guardedAdvance]);
 }
 
-function presentationOf(
-  chainActive: boolean,
-  active: ActiveStep | null,
-  modalSuspended: boolean,
-  spotlightSuspended: boolean,
-  tracking: TargetTracking,
-): TourPresentation {
+interface PresentationInput {
+  readonly chainActive: boolean;
+  readonly active: ActiveStep | null;
+  readonly modalSuspended: boolean;
+  readonly spotlightSuspended: boolean;
+  readonly tracking: TargetTracking;
+}
+
+function presentationOf(input: PresentationInput): TourPresentation {
+  const { chainActive, active, modalSuspended, spotlightSuspended, tracking } =
+    input;
   if (!chainActive || active === null) return "idle";
   if (modalSuspended) return "modal-suspended";
   const { target, lessonKey } = tracking;
@@ -1083,31 +1095,31 @@ export function useOnboardingTourController(): OnboardingTourController {
   const spotlightSuspended = useLiveBrowserGuestPresent();
   const steps = useMemo(
     () =>
-      buildSteps(
+      buildSteps({
         order,
         activeTourId,
         target,
         lessonKey,
         unbound,
         spotlightSuspended,
-      ),
+      }),
     [order, activeTourId, target, lessonKey, unbound, spotlightSuspended],
   );
 
   useFocusOriginAndChainEnd(run, flow);
   const guardedAdvance = useGuardedAdvance();
   const onHistoryNext = useHistoryNext(
-    target,
+    tracking,
     inputs.historyEpicIds,
     openEpicTab,
   );
-  const { onEvent, announcement } = useEventAdapter(
+  const { onEvent, announcement } = useEventAdapter({
     active,
     activation,
     tracking,
     guardedAdvance,
     onHistoryNext,
-  );
+  });
   const predicateArgs: PredicateArgs = {
     chainActive,
     chainScope: flow.chainScope,
@@ -1132,13 +1144,13 @@ export function useOnboardingTourController(): OnboardingTourController {
     // is replaced whenever the chosen node changes AND whenever the
     // spotlight is suspended or restored around the same node.
     rendererKey: `${target.epoch}:${spotlightSuspended ? "suspended" : "spotlit"}`,
-    presentation: presentationOf(
+    presentation: presentationOf({
       chainActive,
       active,
       modalSuspended,
       spotlightSuspended,
       tracking,
-    ),
+    }),
     modalSuspended,
     spotlightSuspended,
     reducedMotion,
