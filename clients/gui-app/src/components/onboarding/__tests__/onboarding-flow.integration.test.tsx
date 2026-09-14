@@ -33,6 +33,7 @@ import {
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
 import { useLandingReceiptsStore } from "@/stores/onboarding/landing-receipts-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
+import { tabItemId } from "@/stores/tabs/layout";
 import { setSystemTabModalApi } from "@/stores/tabs/system-tab-modal-bridge";
 import type { SystemTabModalApi } from "@/stores/tabs/use-system-tab-modal";
 import { useTabsStore } from "@/stores/tabs/store";
@@ -402,7 +403,7 @@ describe("entry navigation", () => {
     expect(flow().context?.draftId).toBeNull();
   });
 
-  it("the history lesson waits on the current surface too - activating it with an epic focused opens no draft", () => {
+  it("the history lesson is a landing lesson too (B8): activated with an epic focused it opens a draft, and a replay from a Settings TAB navigates as well", () => {
     keep(mountEpicSurface(EPIC_TAB_ID, false));
     const ref = { kind: "epic" as const, id: EPIC_TAB_ID };
     useTabsStore.setState({
@@ -416,7 +417,45 @@ describe("entry navigation", () => {
       flow().finishModal("sessions");
     });
     expect(flow().activeTourId).toBe("history");
-    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+    expect(seam.activateTabIntent).toHaveBeenLastCalledWith(
+      seam.navigate,
+      { kind: "new-draft", settings: null },
+      undefined,
+    );
+
+    // Settings promoted to a tab (not the overlay), replaying the lesson.
+    useLandingDraftStore.getState().createDraftWithId(DRAFT_ID, null);
+    const settingsRef = { kind: "settings" as const, id: "settings" };
+    useTabsStore.setState({
+      items: [
+        { kind: "tab", id: `tab:epic:${EPIC_TAB_ID}`, ref },
+        { kind: "tab", id: tabItemId(settingsRef), ref: settingsRef },
+      ],
+      activeItemId: tabItemId(settingsRef),
+      systemTabs: {
+        history: null,
+        settings: {
+          id: "settings",
+          kind: "settings",
+          name: "Settings",
+          lastPath: "/settings/onboarding",
+        },
+      },
+      stripOrder: [ref, settingsRef],
+    });
+    act(() => {
+      flow().skipChain();
+      flow().replayTour("history");
+      flow().setContext({ draftId: DRAFT_ID });
+    });
+    expect(flow().activeTourId).toBe("history");
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(2);
+    expect(seam.activateTabIntent).toHaveBeenLastCalledWith(
+      seam.navigate,
+      { kind: "draft", draftId: DRAFT_ID },
+      undefined,
+    );
   });
 
   it("a host remount (readiness drop) during a pending terminal Start does not redirect the prompt lesson back to a draft", () => {
