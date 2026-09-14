@@ -488,6 +488,31 @@ describe("tab command coordinator transactions", () => {
     expect(nextRef).toBeNull();
   });
 
+  it("replaceDraftWithDraft returns null and retires nothing when nextDraftId already exists in the landing store", () => {
+    const draftRef = openDraftSource();
+    // A second draft already occupying the id we would fork into - the
+    // command must refuse rather than clobber it.
+    useLandingDraftStore.getState().createDraftWithId("already-exists", null);
+
+    const nextRef = tabCommandCoordinator.replaceDraftWithDraft({
+      previousDraftId: draftRef.id,
+      nextDraftId: "already-exists",
+    });
+
+    expect(nextRef).toBeNull();
+    // Nothing retired, nothing re-keyed: the previous draft's strip item and
+    // store row are both untouched.
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+    expect(landingDraftIsRetired(draftRef.id)).toBe(false);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === draftRef.id),
+    ).toBe(true);
+  });
+
   it("closeRef keeps the closed source under pendingRemovals until removal settles", () => {
     const { ref } = openEpicSource("epic-close", "Close me");
     const session = captureSession();

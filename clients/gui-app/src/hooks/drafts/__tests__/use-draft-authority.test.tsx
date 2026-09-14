@@ -209,6 +209,52 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a claim pending for draft-a is not joined when the hook re-renders for draft-b; resolving A's promise does not repair B", async () => {
+    const repairOnEditA = vi.fn();
+    const repairOnEditB = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { draftId: string; repairOnEdit: () => void }) =>
+        useDraftAuthorityControl({
+          draftId: props.draftId,
+          ownerHostId: "host-b",
+          origin: "own",
+          tabHostId: "host-a",
+          client: CLIENT,
+          repairOnEdit: props.repairOnEdit,
+        }),
+      { initialProps: { draftId: "draft-a", repairOnEdit: repairOnEditA } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-a");
+
+    // Re-render for a different, unowned draft while A's claim is pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ draftId: "draft-b", repairOnEdit: repairOnEditB });
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-b");
+
+    // A's promise settling must not affect B's outcome/repair.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    expect(repairOnEditA).not.toHaveBeenCalled();
+    expect(repairOnEditB).not.toHaveBeenCalled();
+  });
+
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
     const repairOnEdit = vi.fn();
     claimMock.claim.mockResolvedValueOnce({

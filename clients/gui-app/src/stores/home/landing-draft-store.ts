@@ -1707,6 +1707,46 @@ export function adoptLandingDraft(draftId: string, hostId: string): void {
   }));
 }
 
+/**
+ * A host document arriving over a row with a local edit in flight: the
+ * local content wins, the host wins on ownership. A claim that lands over
+ * an edit moves the row to this host here, so the composer stops reading it
+ * as unowned and the kept edit publishes from this host on the next flush.
+ */
+function adoptOwnershipOverLocalEdit(
+  document: DraftDocument,
+  existing: LandingDraftTab,
+): void {
+  useLandingDraftStore.setState((state) => ({
+    drafts: state.drafts.map((draft) =>
+      draft.id === document.draftId
+        ? {
+            ...draft,
+            adoption: { state: "adopted", hostId: document.adoption.hostId },
+            ownerHostId: document.ownerHostId,
+            origin: document.origin,
+            publication: document.publication,
+          }
+        : draft,
+    ),
+  }));
+  landingDraftRememberSynced(
+    document.draftId,
+    document.revision,
+    existing.syncedGeneration,
+  );
+  // The edit that made the row dirty was routed while the previous owner
+  // held it, so the host that owns it now has nothing queued. Re-route the
+  // dirty row to the session the new adoption resolves to, or a one-shot
+  // edit would sit local until the next keystroke.
+  if (
+    existing.adoption.state !== "adopted" ||
+    existing.adoption.hostId !== document.adoption.hostId
+  ) {
+    notifyDraftLocalEdit(document.draftId);
+  }
+}
+
 export function applyLandingHostDocument(
   document: DraftDocument,
   content: JsonContent,
@@ -1731,28 +1771,7 @@ export function applyLandingHostDocument(
     existing !== undefined &&
     existing.generation > existing.syncedGeneration
   ) {
-    // The host is authoritative on ownership even when the local edit wins
-    // on content: a claim that lands over an edit in flight moves the row to
-    // this host here, so the composer stops reading it as unowned and the
-    // kept edit publishes from this host on the next flush.
-    useLandingDraftStore.setState((state) => ({
-      drafts: state.drafts.map((draft) =>
-        draft.id === document.draftId
-          ? {
-              ...draft,
-              adoption: { state: "adopted", hostId: document.adoption.hostId },
-              ownerHostId: document.ownerHostId,
-              origin: document.origin,
-              publication: document.publication,
-            }
-          : draft,
-      ),
-    }));
-    landingDraftRememberSynced(
-      document.draftId,
-      document.revision,
-      existing.syncedGeneration,
-    );
+    adoptOwnershipOverLocalEdit(document, existing);
     return;
   }
   const next: LandingDraftTab = {

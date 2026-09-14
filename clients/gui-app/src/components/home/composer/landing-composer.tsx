@@ -278,6 +278,26 @@ export function LandingComposer(props: LandingComposerProps) {
     client: hostClient,
     repairOnEdit,
   });
+  // Every local mutation of the draft row bumps `generation`, including the
+  // workspace controls, whose handlers write the store without passing
+  // through this component. A bump past the one seen at mount is an edit,
+  // so the claim covers those too; the mount value itself is not (a restored
+  // tab is not an edit), and neither is a host echo, which leaves
+  // `generation` alone.
+  const landingGeneration = useLandingDraftStore((state) => {
+    if (draftId === null) return 0;
+    return state.drafts.find((entry) => entry.id === draftId)?.generation ?? 0;
+  });
+  const seenGeneration = useRef<number | null>(null);
+  useEffect(() => {
+    if (seenGeneration.current === null) {
+      seenGeneration.current = landingGeneration;
+      return;
+    }
+    if (landingGeneration <= seenGeneration.current) return;
+    seenGeneration.current = landingGeneration;
+    authority.noteEdit();
+  }, [authority, landingGeneration]);
   const handleToolbarSettingsChange = useCallback(
     (settings: ChatRunSettings) => {
       authority.noteEdit();
@@ -847,10 +867,20 @@ export function LandingComposer(props: LandingComposerProps) {
       refusal === null ? null : { kind: "refused", message: refusal.message },
     );
   }, [actions, draftId, pickerStore, raiseHostNotice, toolbarStore]);
+  // One action per settle. A second Enter or Start while the claim is in
+  // flight would attach a second continuation to the same claim, and each
+  // would create its own epic - nothing else marks the composer busy during
+  // the claim.
+  const ownershipSettling = useRef(false);
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
     if (authority.unowned) {
-      void authority.settleOwnership().then(dispatchSubmit);
+      if (ownershipSettling.current) return;
+      ownershipSettling.current = true;
+      void authority.settleOwnership().finally(() => {
+        ownershipSettling.current = false;
+        dispatchSubmit();
+      });
       return;
     }
     dispatchSubmit();
@@ -871,7 +901,10 @@ export function LandingComposer(props: LandingComposerProps) {
       // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
       // is restated here: an agent is created off the draft.
       if (authority.unowned) {
-        void authority.settleOwnership().then(() => {
+        if (ownershipSettling.current) return;
+        ownershipSettling.current = true;
+        void authority.settleOwnership().finally(() => {
+          ownershipSettling.current = false;
           dispatchStartTerminal(launch);
         });
         return;

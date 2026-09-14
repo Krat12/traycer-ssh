@@ -437,6 +437,84 @@ describe("unowned draft", () => {
     expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
   });
 
+  it("calling submitDraft twice while settleDraftOwnership is pending settles once and sends once", async () => {
+    const onSubmitMessage = vi.fn(acceptSubmit);
+    const editorRef = createRef<ComposerPromptEditorHandle | null>();
+    editorRef.current = editorHandle({ content: DIRTY, ready: true });
+    const pickerStore = createComposerPickerStore();
+    const toolbarStore = createComposerToolbarStore({
+      seedKey: "chat-submit-gate-unowned-double-submit-test",
+      values: {
+        permission: "supervised",
+        selection: {
+          harnessId: "claude",
+          modelSlug: "claude-sonnet",
+          profileId: null,
+        },
+        reasoning: "medium",
+        serviceTier: "",
+      },
+      onSettingsChange: null,
+      tuiOnly: false,
+      hostId: null,
+    });
+
+    let resolveSettled: (() => void) | null = null;
+    const settleDraftOwnership = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSettled = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() =>
+      useChatComposerSubmit({
+        taskId: "task-unowned-double-submit",
+        editorRef,
+        pickerStore,
+        toolbarStore,
+        activeTurnStatus: null,
+        steerCapable: false,
+        steerEnabled: true,
+        steerProtocolSupported: true,
+        getActiveTurnForSteer: () => null,
+        hasPendingApprovals: false,
+        sendDisabled: false,
+        workspaceBlocked: false,
+        imagesUnsupported: false,
+        attachmentPreparationPending: false,
+        draftUnowned: true,
+        settleDraftOwnership,
+        onSubmitMessage,
+        onSideChat: null,
+      }),
+    );
+
+    act(() => {
+      result.current.submitDraft("enter");
+    });
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    // A second Enter while the claim is still in flight must not start a
+    // second settle - it is a silent no-op (`ownershipSettling` gate).
+    act(() => {
+      result.current.submitDraft("enter");
+    });
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSettled?.();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+  });
+
   it("still sends exactly once, with no loop, when settleDraftOwnership resolves but the caller keeps draftUnowned: true", async () => {
     const onSubmitMessage = vi.fn(acceptSubmit);
     const editorRef = createRef<ComposerPromptEditorHandle | null>();

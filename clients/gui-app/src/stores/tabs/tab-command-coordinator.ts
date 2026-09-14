@@ -1326,6 +1326,17 @@ export class TabCommandCoordinator {
     const nextRef: TabRef = { kind: "draft", id: command.nextDraftId };
     const layout = currentLayout();
     if (findStripItemForRef(layout, previous) === null) return null;
+    // The fork must be able to succeed before the layout moves off the
+    // source: a re-keyed item whose source never materialises is reconciled
+    // away, and the source would already be retired underneath it.
+    const drafts = useLandingDraftStore.getState().drafts;
+    if (
+      !drafts.some((draft) => draft.id === command.previousDraftId) ||
+      drafts.some((draft) => draft.id === command.nextDraftId) ||
+      landingDraftIsRetired(command.nextDraftId)
+    ) {
+      return null;
+    }
     const next = replaceLayoutRef(layout, { previous, next: nextRef });
     if (next === layout) return null;
     this.execute({

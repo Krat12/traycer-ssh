@@ -137,6 +137,14 @@ interface ComposerDraftStore {
    */
   readonly clearDraft: (chatId: string) => void;
   /**
+   * The repair for a chat draft this host could not claim back (its row was
+   * demoted to a replica): re-mint the draft id and drop ownership while
+   * KEEPING the content, marked dirty and routed, so the next flush upserts
+   * it under the fresh id as this host's own row. Nothing is owed to the
+   * host for the old id - it still holds that row as a replica.
+   */
+  readonly detachDraftIdentity: (chatId: string) => void;
+  /**
    * Retire the submitted draft's host identity. `clearDraft` empties the
    * document but KEEPS `draftId`, so a keystroke landing while the submit
    * finalizer is still flushing and deleting that row would be published
@@ -146,14 +154,6 @@ interface ComposerDraftStore {
    * one and a fresh host row. The row is left CLEAN because it is empty and
    * its old id is on its way out; nothing is owed to the host.
    */
-  /**
-   * The repair for a chat draft this host could not claim back (its row was
-   * demoted to a replica): drop the draft id and ownership while KEEPING the
-   * content, marked dirty, so the next flush upserts it under a fresh id as
-   * this host's own row. Nothing is owed to the host for the old id - it
-   * still holds that row as a replica.
-   */
-  readonly detachDraftIdentity: (chatId: string) => void;
   readonly fenceAndDetachSubmittedDraft: (
     chatId: string,
     draftId: string,
@@ -332,15 +332,20 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         scheduleLandingImageReconcile();
       },
       detachDraftIdentity: (chatId) => {
+        // The replacement id is minted here, not on the next edit: the dirty
+        // sweep skips a row with no id and the edit listener routes by id, so
+        // a detach that left `draftId` null would keep the content local
+        // until the user typed again.
+        if (ensureDraft(get().drafts, chatId).draftId === null) return;
+        const draftId = mintDraftId();
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
-          if (current.draftId === null) return state;
           return {
             drafts: {
               ...state.drafts,
               [chatId]: {
                 ...current,
-                draftId: null,
+                draftId,
                 hostRevision: 0,
                 ownerHostId: null,
                 origin: null,
@@ -350,7 +355,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             },
           };
         });
-        notifyDraftLocalEdit(chatId);
+        notifyDraftLocalEdit(draftId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {
         set((state) => {

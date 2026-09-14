@@ -250,11 +250,17 @@ export function useChatComposerSubmit(
     () => undefined,
   );
   const ownershipSettled = useRef(false);
+  // One send per settle: a second Enter while the claim is in flight would
+  // attach a second continuation and send twice.
+  const ownershipSettling = useRef(false);
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
       if (draftUnowned && !ownershipSettled.current) {
-        void settleDraftOwnership().then(() => {
+        if (ownershipSettling.current) return;
+        ownershipSettling.current = true;
+        void settleDraftOwnership().finally(() => {
+          ownershipSettling.current = false;
           ownershipSettled.current = true;
           try {
             submitDraftRef.current(source);

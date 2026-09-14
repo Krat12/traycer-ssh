@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
+import { setDraftLocalEditListener } from "@/lib/drafts/draft-local-edits";
 
 const DOC = {
   type: "doc" as const,
@@ -11,10 +12,11 @@ afterEach(() => {
     drafts: {},
     pendingSubmittedDraftDeletes: {},
   });
+  setDraftLocalEditListener(null);
 });
 
 describe("composer draft store: detachDraftIdentity", () => {
-  it("keeps content but clears identity/ownership and bumps generation", () => {
+  it("mints a fresh draftId, keeps content, clears ownership, bumps generation, and notifies the new id", () => {
     const chatId = "chat-detach";
     useComposerDraftStore
       .getState()
@@ -43,18 +45,26 @@ describe("composer draft store: detachDraftIdentity", () => {
     });
     const before = useComposerDraftStore.getState().drafts[chatId];
     expect(before?.draftId).not.toBeNull();
+    const draftIdBefore = before?.draftId ?? null;
     const generationBefore = before?.generation ?? 0;
+
+    const notified: string[] = [];
+    setDraftLocalEditListener((draftId) => {
+      notified.push(draftId);
+    });
 
     useComposerDraftStore.getState().detachDraftIdentity(chatId);
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.content).toEqual(DOC);
-    expect(after?.draftId).toBeNull();
+    expect(after?.draftId).not.toBeNull();
+    expect(after?.draftId).not.toBe(draftIdBefore);
     expect(after?.hostRevision).toBe(0);
     expect(after?.ownerHostId).toBeNull();
     expect(after?.origin).toBeNull();
     expect(after?.publication).toBeNull();
     expect(after?.generation).toBe(generationBefore + 1);
+    expect(notified).toEqual([after?.draftId]);
   });
 
   it("is a no-op for a chat with no draftId", () => {

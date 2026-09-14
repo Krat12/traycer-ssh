@@ -61,10 +61,12 @@ export function HistoryDraftsList(props: {
   }, []);
   // A delete is routed to the host that owns the row, so a draft another
   // host owns is claimed for this one first - the same silent takeover the
-  // composer does on the first edit. A refused claim retires the row locally
-  // instead: it leaves this device now, and the retirement receipt keeps the
-  // ingest from bringing the other host's copy straight back. Nothing is
-  // shown for either outcome.
+  // composer does on the first edit. Nothing is shown for any outcome: a
+  // claim the cloud settles as gone or never backed up retires the row
+  // locally (there is nothing remote left to delete), and an inconclusive
+  // one - this host offline, too old, not yet publishing - leaves the row
+  // where it is for the next attempt rather than hiding a draft that still
+  // exists.
   const { claim } = useDraftClaim(useHostClientForHostId(hostId));
   const confirmDelete = useCallback(() => {
     if (pendingDelete === null) return;
@@ -72,23 +74,37 @@ export function HistoryDraftsList(props: {
     const draft = useLandingDraftStore
       .getState()
       .drafts.find((entry) => entry.id === draftId);
-    const unowned =
-      draft !== undefined &&
-      hostId !== null &&
-      draftRequiresClaim(draft.ownerHostId, draft.origin, hostId);
     setPendingDelete(null);
-    if (!unowned) {
+    if (draft === undefined) return;
+    // With no resolved host there is no way to tell whether this row needs a
+    // claim, and a local-only delete of one that does would leave the cloud
+    // copy to be ingested straight back. Only a row nobody else owns is safe.
+    if (hostId === null) {
+      if (draft.ownerHostId === null && draft.origin !== "replica") {
+        useLandingDraftStore.getState().deleteDraft(draftId);
+      }
+      return;
+    }
+    if (!draftRequiresClaim(draft.ownerHostId, draft.origin, hostId)) {
       useLandingDraftStore.getState().deleteDraft(draftId);
       return;
     }
-    void claim(draftId).then(async (result) => {
-      if (result.status !== "ok" && result.status !== "already-owned") {
-        useLandingDraftStore.getState().applyHostDelete(draftId);
-        return;
-      }
-      await applyIncomingDraftDocument(result.draft);
-      useLandingDraftStore.getState().deleteDraft(draftId);
-    });
+    void claim(draftId).then(
+      async (result) => {
+        if (result.status === "ok" || result.status === "already-owned") {
+          await applyIncomingDraftDocument(result.draft);
+          useLandingDraftStore.getState().deleteDraft(draftId);
+          return;
+        }
+        if (
+          result.status === "unavailable" &&
+          (result.reason === "not-found" || result.reason === "not-published")
+        ) {
+          useLandingDraftStore.getState().applyHostDelete(draftId);
+        }
+      },
+      () => undefined,
+    );
   }, [claim, hostId, pendingDelete]);
 
   if (items.length === 0) return null;
@@ -233,8 +249,8 @@ function HistoryDraftsDeleteDialog(props: {
   const title = draft === null ? "" : `Delete "${draft.title}"?`;
   const description =
     draft !== null && !draft.closed
-      ? "This draft is currently open. Deleting it removes it on every device. This cannot be undone."
-      : "This permanently removes the start-task draft on every device. It cannot be undone.";
+      ? "This draft is currently open. Deleting it removes it here and from every device it has synced to. This cannot be undone."
+      : "This permanently removes the start-task draft here and from every device it has synced to. It cannot be undone.";
   return (
     <Dialog open={open} onOpenChange={props.onOpenChange}>
       <DialogContent

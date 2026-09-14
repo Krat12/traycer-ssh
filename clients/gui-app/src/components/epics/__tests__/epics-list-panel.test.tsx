@@ -195,6 +195,7 @@ const testState = vi.hoisted(() => ({
   refetch: vi.fn(),
   fetchNextPage: vi.fn(),
   openLandingDraftFromHistory: vi.fn(),
+  hostId: "host-test" as string | null,
 }));
 
 vi.mock("@/lib/commands/actions/open-landing-draft-from-history", () => ({
@@ -218,7 +219,7 @@ vi.mock("@/hooks/home/use-history-query", () => ({
     isFetching: testState.isFetching,
     cloudPagePending: testState.cloudPagePending,
     error: null,
-    hostId: "host-test",
+    hostId: testState.hostId,
     refetch: testState.refetch,
     fetchNextPage: testState.fetchNextPage,
     hasNextPage: false,
@@ -474,6 +475,7 @@ describe("<EpicsListPanel />", () => {
     testState.refetch.mockReset();
     testState.fetchNextPage.mockReset();
     testState.openLandingDraftFromHistory.mockReset();
+    testState.hostId = "host-test";
     draftClaimTestState.claim.mockReset();
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
@@ -3364,7 +3366,9 @@ describe("<EpicsListPanel />", () => {
     ).not.toBeNull();
     expect(screen.getByText('Delete "abandoned prompt"?')).not.toBeNull();
     expect(
-      screen.getByText(/removes the start-task draft on every device/i),
+      screen.getByText(
+        /removes the start-task draft here and from every device/i,
+      ),
     ).not.toBeNull();
     expect(
       useLandingDraftStore
@@ -3447,9 +3451,33 @@ describe("<EpicsListPanel />", () => {
     });
   });
 
-  it("retires a foreign-owned draft locally when the claim is refused", async () => {
-    const draftId = seedForeignOwnedLandingDraft("refused draft");
+  it("leaves a foreign-owned draft in place when the claim fails (not a not-found/not-published refusal)", async () => {
+    const draftId = seedForeignOwnedLandingDraft("failed-claim draft");
     draftClaimTestState.claim.mockResolvedValue({ status: "failed" });
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+    });
+    // A `failed` claim is not conclusive (host offline, too old, etc.) - the
+    // row must stay, unlike the not-found/not-published cases below.
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === draftId),
+    ).toBe(true);
+    expect(landingDraftIsRetired(draftId)).toBe(false);
+  });
+
+  it("retires a foreign-owned draft locally when the claim reports not-found", async () => {
+    const draftId = seedForeignOwnedLandingDraft("refused draft");
+    draftClaimTestState.claim.mockResolvedValue({
+      status: "unavailable",
+      reason: "not-found",
+    });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
@@ -3463,6 +3491,23 @@ describe("<EpicsListPanel />", () => {
       ).toBe(false);
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
+  });
+
+  it("leaves a replica draft in place when there is no resolved host (host-scoped delete cannot tell whether it needs a claim)", async () => {
+    const draftId = seedForeignOwnedLandingDraft("no-host replica draft");
+    testState.hostId = null;
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    expect(draftClaimTestState.claim).not.toHaveBeenCalled();
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === draftId),
+    ).toBe(true);
+    expect(landingDraftIsRetired(draftId)).toBe(false);
   });
 
   it("caps the draft block and expands it on request", async () => {

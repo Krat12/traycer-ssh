@@ -46,39 +46,60 @@ export function useDraftAuthorityControl(args: {
     args.tabHostId !== null &&
     args.draftId !== null &&
     draftRequiresClaim(args.ownerHostId, args.origin, args.tabHostId);
-  const inflight = useRef<Promise<boolean> | null>(null);
+  // Keyed by the draft it is for: this hook instance can move to another
+  // draft while a claim is pending (a chat draft's identity is re-minted by
+  // the repair), and B must not ride A's outcome.
+  const inflight = useRef<{
+    readonly draftId: string;
+    readonly promise: Promise<boolean>;
+  } | null>(null);
   // Read through a ref by the in-flight continuation: the repair belongs to
-  // the render that observes the refusal, not the one that started the claim.
-  const repairRef = useRef(args.repairOnEdit);
+  // the render that observes the refusal, not the one that started the claim
+  // - but only for THAT draft. Keyed by draftId like `inflight`, so a claim
+  // that outlives a move to another (unowned) draft can never fire the new
+  // draft's repair: B must not ride A's outcome, in either direction.
+  const repairRef = useRef<{
+    readonly draftId: string;
+    readonly fn: () => void;
+  } | null>(null);
   useEffect(() => {
-    repairRef.current = args.repairOnEdit;
-  }, [args.repairOnEdit]);
+    if (args.draftId === null) return;
+    repairRef.current = { draftId: args.draftId, fn: args.repairOnEdit };
+  }, [args.draftId, args.repairOnEdit]);
 
   const runClaim = useCallback((): Promise<boolean> => {
-    const pending = inflight.current;
-    if (pending !== null) return pending;
     const draftId = args.draftId;
     if (draftId === null) return Promise.resolve(false);
-    const attempt = (async (): Promise<boolean> => {
+    const pending = inflight.current;
+    if (pending !== null && pending.draftId === draftId) return pending.promise;
+    const promise = (async (): Promise<boolean> => {
       const result = await claimDraft(draftId);
       if (result.status !== "ok" && result.status !== "already-owned") {
         return false;
       }
       await applyIncomingDraftDocument(result.draft);
       return true;
-    })().finally(() => {
-      if (inflight.current === attempt) inflight.current = null;
+    })();
+    const entry = { draftId, promise };
+    void promise.finally(() => {
+      if (inflight.current === entry) inflight.current = null;
     });
-    inflight.current = attempt;
-    return attempt;
+    inflight.current = entry;
+    return promise;
   }, [args.draftId, claimDraft]);
 
   const noteEdit = useCallback((): void => {
-    if (!unowned || inflight.current !== null) return;
+    if (!unowned) return;
+    const draftId = args.draftId;
+    const pending = inflight.current;
+    if (pending !== null && pending.draftId === draftId) return;
     void runClaim().then((owned) => {
-      if (!owned) repairRef.current();
+      if (owned) return;
+      if (repairRef.current !== null && repairRef.current.draftId === draftId) {
+        repairRef.current.fn();
+      }
     });
-  }, [runClaim, unowned]);
+  }, [args.draftId, runClaim, unowned]);
 
   const settleOwnership = useCallback(async (): Promise<void> => {
     if (!unowned) return;
