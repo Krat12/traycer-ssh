@@ -153,9 +153,14 @@ export function WelcomeProvidersPage(props: {
             </Button>
           </div>
         ) : null}
+        {/* 18rem columns: six tiles as 3×2 across the 80vw dialog at both
+            1280 and 1512 px windows, wide enough that no name or badge
+            wraps there. The rows take their height from the tallest tile -
+            the dialog is 80vh and three rows fit, so the grid never has to
+            squeeze a tile to make room. */}
         <ul
           aria-label="Coding agents"
-          className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3"
+          className="grid shrink-0 grid-cols-[repeat(auto-fill,minmax(18rem,1fr))] gap-3"
         >
           {majorTiles.map((model) => renderTile(model, "tile"))}
         </ul>
@@ -178,11 +183,14 @@ export function WelcomeProvidersPage(props: {
               />
               {minorTiles.length.toLocaleString()} more providers
             </button>
+            {/* Two columns at most: each row keeps its switch beside its
+                name, and a third or fourth column of them would put a
+                switch closer to the next row's name than to its own. */}
             {minorsExpanded ? (
               <ul
                 id={minorsId}
                 aria-label="More coding agents"
-                className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-x-3"
+                className="grid grid-cols-1 gap-x-6 md:grid-cols-2"
               >
                 {minorTiles.map((model) => renderTile(model, "row"))}
               </ul>

@@ -12,13 +12,20 @@ import { WelcomeConnecting } from "@/components/onboarding/welcome/welcome-conne
 import { WelcomeProvidersPage } from "@/components/onboarding/welcome/welcome-providers-page";
 import { WelcomeSessionsPage } from "@/components/onboarding/welcome/welcome-sessions-page";
 import {
+  buildWelcomeSessionsView,
+  welcomeSessionsBranch,
+} from "@/components/onboarding/welcome/welcome-sessions-model";
+import {
+  useWelcomeHostImportRun,
+  type WelcomeHostImportRun,
+} from "@/components/onboarding/welcome/use-welcome-host-import-run";
+import {
   useWelcomeScan,
   type WelcomeScan,
 } from "@/components/onboarding/welcome/use-welcome-scan";
 import { useWelcomeRoster } from "@/components/onboarding/welcome/use-welcome-roster";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
-import { cn } from "@/lib/utils";
 import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-store";
 import type { OnboardingBranch } from "@/stores/onboarding/onboarding-tour-catalog";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
@@ -85,7 +92,8 @@ export function WelcomeModal(props: {
   // verdict with no host to stream from is the gap between a host swap and
   // the effect that rebuilds the binding.
   const readiness = useSurfaceReadiness("default-host", null);
-  const streamHostId = useStreamRuntimeBinding()?.hostId ?? null;
+  const streamBinding = useStreamRuntimeBinding();
+  const streamHostId = streamBinding?.hostId ?? null;
   const hostReady = readiness.kind === "ready" && streamHostId !== null;
 
   const roster = useWelcomeRoster();
@@ -100,6 +108,26 @@ export function WelcomeModal(props: {
     [providers],
   );
   const welcomeScan = useWelcomeScan({ open: true, enabledProviderIds });
+  // Page 2's import-status probe, held here because the header reads it too.
+  const hostImportRun = useWelcomeHostImportRun(
+    streamBinding,
+    hostReady && modalPage === 2,
+  );
+  // The "untick" hint describes ticked rows on screen, so it is true only
+  // while page 2 is showing the LIST - not the already-running notice, the
+  // scanning line or the empty state - and at least one row is ticked.
+  // Same branch function the page renders from, so the two cannot drift.
+  const sessionsView = useMemo(
+    () => buildWelcomeSessionsView(welcomeScan.scan.state),
+    [welcomeScan.scan.state],
+  );
+  const somethingToUntick =
+    welcomeSessionsBranch({
+      alreadyRunning: hostImportRun.alreadyRunning,
+      support: welcomeScan.support,
+      phase: welcomeScan.scan.state.phase,
+      view: sessionsView,
+    }) === "list" && sessionsView.selectedCount > 0;
 
   const skip = (): void => {
     Analytics.getInstance().track(AnalyticsEvent.OnboardingModalSkipped, {
@@ -149,11 +177,16 @@ export function WelcomeModal(props: {
         // both axes are viewport fractions.
         className="flex h-[80vh] w-[80vw] max-w-[min(80vw,var(--safe-area-width))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(80vw,var(--safe-area-width))]"
       >
-        <WelcomeModalHeader page={modalPage} hostReady={hostReady} />
+        <WelcomeModalHeader
+          page={modalPage}
+          hostReady={hostReady}
+          somethingToUntick={somethingToUntick}
+        />
         {hostReady ? (
           <WelcomeModalBody
             page={modalPage}
             welcomeScan={welcomeScan}
+            hostImportRun={hostImportRun}
             onContinueFromProviders={continueFromProviders}
             onSkip={skip}
             onFinish={finishModal}
@@ -187,12 +220,19 @@ function welcomeBranchAfterProviders(
 function WelcomeModalBody(props: {
   readonly page: WelcomeModalPage;
   readonly welcomeScan: WelcomeScan;
+  readonly hostImportRun: WelcomeHostImportRun;
   readonly onContinueFromProviders: () => void;
   readonly onSkip: () => void;
   readonly onFinish: (branch: OnboardingBranch) => void;
 }): ReactNode {
-  const { page, welcomeScan, onContinueFromProviders, onSkip, onFinish } =
-    props;
+  const {
+    page,
+    welcomeScan,
+    hostImportRun,
+    onContinueFromProviders,
+    onSkip,
+    onFinish,
+  } = props;
   // "Shown" is the page being ON SCREEN, so it is keyed on the page and
   // fires only from the body - the connecting state is not a page.
   useEffect(() => {
@@ -211,6 +251,7 @@ function WelcomeModalBody(props: {
   return (
     <WelcomeSessionsPage
       welcomeScan={welcomeScan}
+      hostImportRun={hostImportRun}
       onImportStarted={() => onFinish("sessions")}
       onSkipImport={() => onFinish("no-sessions")}
       onNoSessions={() => onFinish("no-sessions")}
@@ -222,65 +263,58 @@ function WelcomeModalBody(props: {
 const PAGE_COPY: Readonly<
   Record<
     WelcomeModalPage,
-    { readonly title: string; readonly subtitle: string }
+    { readonly title: string; readonly step: string; readonly subtitle: string }
   >
 > = {
   1: {
     title: "Welcome to Traycer",
+    step: "Providers",
     subtitle:
       "Turn on the coding agents you use. Traycer checks the accounts you're already signed in to.",
   },
   2: {
     title: "Bring your recent work",
-    subtitle:
-      "Sessions found on this machine become Traycer tasks. Untick anything you'd rather leave behind.",
+    step: "Sessions",
+    subtitle: "Sessions found on this machine become Traycer tasks.",
   },
 };
+
+const PAGE_COUNT = 2;
+const UNTICK_HINT = "Untick anything you'd rather leave behind.";
 
 function WelcomeModalHeader(props: {
   readonly page: WelcomeModalPage;
   readonly hostReady: boolean;
+  /** Page 2 is showing its list with ticked rows, so it may say "untick". */
+  readonly somethingToUntick: boolean;
 }): ReactNode {
-  const { page, hostReady } = props;
+  const { page, hostReady, somethingToUntick } = props;
   // While connecting the header keeps page 1's title - it is where the user
   // lands - and says what the body is waiting on, so the dialog's accessible
   // description is never a promise about a grid that is not there yet.
   const copy = PAGE_COPY[hostReady ? page : 1];
+  const subtitle =
+    page === 2 && somethingToUntick
+      ? `${copy.subtitle} ${UNTICK_HINT}`
+      : copy.subtitle;
   return (
     <DialogHeader className="shrink-0 gap-1 px-6 pt-5 pb-3">
       <div className="flex items-start justify-between gap-4">
         <DialogTitle className="text-ui-lg">{copy.title}</DialogTitle>
-        <ol
-          aria-label="Setup steps"
-          className="flex shrink-0 items-center gap-1.5 text-ui-xs text-muted-foreground"
+        {/* "Step 1 of 2 · Providers", one phrase: the earlier
+            "1 Providers · 2 Sessions" pair read as counts. */}
+        <p
+          data-testid="welcome-modal-step"
+          className="shrink-0 text-ui-xs text-muted-foreground tabular-nums"
         >
-          <WelcomeStep number={1} label="Providers" current={page === 1} />
-          <li aria-hidden>·</li>
-          <WelcomeStep number={2} label="Sessions" current={page === 2} />
-        </ol>
+          Step {page} of {PAGE_COUNT}
+          <span aria-hidden> · </span>
+          <span className="text-foreground">{copy.step}</span>
+        </p>
       </div>
       <DialogDescription>
-        {hostReady ? copy.subtitle : "Connecting to your machine…"}
+        {hostReady ? subtitle : "Connecting to your machine…"}
       </DialogDescription>
     </DialogHeader>
-  );
-}
-
-function WelcomeStep(props: {
-  readonly number: WelcomeModalPage;
-  readonly label: string;
-  readonly current: boolean;
-}): ReactNode {
-  const { number, label, current } = props;
-  return (
-    <li
-      aria-current={current ? "step" : undefined}
-      className={cn("flex items-center gap-1", current && "text-foreground")}
-    >
-      <span className={cn("tabular-nums", current && "font-medium")}>
-        {number}
-      </span>
-      <span>{label}</span>
-    </li>
   );
 }

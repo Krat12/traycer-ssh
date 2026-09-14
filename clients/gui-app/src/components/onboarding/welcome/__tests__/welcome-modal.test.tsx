@@ -271,6 +271,10 @@ import {
   useOnboardingFlowStore,
 } from "@/stores/onboarding/onboarding-flow-store";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
+import {
+  SESSION_IMPORT_RUN_IDLE,
+  useSessionImportRunStore,
+} from "@/stores/session-import/session-import-run-store";
 
 function providerState(
   providerId: ProviderId,
@@ -312,6 +316,10 @@ function providerState(
     profiles: [],
   };
 }
+
+const SUBTITLE_WITHOUT_UNTICK_HINT =
+  "Sessions found on this machine become Traycer tasks.";
+const SUBTITLE_WITH_UNTICK_HINT = `${SUBTITLE_WITHOUT_UNTICK_HINT} Untick anything you'd rather leave behind.`;
 
 function importableCandidate(
   harness: GuiHarnessId,
@@ -386,6 +394,7 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     useAuthStore.setState({ status: "signed-out" });
     useOnboardingFlowStore.setState(INITIAL_FLOW);
     useOnboardingPresenceStore.setState({ modalOpen: false, tourBusy: false });
+    useSessionImportRunStore.setState({ runs: new Map() });
   });
 
   afterEach(() => {
@@ -690,6 +699,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     it("moves to page 2 while the scan is still running", () => {
       signIn();
       render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
+      expect(screen.getByTestId("welcome-modal-step").textContent).toBe(
+        "Step 1 of 2 · Providers",
+      );
       act(() => {
         callbacks().onStarted(["claude"]);
       });
@@ -700,6 +712,11 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(
         screen.getByRole("dialog", { name: "Bring your recent work" }),
       ).not.toBeNull();
+      expect(screen.getByTestId("welcome-modal-step").textContent).toBe(
+        "Step 2 of 2 · Sessions",
+      );
+      // Nothing to untick yet, so the subtitle does not say "untick".
+      expect(screen.getByText(SUBTITLE_WITHOUT_UNTICK_HINT)).not.toBeNull();
       expect(trackedEvents().at(-1)).toEqual([
         "onboarding_modal_shown",
         { page: "2" },
@@ -729,6 +746,12 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(flow().modalPage).toBe(2);
+      // Ticked rows on screen: the subtitle earns its "untick" hint...
+      expect(screen.getByText(SUBTITLE_WITH_UNTICK_HINT)).not.toBeNull();
+      // ...and loses it the moment nothing is ticked, rows or no rows.
+      fireEvent.click(screen.getByTestId("welcome-sessions-section-select"));
+      expect(screen.getByTestId("welcome-sessions-page")).not.toBeNull();
+      expect(screen.getByText(SUBTITLE_WITHOUT_UNTICK_HINT)).not.toBeNull();
       expect(trackedEvents()).toContainEqual([
         "onboarding_modal_continued",
         { page: "1", enabled_provider_count: 1, session_count: 2 },
@@ -740,6 +763,28 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     beforeEach(() => {
       signIn();
       useOnboardingFlowStore.setState({ modal: "in-progress", modalPage: 2 });
+    });
+
+    it("says nothing about unticking over the already-running notice", () => {
+      // A run in flight on this host: page 2 shows the notice, never the
+      // list - even with importable rows in the scan - so the hint would
+      // point at rows that are not on screen.
+      useSessionImportRunStore.setState({
+        runs: new Map([
+          ["host-a", { ...SESSION_IMPORT_RUN_IDLE, status: "running" }],
+        ]),
+      });
+      render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
+      act(() => {
+        callbacks().onStarted(["claude"]);
+        callbacks().onGroup(
+          folderGroup("/repo/a", [importableCandidate("claude", "s1")]),
+        );
+      });
+      expect(
+        screen.getByTestId("welcome-sessions-already-running"),
+      ).not.toBeNull();
+      expect(screen.getByText(SUBTITLE_WITHOUT_UNTICK_HINT)).not.toBeNull();
     });
 
     it("Skip import finishes as no-sessions", () => {

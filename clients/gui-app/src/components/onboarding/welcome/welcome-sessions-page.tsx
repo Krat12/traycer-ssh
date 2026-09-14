@@ -1,13 +1,12 @@
 import { useEffect, useMemo, type ReactNode } from "react";
-import type { UseQueryResult } from "@tanstack/react-query";
-import type { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
-import type { SessionImportStatusResponse } from "@traycer/protocol/host/session-import/contracts";
 import { HarnessIcon } from "@/components/home/pickers/harness-icon";
 import { WelcomeModalFooter } from "@/components/onboarding/welcome/welcome-modal-footer";
+import type { WelcomeHostImportRun } from "@/components/onboarding/welcome/use-welcome-host-import-run";
 import type { WelcomeScan } from "@/components/onboarding/welcome/use-welcome-scan";
 import {
   buildWelcomeSessionsView,
   groupImportableKeys,
+  welcomeSessionsBranch,
   type WelcomeProviderSection,
   type WelcomeSessionsView,
 } from "@/components/onboarding/welcome/welcome-sessions-model";
@@ -24,10 +23,7 @@ import {
   type SessionImportWizardAction,
   type SessionImportWizardState,
 } from "@/components/session-import/session-import-model";
-import {
-  attachSessionImportRun,
-  startSessionImportRun,
-} from "@/components/session-import/session-import-run-handle";
+import { startSessionImportRun } from "@/components/session-import/session-import-run-handle";
 import {
   sessionImportTone,
   type SessionImportTone,
@@ -35,15 +31,18 @@ import {
 import { ScanWindowSelect } from "@/components/session-import/session-import-wizard";
 import { AgentSpinningDots } from "@/components/ui/agent-spinning-dots";
 import { Button } from "@/components/ui/button";
-import { useSessionImportCheckStatus } from "@/hooks/session-import/use-session-import-check-status-query";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
-import {
-  useStreamRuntimeBinding,
-  type StreamRuntimeBinding,
-} from "@/lib/host/stream-runtime-context";
+import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
 import { cn } from "@/lib/utils";
-import { useSessionImportRun } from "@/stores/session-import/session-import-run-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
+
+// The list fades its bottom edge rather than slicing a row against the
+// footer's border: with the rows filling the page, a hard cut read as the end
+// of the list, not as more below (`mobile-nav-drawer` does the same). The
+// scroller carries matching bottom padding, so the gradient only ever
+// covers blank space - at full scroll the last row stays crisp.
+const LIST_FADE_CLASS =
+  "[-webkit-mask-image:linear-gradient(to_bottom,black_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,black_calc(100%-2rem),transparent)]";
 
 /**
  * Page 2 of the welcome modal: the sessions the background scan found,
@@ -51,8 +50,10 @@ import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announce
  * level, and the Import / Skip import choice.
  *
  * The scan is the modal's (`useWelcomeScan`, running since the modal
- * opened); this page only projects its state (`welcome-sessions-model`) and
- * dispatches the wizard reducer's existing actions. Every exit is a
+ * opened), and so is the host's import status (`useWelcomeHostImportRun`,
+ * because the header's copy reads it too); this page only projects their
+ * state (`welcome-sessions-model`) and dispatches the wizard reducer's
+ * existing actions. Every exit is a
  * callback - the modal writes the flow store and decides the branch - and
  * nothing here renders import progress: Import hands the selection to the
  * app-wide run controller and reports, and the progress toast takes over
@@ -64,6 +65,7 @@ import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announce
  */
 export function WelcomeSessionsPage(props: {
   readonly welcomeScan: WelcomeScan;
+  readonly hostImportRun: WelcomeHostImportRun;
   /** Called right after `startSessionImportRun`; the modal finishes as `sessions`. */
   readonly onImportStarted: () => void;
   readonly onSkipImport: () => void;
@@ -74,6 +76,7 @@ export function WelcomeSessionsPage(props: {
 }): ReactNode {
   const {
     welcomeScan,
+    hostImportRun,
     onImportStarted,
     onSkipImport,
     onNoSessions,
@@ -92,10 +95,16 @@ export function WelcomeSessionsPage(props: {
   // the scan is reading (`session-import-wizard.tsx` does the same).
   const streamBinding = useStreamRuntimeBinding();
   const { alreadyRunning, canSubmit, checkingStatus, statusQuery } =
-    useHostImportRun(streamBinding);
+    hostImportRun;
 
   const { state, dispatch } = welcomeScan.scan;
   const view = useMemo(() => buildWelcomeSessionsView(state), [state]);
+  const branch = welcomeSessionsBranch({
+    alreadyRunning,
+    support: welcomeScan.support,
+    phase: state.phase,
+    view,
+  });
 
   const submit = (): void => {
     if (!canSubmit) return;
@@ -116,7 +125,7 @@ export function WelcomeSessionsPage(props: {
     onImportStarted();
   };
 
-  if (alreadyRunning) {
+  if (branch === "already-running") {
     return (
       <>
         <WelcomeSessionsNotice testId="welcome-sessions-already-running">
@@ -137,7 +146,7 @@ export function WelcomeSessionsPage(props: {
     );
   }
 
-  if (welcomeScan.support === "unsupported") {
+  if (branch === "unsupported") {
     return (
       <>
         <WelcomeSessionsNotice testId="welcome-sessions-unsupported">
@@ -165,13 +174,9 @@ export function WelcomeSessionsPage(props: {
     />
   );
 
-  // Nothing on screen yet: support still being negotiated, or a scan that
-  // has not produced its first row. The picker is there from the start, so a
-  // scan window that turns out too narrow can be widened without waiting.
-  if (
-    welcomeScan.support === "unknown" ||
-    (state.phase === "scanning" && view.totalSessions === 0)
-  ) {
+  // Nothing on screen yet. The picker is there from the start, so a scan
+  // window that turns out too narrow can be widened without waiting.
+  if (branch === "waiting") {
     return (
       <>
         <div
@@ -194,11 +199,9 @@ export function WelcomeSessionsPage(props: {
     );
   }
 
-  // Settled with nothing to tick: every row was unreadable or already in
-  // Traycer, every reader failed, or the window was simply too short. One
-  // way out - and the picker, which is the one control that can change the
-  // answer.
-  if (state.phase !== "scanning" && view.selectableCount === 0) {
+  // Settled with nothing to tick. One way out - and the picker, which is
+  // the one control that can change the answer.
+  if (branch === "empty") {
     return (
       <>
         <div
@@ -243,7 +246,10 @@ export function WelcomeSessionsPage(props: {
     <>
       <div
         data-testid="welcome-sessions-page"
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-4"
+        className={cn(
+          "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 pt-4 pb-8",
+          LIST_FADE_CLASS,
+        )}
       >
         <ScanErrorBanner state={state} tone={tone} />
         {view.sections.map((section) => (
@@ -293,13 +299,6 @@ export function WelcomeSessionsPage(props: {
       />
     </>
   );
-}
-
-/** A pending, failed, or refetching status cannot authorize a new import. */
-function sessionImportHostIsIdle(
-  query: UseQueryResult<SessionImportStatusResponse, HostRpcError>,
-): boolean {
-  return query.isSuccess && !query.isFetching && query.data.active === null;
 }
 
 function importLabel(count: number): string {
@@ -582,53 +581,4 @@ function providerList(welcomeScan: WelcomeScan): string {
   if (names.length === 1) return last;
   if (names.length === 2) return `${names[0]} or ${last}`;
   return `${names.slice(0, -1).join(", ")}, or ${last}`;
-}
-
-interface HostImportRun {
-  /** A run is in flight here, or the host reports one: watch, never resubmit. */
-  readonly alreadyRunning: boolean;
-  readonly canSubmit: boolean;
-  readonly checkingStatus: boolean;
-  /** The host probe itself, for the page's "could not check" retry row. */
-  readonly statusQuery: UseQueryResult<
-    SessionImportStatusResponse,
-    HostRpcError
-  >;
-}
-
-/**
- * Whether an import can be started on the page's host right now. "In
- * flight", not "idle": a FINISHED run the store still summarises (the modal
- * re-shown from Settings after an earlier import) must not hold the status
- * probe closed, or Import could never enable again. The wizard retires such
- * a run on mount instead; this page has no summary to make way for, so it
- * leaves the store alone and asks the host. A run found on the host is
- * watched, never re-submitted: attaching gives the progress toast something
- * to show once the modal finishes.
- */
-function useHostImportRun(
-  streamBinding: StreamRuntimeBinding | null,
-): HostImportRun {
-  const hostId = streamBinding?.hostId ?? null;
-  const runStatus = useSessionImportRun(hostId).status;
-  const runInFlight = runStatus === "starting" || runStatus === "running";
-  const statusQuery = useSessionImportCheckStatus(streamBinding, !runInFlight);
-  const activeRun = statusQuery.isSuccess ? statusQuery.data.active : null;
-  const canSubmit = sessionImportHostIsIdle(statusQuery);
-  useEffect(() => {
-    if (runInFlight || !statusQuery.isSuccess || statusQuery.isFetching) return;
-    if (activeRun !== null) attachSessionImportRun(streamBinding, activeRun);
-  }, [
-    activeRun,
-    runInFlight,
-    statusQuery.isFetching,
-    statusQuery.isSuccess,
-    streamBinding,
-  ]);
-  return {
-    alreadyRunning: runInFlight || activeRun !== null,
-    canSubmit,
-    checkingStatus: !statusQuery.isError && !canSubmit,
-    statusQuery,
-  };
 }

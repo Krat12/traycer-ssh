@@ -337,8 +337,13 @@ function tile(providerId: ProviderId): HTMLElement {
   return match;
 }
 
+/** The switch is named for what it does, so its name flips with its state. */
 function switchFor(name: string): HTMLElement {
-  return screen.getByRole("switch", { name: `Enable ${name}` });
+  return screen.getByRole("switch", {
+    name: (accessibleName) =>
+      accessibleName === `Enable ${name}` ||
+      accessibleName === `Disable ${name}`,
+  });
 }
 
 describe("<WelcomeProvidersPage />", () => {
@@ -410,16 +415,32 @@ describe("<WelcomeProvidersPage />", () => {
     );
   });
 
-  it("shows the badge, subtitle and switch state per tile", () => {
+  it("shows the badge, subtitle and switch state per tile", async () => {
     renderPage();
     const claude = tile("claude-code");
     expect(
       within(claude).getByTestId("welcome-provider-badge").textContent,
     ).toBe("Installed");
+    const claudeSubtitle = within(claude).getByTestId(
+      "welcome-provider-subtitle",
+    );
+    expect(claudeSubtitle.textContent).toBe("jane@example.com");
+    // The account line is the one thing that truncates, so its full text is
+    // a hover away; the name never truncates (QA B9: "Claude…").
+    expect(claudeSubtitle.classList.contains("truncate")).toBe(true);
+    fireEvent.pointerMove(claudeSubtitle);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "jane@example.com",
+    );
     expect(
-      within(claude).getByTestId("welcome-provider-subtitle").textContent,
-    ).toBe("jane@example.com");
+      within(claude).getByText("Claude Code").classList.contains("truncate"),
+    ).toBe(false);
     expect(switchFor("Claude Code").getAttribute("aria-checked")).toBe("true");
+    // Named for the action it performs, so the name flips with the state.
+    expect(switchFor("Claude Code").getAttribute("aria-label")).toBe(
+      "Disable Claude Code",
+    );
+    expect(switchFor("Grok").getAttribute("aria-label")).toBe("Enable Grok");
 
     // Unauthenticated: enabled, no subtitle (the state lives in the tooltip).
     const codex = tile("codex");

@@ -1,4 +1,5 @@
 import type { GuiHarnessId } from "@traycer/protocol/host/index";
+import type { StreamMethodSupport } from "@traycer-clients/shared/host-transport/ws-stream-client";
 import type {
   SessionImportCandidate,
   SessionImportGroup,
@@ -79,6 +80,43 @@ export interface WelcomeSessionsView {
   readonly selectableCount: number;
   /** Rows on screen: importable and unreadable alike. */
   readonly totalSessions: number;
+}
+
+/**
+ * What page 2 puts on screen, in the order the page tests them: a run to
+ * watch instead of start, a host that cannot scan, nothing to show yet, a
+ * scan that settled with nothing to tick, or the list. The modal's header
+ * reads the same answer, so the copy above the page can never describe a
+ * list that is not there.
+ */
+export type WelcomeSessionsBranch =
+  | "already-running"
+  | "unsupported"
+  | "waiting"
+  | "empty"
+  | "list";
+
+export function welcomeSessionsBranch(input: {
+  readonly alreadyRunning: boolean;
+  readonly support: StreamMethodSupport;
+  readonly phase: SessionImportWizardState["phase"];
+  readonly view: WelcomeSessionsView;
+}): WelcomeSessionsBranch {
+  const { alreadyRunning, support, phase, view } = input;
+  if (alreadyRunning) return "already-running";
+  if (support === "unsupported") return "unsupported";
+  // Support still being negotiated, or a scan that has not produced its
+  // first row.
+  if (
+    support === "unknown" ||
+    (phase === "scanning" && view.totalSessions === 0)
+  ) {
+    return "waiting";
+  }
+  // Settled with nothing to tick: every row was unreadable or already in
+  // Traycer, every reader failed, or the window was simply too short.
+  if (phase !== "scanning" && view.selectableCount === 0) return "empty";
+  return "list";
 }
 
 /** One provider's slice of one scan group, before it becomes a rendered group. */
