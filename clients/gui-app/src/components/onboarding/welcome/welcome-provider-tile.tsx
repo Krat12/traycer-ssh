@@ -148,7 +148,9 @@ export function WelcomeProviderTile(
         <Switch
           checked={model.enabled}
           disabled={switchDisabled}
-          aria-label={`Enable ${model.name}`}
+          // Named for what pressing it DOES, so a screen reader announces
+          // "Disable Claude Code, on" rather than "Enable Claude Code, on".
+          aria-label={`${model.enabled ? "Disable" : "Enable"} ${model.name}`}
           onCheckedChange={(next) => {
             if (switchDisabled) return;
             onSetEnabled(model.providerId, next);
