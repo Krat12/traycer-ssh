@@ -8407,9 +8407,10 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    * The scene's `VEHICLE_TILES_PER_SECOND` is module-private - six tiles a
    * second, twice a walker's three - so this is the one number here that is
    * restated rather than derived. It is not taken on trust either: the case
-   * computes the step this implies from the ROUTE's own geometry and requires the
-   * van's longest actual advance to match it, so a trip that moved at some other
-   * speed reds instead of being handed the slack.
+   * computes the step this implies from the ROUTE's own geometry and calibrates it
+   * against the van's longest actual advance, so a drift between the two - this
+   * constant or the scene's speed changing - reds rather than quietly widening the
+   * slack the exit witness allows.
    */
   const DEPART_TILES_PER_TICK = 0.6;
 
@@ -8496,9 +8497,15 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    * The longest single advance the van made down `route`, counting the kerb it
    * started from as zero.
    *
-   * The premise under the witness: it says the trip really did move at one step a
-   * tick, so the step the exit is measured against is the one this van drove at.
-   * Measured, it is exactly `tickStepOf` in all five views.
+   * CALIBRATION OF THE STEP, AND NO MORE THAN THAT, which read AF is right to
+   * pin down: comparing this maximum with `tickStepOf` says that no sampled
+   * advance exceeded the route's expected step and that at least one reached it.
+   * So a uniform speed change in the scene, or the restated constant drifting
+   * from it, is caught beyond the tolerance. It does NOT certify the speed of
+   * every tick - one departure increment cut from 100 ms to 50 ms would put a
+   * 0.3-tile advance among 0.6-tile ones, keep this maximum, and still finish
+   * inside the exit bound. Measured, the maximum is exactly `tickStepOf` in all
+   * five views.
    */
   function longestAdvance(
     route: ReadonlyArray<OfficePoint>,
@@ -8785,7 +8792,7 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     const advance = longestAdvance(route, points);
     expect(
       Math.abs(advance - step),
-      `the ambulance did not drive host-b's road at one tick a tick: ${advance.toFixed(4)} px against the ${step.toFixed(4)} px this route implies (${note})`,
+      `the ambulance's longest advance down host-b's road is not the step this route expects: ${advance.toFixed(4)} px against ${step.toFixed(4)} px (${note})`,
     ).toBeLessThanOrEqual(ROUTE_TOLERANCE_PX);
     expect(
       exit - lastAlong,
