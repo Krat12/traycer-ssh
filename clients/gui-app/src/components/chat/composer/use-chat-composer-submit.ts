@@ -472,6 +472,11 @@ export function useChatComposerSubmit(
     submitDraftRef.current = submitDraft;
   }, [submitDraft]);
 
+  // The deferred confirm re-enters through a ref after an ownership settle,
+  // exactly as `submitDraft` does: another host can claim the draft while the
+  // dialog is open, and the confirm must not finalize on a row this host no
+  // longer owns without settling first.
+  const onRestartRef = useRef<() => void>(() => undefined);
   const onRestart = useCallback((): void => {
     if (pendingConflict === null) return;
     // The same guards the live submit path enforces (submitDraft) must block this
@@ -480,6 +485,22 @@ export function useChatComposerSubmit(
     // clears) rather than pushing the send through the guards.
     if (submitBlocked()) {
       setPendingConflict(null);
+      return;
+    }
+    if (draftUnowned && !ownershipSettled.current) {
+      if (ownershipSettling.current) return;
+      ownershipSettling.current = true;
+      void settleDraftOwnership().then((settled) => {
+        ownershipSettling.current = false;
+        ownershipSettled.current = true;
+        dispatched.current = false;
+        try {
+          onRestartRef.current();
+        } finally {
+          ownershipSettled.current = false;
+        }
+        if (!wasDispatched(dispatched)) settled.abandon();
+      });
       return;
     }
     // Bind the consent to the turn it was DISPLAYED for. The composer persists
@@ -516,14 +537,19 @@ export function useChatComposerSubmit(
       setPendingConflict(null);
     }
   }, [
+    draftUnowned,
     finalizeSend,
     pendingConflict,
     activeTurnStatus,
+    settleDraftOwnership,
     steerEnabled,
     steerProtocolSupported,
     getActiveTurnForSteer,
     submitBlocked,
   ]);
+  useLayoutEffect(() => {
+    onRestartRef.current = onRestart;
+  }, [onRestart]);
 
   const onOpenChange = useCallback((open: boolean): void => {
     if (open) return;

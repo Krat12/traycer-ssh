@@ -7,6 +7,7 @@ import type {
   ChatRunSettings,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import type { JsonContent } from "@traycer/protocol/common/registry";
+import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 
 import { createComposerPickerStore } from "../picker/composer-picker-store";
 import type { ComposerPromptEditorHandle } from "../composer-prompt-editor";
@@ -565,6 +566,79 @@ describe("useChatComposerSubmit steer drift gate", () => {
     );
     expect(mount.result.current.steerConflict.open).toBe(false);
   });
+
+  it("settles draft ownership before re-entering onRestart when draftUnowned flips true while the dialog is open", async () => {
+    // Mirrors submitDraft's ownership-settle continuation (see
+    // wasDispatched/ownershipSettled in use-chat-composer-submit.ts): a
+    // deferred onRestart re-enters the latest onRestart through a ref only
+    // after settleDraftOwnership resolves, and an onSubmitMessage the
+    // re-entered confirm accepts must not fire before that resolves.
+    const onSubmitMessage = vi.fn(acceptSubmit);
+    let resolveSettle: ((settled: SettledOwnership) => void) | null = null;
+    const abandon = vi.fn();
+    const settleDraftOwnership = vi.fn(
+      () =>
+        new Promise<SettledOwnership>((resolve) => {
+          resolveSettle = resolve;
+        }),
+    );
+
+    const mount = mountSubmit({
+      activeTurn: MATCHING_TURN,
+      onSubmitMessage,
+      modelSlug: "claude-opus",
+      permission: null,
+      editorRef: null,
+      steerCapable: true,
+      steerProtocolSupported: true,
+      activeTurnStatus: null,
+      hasPendingApprovals: false,
+      sendDisabled: false,
+      workspaceBlocked: false,
+      draftUnowned: false,
+    });
+
+    act(() => {
+      mount.result.current.submitDraft("mod-enter");
+    });
+    expect(mount.result.current.steerConflict.open).toBe(true);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    act(() => {
+      mount.rerender({
+        activeTurn: MATCHING_TURN,
+        onSubmitMessage,
+        modelSlug: "claude-opus",
+        permission: null,
+        editorRef: null,
+        steerCapable: true,
+        steerProtocolSupported: true,
+        activeTurnStatus: null,
+        hasPendingApprovals: false,
+        sendDisabled: false,
+        workspaceBlocked: false,
+        draftUnowned: true,
+        settleDraftOwnership,
+      });
+    });
+
+    act(() => {
+      mount.result.current.steerConflict.onRestart();
+    });
+
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSettle?.({ abandon });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(mount.result.current.steerConflict.open).toBe(false);
+    expect(abandon).not.toHaveBeenCalled();
+  });
 });
 
 interface MountSubmitInput {
@@ -584,6 +658,8 @@ interface MountSubmitInput {
   readonly hasPendingApprovals?: boolean;
   readonly sendDisabled?: boolean;
   readonly workspaceBlocked?: boolean;
+  readonly draftUnowned?: boolean;
+  readonly settleDraftOwnership?: () => Promise<SettledOwnership>;
 }
 
 interface MountSubmitHookProps {
@@ -595,6 +671,8 @@ interface MountSubmitHookProps {
   readonly hasPendingApprovals: boolean;
   readonly sendDisabled: boolean;
   readonly workspaceBlocked: boolean;
+  readonly draftUnowned: boolean;
+  readonly settleDraftOwnership: () => Promise<SettledOwnership>;
 }
 
 function toHookProps(input: MountSubmitInput): MountSubmitHookProps {
@@ -611,6 +689,10 @@ function toHookProps(input: MountSubmitInput): MountSubmitHookProps {
     hasPendingApprovals: input.hasPendingApprovals === true,
     sendDisabled: input.sendDisabled === true,
     workspaceBlocked: input.workspaceBlocked === true,
+    draftUnowned: input.draftUnowned === true,
+    settleDraftOwnership:
+      input.settleDraftOwnership ??
+      (() => Promise.resolve({ abandon: () => undefined })),
   };
 }
 
@@ -672,9 +754,8 @@ function mountSubmit(input: MountSubmitInput): {
         workspaceBlocked: props.workspaceBlocked,
         imagesUnsupported: false,
         attachmentPreparationPending: false,
-        draftUnowned: false,
-        settleDraftOwnership: () =>
-          Promise.resolve({ abandon: () => undefined }),
+        draftUnowned: props.draftUnowned,
+        settleDraftOwnership: props.settleDraftOwnership,
         onSubmitMessage: props.onSubmitMessage,
         onSideChat: null,
       }),
