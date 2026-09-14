@@ -525,6 +525,8 @@ interface StepsInput {
   readonly lessonKey: string | null;
   readonly unbound: UnboundPresentation | null;
   readonly spotlightSuspended: boolean;
+  /** This renderer's anchored card has presented (see `usePresented`). */
+  readonly presented: boolean;
 }
 
 function buildSteps(input: StepsInput): Step[] {
@@ -535,6 +537,7 @@ function buildSteps(input: StepsInput): Step[] {
     lessonKey,
     unbound,
     spotlightSuspended,
+    presented,
   } = input;
   if (activeTourId === null) return [];
   // Anchored only on a node resolved for THIS lesson/context, and only
@@ -557,8 +560,45 @@ function buildSteps(input: StepsInput): Step[] {
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
-    presented: target.presented,
+    presented,
   });
+}
+
+/**
+ * Whether the CURRENT renderer's anchored card has presented - per
+ * renderer key, so it is false again for every replacement: a new node,
+ * a spotlight suspended or restored around the same node. Until it is
+ * true the anchored step hides its overlay: the dim follows the card, so
+ * Joyride's own target wait and scroll transit (should it disagree with
+ * the resolver after all) are a blank moment, never a bare dim. Only an
+ * ANCHORED tooltip counts - the centred card of a suspended or missing
+ * target presents too, and must not pre-arm the dim for the renderer
+ * that replaces it.
+ */
+function usePresented(rendererKey: string): {
+  readonly presented: boolean;
+  readonly markPresented: (rendererKey: string) => void;
+} {
+  const [state, setState] = useState<{
+    readonly key: string;
+    readonly presented: boolean;
+  }>({ key: rendererKey, presented: false });
+  // Adjusted during render, not remembered per key: a spotlight restored
+  // around the same node reuses its key, and that replacement renderer
+  // starts unpresented like any other.
+  if (state.key !== rendererKey)
+    setState({ key: rendererKey, presented: false });
+  const markPresented = useCallback((key: string) => {
+    setState((current) =>
+      current.key === key && !current.presented
+        ? { key, presented: true }
+        : current,
+    );
+  }, []);
+  return {
+    presented: state.key === rendererKey && state.presented,
+    markPresented,
+  };
 }
 
 /**
@@ -730,12 +770,22 @@ interface EventAdapterInput {
   readonly active: ActiveStep | null;
   readonly activation: number;
   readonly tracking: TargetTracking;
+  readonly rendererKey: string;
+  readonly markPresented: (rendererKey: string) => void;
   readonly guardedAdvance: GuardedAdvance;
   readonly onHistoryNext: () => void;
 }
 
 function useEventAdapter(input: EventAdapterInput): EventAdapter {
-  const { active, activation, tracking, guardedAdvance, onHistoryNext } = input;
+  const {
+    active,
+    activation,
+    tracking,
+    rendererKey,
+    markPresented,
+    guardedAdvance,
+    onHistoryNext,
+  } = input;
   const { tracker, target } = tracking;
   const epoch = target.epoch;
   const [announcement, setAnnouncement] = useState<string | null>(null);
@@ -745,7 +795,9 @@ function useEventAdapter(input: EventAdapterInput): EventAdapter {
       if (tracker.getSnapshot().epoch !== epoch) return;
       if (!eventIsCurrent(data, active)) return;
       if (data.type === EVENTS.TOOLTIP) {
-        tracker.markPresented();
+        // The centred card is `placement: "center"`; only the anchored
+        // one arms this renderer's dim.
+        if (data.step.placement !== "center") markPresented(rendererKey);
         setAnnouncement(
           `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
         );
@@ -760,7 +812,16 @@ function useEventAdapter(input: EventAdapterInput): EventAdapter {
         handleTourEnd(data, active);
       }
     },
-    [activation, epoch, active, guardedAdvance, onHistoryNext, tracker],
+    [
+      activation,
+      epoch,
+      active,
+      rendererKey,
+      markPresented,
+      guardedAdvance,
+      onHistoryNext,
+      tracker,
+    ],
   );
   return { onEvent, announcement };
 }
@@ -1008,11 +1069,18 @@ interface PresentationInput {
   readonly modalSuspended: boolean;
   readonly spotlightSuspended: boolean;
   readonly tracking: TargetTracking;
+  readonly presented: boolean;
 }
 
 function presentationOf(input: PresentationInput): TourPresentation {
-  const { chainActive, active, modalSuspended, spotlightSuspended, tracking } =
-    input;
+  const {
+    chainActive,
+    active,
+    modalSuspended,
+    spotlightSuspended,
+    tracking,
+    presented,
+  } = input;
   if (!chainActive || active === null) return "idle";
   if (modalSuspended) return "modal-suspended";
   const { target, lessonKey } = tracking;
@@ -1020,7 +1088,7 @@ function presentationOf(input: PresentationInput): TourPresentation {
   if (spotlightSuspended || target.unanchored || target.node === null) {
     return "unanchored";
   }
-  return target.presented ? "presenting" : "resolving";
+  return presented ? "presenting" : "resolving";
 }
 
 export function useOnboardingTourController(): OnboardingTourController {
@@ -1099,6 +1167,11 @@ export function useOnboardingTourController(): OnboardingTourController {
     [panelsUnbound, latestEpicId, openEpicTab],
   );
   const spotlightSuspended = useLiveBrowserGuestPresent();
+  // Joyride neither moves nor drops a card on its own (F5): the renderer
+  // is replaced whenever the chosen node changes AND whenever the
+  // spotlight is suspended or restored around the same node.
+  const rendererKey = `${target.epoch}:${spotlightSuspended ? "suspended" : "spotlit"}`;
+  const { presented, markPresented } = usePresented(rendererKey);
   const steps = useMemo(
     () =>
       buildSteps({
@@ -1108,8 +1181,17 @@ export function useOnboardingTourController(): OnboardingTourController {
         lessonKey,
         unbound,
         spotlightSuspended,
+        presented,
       }),
-    [order, activeTourId, target, lessonKey, unbound, spotlightSuspended],
+    [
+      order,
+      activeTourId,
+      target,
+      lessonKey,
+      unbound,
+      spotlightSuspended,
+      presented,
+    ],
   );
 
   useFocusOriginAndChainEnd(run, flow);
@@ -1123,6 +1205,8 @@ export function useOnboardingTourController(): OnboardingTourController {
     active,
     activation,
     tracking,
+    rendererKey,
+    markPresented,
     guardedAdvance,
     onHistoryNext,
   });
@@ -1146,16 +1230,14 @@ export function useOnboardingTourController(): OnboardingTourController {
     run,
     steps,
     stepIndex,
-    // Joyride neither moves nor drops a card on its own (F5): the renderer
-    // is replaced whenever the chosen node changes AND whenever the
-    // spotlight is suspended or restored around the same node.
-    rendererKey: `${target.epoch}:${spotlightSuspended ? "suspended" : "spotlit"}`,
+    rendererKey,
     presentation: presentationOf({
       chainActive,
       active,
       modalSuspended,
       spotlightSuspended,
       tracking,
+      presented,
     }),
     modalSuspended,
     spotlightSuspended,

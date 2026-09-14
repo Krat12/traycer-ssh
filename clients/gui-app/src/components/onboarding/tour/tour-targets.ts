@@ -210,13 +210,6 @@ export interface TargetSnapshot {
   readonly node: HTMLElement | null;
   /** Joyride refused `node` (its target wait timed out): shown centred. */
   readonly unanchored: boolean;
-  /**
-   * Joyride presented the anchored card for `node`. Until then the anchored
-   * step hides its overlay: the dim follows the card, so Joyride's own
-   * target wait (should it disagree with the resolver after all) is a
-   * blank moment, never a bare dim.
-   */
-  readonly presented: boolean;
   /** Bumps whenever the renderer must be replaced (a `key` for Joyride). */
   readonly epoch: number;
 }
@@ -225,16 +218,14 @@ export interface TargetTracker {
   readonly subscribe: (listener: () => void) => () => void;
   readonly getSnapshot: () => TargetSnapshot;
   /**
-   * Track one lesson: a new `key` starts fresh (new epoch, nothing
-   * presented); the same key re-resolves in place. Resolves now and on
-   * every DOM change until the returned stop runs.
+   * Track one lesson: a new `key` starts fresh (new epoch); the same key
+   * re-resolves in place. Resolves now and on every DOM change until the
+   * returned stop runs.
    */
   readonly track: (
     key: string,
     resolve: () => HTMLElement | null,
   ) => () => void;
-  /** Joyride presented the anchored card for the current key. */
-  readonly markPresented: () => void;
   /** Joyride's target wait timed out on the node: centred card, no cutout. */
   readonly markUnanchored: () => void;
   /** No lesson is being tracked. */
@@ -245,7 +236,6 @@ const EMPTY_SNAPSHOT: TargetSnapshot = {
   key: null,
   node: null,
   unanchored: false,
-  presented: false,
   epoch: 0,
 };
 
@@ -280,10 +270,8 @@ export function createTargetTracker(): TargetTracker {
     publish({
       ...current,
       node,
-      // A refusal was about the previous node; the new one gets its try -
-      // card first, dim once it has presented.
+      // A refusal was about the previous node; the new one gets its try.
       unanchored: false,
-      presented: false,
       epoch: current.epoch + 1,
     });
   };
@@ -303,7 +291,6 @@ export function createTargetTracker(): TargetTracker {
           key,
           node: null,
           unanchored: false,
-          presented: false,
           epoch: snapshot.epoch + 1,
         });
       }
@@ -316,10 +303,6 @@ export function createTargetTracker(): TargetTracker {
         if (stopObserving === stop) stopObserving = null;
         stop();
       };
-    },
-    markPresented: () => {
-      if (snapshot.presented || snapshot.node === null) return;
-      publish({ ...snapshot, presented: true });
     },
     markUnanchored: () => {
       if (snapshot.unanchored) return;

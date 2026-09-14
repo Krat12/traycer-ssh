@@ -612,6 +612,9 @@ describe("targets and presentation", () => {
     expect(suspended?.content).toBe(spotlit.content);
     expect(joyride.mounts).toBeGreaterThan(mountsBefore);
     expect(flow().activeTourId).toBe("task-panels");
+    // The centred card presenting during the suspension does not pre-arm
+    // the dim of the renderer that replaces it.
+    present();
     act(() => {
       unregister();
     });
@@ -621,6 +624,10 @@ describe("targets and presentation", () => {
     }
     expect(restored.placement).toBe("right");
     expect(restored.target()).toBe(surface.anchors.column);
+    // Card first again - it presented before the suspension, not since.
+    expect(restored.hideOverlay).toBe(true);
+    present();
+    expect(props().steps.at(0)?.hideOverlay).toBe(false);
   });
 
   it("task-panels spotlights the column, else the rail, inside the context epic surface; mounting never finishes it", () => {
