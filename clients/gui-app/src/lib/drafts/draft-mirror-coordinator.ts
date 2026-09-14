@@ -148,8 +148,8 @@ function interviewBindingRefKey(bindingKey: string, hostId: string): string {
 /** Placement host that may lazily adopt landing drafts (decision #9). */
 let landingAdoptionHostId: string | null = null;
 /**
- * Ordering fence for the cloud-directory absence sweep: every successful
- * cloud ingest takes the next sequence number, and a directory snapshot
+ * Ordering fence for the cloud-directory absence sweep: every cloud ingest
+ * takes the next sequence number when it STARTS, and a directory snapshot
  * records the sequence current when its request STARTED. A row ingested
  * after that (by another mount, through another host) is not absent from
  * that snapshot in any sense the snapshot can attest to.
@@ -175,6 +175,25 @@ function stashSeenKey(hostId: string, entryId: string): string {
 
 export function bindLandingAdoptionHost(hostId: string | null): void {
   landingAdoptionHostId = hostId;
+  if (hostId === null) return;
+  // A placement that returns to a host re-queues the edits withheld from
+  // it while it was elsewhere: the composer's edit watcher no-ops for a row
+  // the current host already owns, and a mirror session kept mounted by a
+  // tab runs no bootstrap on the return, so nothing else would schedule
+  // the write. The rows are still dirty; only the notification was held.
+  const rows = useLandingDraftStore.getState().drafts;
+  for (const draftId of heldLandingEdits) {
+    const row = rows.find((draft) => draft.id === draftId);
+    if (row === undefined) {
+      heldLandingEdits.delete(draftId);
+      continue;
+    }
+    if (row.adoption.state !== "adopted" || row.adoption.hostId !== hostId) {
+      continue;
+    }
+    heldLandingEdits.delete(draftId);
+    sessions.get(hostId)?.session.noteDirty(draftId);
+  }
 }
 
 /**
@@ -917,6 +936,12 @@ export async function ingestCloudDraftSummary(input: {
   // naming the tab's own host. Every tile mount re-ran this, which is why the
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
+  // The fence is reserved BEFORE the apply: its blob reads can take a while,
+  // and an older directory request settling in that window must already see
+  // this row as newer than its snapshot, or it would sweep the mirror the
+  // apply is about to refresh.
+  cloudIngestSeq += 1;
+  cloudIngestSeqByDraft.set(input.document.draftId, cloudIngestSeq);
   // Re-asked right before the store mutation, after the head's blob reads: a
   // claim that landed meanwhile made THIS host the owner, and a replica head
   // from the previous owner must not stamp the row back onto it. The fence
@@ -933,8 +958,6 @@ export async function ingestCloudDraftSummary(input: {
       row.ownerHostId !== input.hostId
     );
   });
-  cloudIngestSeq += 1;
-  cloudIngestSeqByDraft.set(input.document.draftId, cloudIngestSeq);
 }
 
 /** The current ingest sequence; a directory captures it at fetch start. */

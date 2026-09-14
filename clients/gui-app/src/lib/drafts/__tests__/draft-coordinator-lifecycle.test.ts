@@ -306,6 +306,71 @@ describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placeme
       collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
     ).toEqual([id]);
   });
+
+  it("bindLandingAdoptionHost re-queues a held edit once the placement returns to the row's adoption host, syncing exactly once", async () => {
+    const id = "own-requeued-on-return";
+    const logA: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_A, logA);
+    bindLandingAdoptionHost(HOST_B);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(logA.upserts).toEqual([]);
+
+    bindLandingAdoptionHost(HOST_A);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
+  });
+
+  it("contrast: a held edit stays held when the placement moves to a different host than the row's adoption host", async () => {
+    const id = "own-still-held-other-host";
+    const logA: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_A, logA);
+    bindLandingAdoptionHost(HOST_B);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(logA.upserts).toEqual([]);
+
+    bindLandingAdoptionHost("host-c");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(logA.upserts).toEqual([]);
+  });
+
+  it("bindLandingAdoptionHost(null) re-queues nothing and does not throw", () => {
+    const id = "own-cleared-placement-no-throw";
+    bindLandingAdoptionHost(HOST_B);
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+    notifyDraftLocalEdit(id);
+
+    expect(() => bindLandingAdoptionHost(null)).not.toThrow();
+    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
+  });
 });
 
 describe("submitComposerDraft", () => {
@@ -831,6 +896,50 @@ describe("sweepAbsentCloudDraftMirrors", () => {
     });
 
     expect(cloudDraftIngestSeq()).toBe(1);
+  });
+
+  it("reserves the ingest sequence before the apply resolves, fencing a concurrent sweep against a pre-existing clean replica row", async () => {
+    const id = "sweep-fenced-before-await";
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id,
+          content: typed("cloud body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "replica",
+          ownerHostId: "host-b",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const document = landingCloudDocument(id, "host-b", "cloud body");
+    const ingest = ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    // The sequence is reserved synchronously, before the apply's await
+    // settles — not after, the way it used to be.
+    expect(cloudDraftIngestSeq()).toBe(1);
+
+    // A directory sweep whose snapshot predates this ingest (fenceSeq 0)
+    // must not drop the pre-existing replica row for this draft id, even
+    // though the row is not in its listed set: the just-reserved sequence
+    // fences it.
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+      id,
+    );
+
+    await ingest;
   });
 });
 
