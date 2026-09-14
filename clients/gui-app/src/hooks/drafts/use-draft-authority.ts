@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
@@ -91,8 +91,11 @@ export function useDraftAuthorityControl(args: {
   // a claim made through a host the composer has since left must not apply
   // its document, or the row would roll back to that host's ownership after
   // the current host's own claim landed.
+  // Layout effects, not passive ones: both refs must move in the same commit
+  // as the host change, before a claim continuation queued behind it can
+  // read them.
   const currentHostRef = useRef(args.tabHostId);
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentHostRef.current = args.tabHostId;
   }, [args.tabHostId]);
   const repairRef = useRef<{
@@ -100,7 +103,7 @@ export function useDraftAuthorityControl(args: {
     readonly tabHostId: string;
     readonly fn: () => void;
   } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (args.draftId === null || args.tabHostId === null) return;
     repairRef.current = {
       draftId: args.draftId,
