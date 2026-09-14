@@ -311,7 +311,13 @@ export function LandingComposer(props: LandingComposerProps) {
       seenEditMark.current = landingEditMark;
       return;
     }
-    if (landingEditMark.generation <= seen.generation) return;
+    if (landingEditMark.generation <= seen.generation) {
+      // A host echo moves fields without a bump. Take the new snapshot so a
+      // later caret-only bump is compared against the echoed fields, not the
+      // pre-echo ones, and still reads as no edit.
+      seenEditMark.current = landingEditMark;
+      return;
+    }
     if (resolvedHostId === null) return;
     const substantive =
       landingEditMark.content !== seen.content ||
