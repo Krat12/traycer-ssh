@@ -5,7 +5,10 @@ import type { DraftDocument, DraftPublication } from "@traycer/protocol/host";
 import { isJsonContent } from "@/lib/editor/prosemirror-json";
 import { basePersistOptions, persistKey, STORE_KEYS } from "@/lib/persist";
 import { legacyComposerDraftId, mintDraftId } from "@/lib/drafts/draft-ids";
-import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
+import {
+  notifyDraftLocalDelete,
+  notifyDraftLocalEdit,
+} from "@/lib/drafts/draft-local-edits";
 import {
   collectDraftAnnotationImageHashes,
   mergeBrowserAnnotationRecords,
@@ -143,7 +146,16 @@ interface ComposerDraftStore {
    * it under the fresh id as this host's own row. Nothing is owed to the
    * host for the old id - it still holds that row as a replica.
    */
-  readonly detachDraftIdentity: (chatId: string) => void;
+  /**
+   * Re-key a chat draft this host could not claim: the content stays, a
+   * fresh id is minted, and the OLD id is retired through `hostId` (the
+   * host that would own a claim of it) exactly like a submitted id - a
+   * pending delete plus a routed tombstone. Another mounted view's claim of
+   * the old id can still succeed after this detach; its document is then
+   * refused by the pending-delete guard and the row it left live on the
+   * host is tombstoned, instead of resurfacing at a later bootstrap.
+   */
+  readonly detachDraftIdentity: (chatId: string, hostId: string) => void;
   /**
    * Retire the submitted draft's host identity. `clearDraft` empties the
    * document but KEEPS `draftId`, so a keystroke landing while the submit
@@ -340,16 +352,21 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         );
         scheduleLandingImageReconcile();
       },
-      detachDraftIdentity: (chatId) => {
+      detachDraftIdentity: (chatId, hostId) => {
         // The replacement id is minted here, not on the next edit: the dirty
         // sweep skips a row with no id and the edit listener routes by id, so
         // a detach that left `draftId` null would keep the content local
         // until the user typed again.
-        if (ensureDraft(get().drafts, chatId).draftId === null) return;
+        const previousId = ensureDraft(get().drafts, chatId).draftId;
+        if (previousId === null) return;
         const draftId = mintDraftId();
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
           return {
+            pendingSubmittedDraftDeletes: {
+              ...state.pendingSubmittedDraftDeletes,
+              [previousId]: { hostId },
+            },
             drafts: {
               ...state.drafts,
               [chatId]: {
@@ -364,6 +381,9 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             },
           };
         });
+        // The old id is retired through `hostId`: routed now, and retried
+        // by that host's session on connect while the receipt is pending.
+        notifyDraftLocalDelete(previousId);
         notifyDraftLocalEdit(draftId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {

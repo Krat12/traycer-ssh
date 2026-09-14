@@ -40,7 +40,7 @@ export function useChatComposerDraftAuthority(args: {
     ) {
       return;
     }
-    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, tabHostId);
   }, [chatId, tabHostId]);
   const control = useDraftAuthorityControl({
     draftId,

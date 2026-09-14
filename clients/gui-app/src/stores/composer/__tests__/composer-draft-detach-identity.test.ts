@@ -4,10 +4,15 @@ import {
   applyComposerHostDocument,
   bindComposerDraftOwnership,
   collectComposerDirtyWrites,
+  composerSubmittedDraftDeleteIsPending,
   EMPTY_COMPOSER_DRAFT,
+  pendingSubmittedDraftDeleteHostId,
   useComposerDraftStore,
 } from "@/stores/composer/composer-draft-store";
-import { setDraftLocalEditListener } from "@/lib/drafts/draft-local-edits";
+import {
+  setDraftLocalDeleteListener,
+  setDraftLocalEditListener,
+} from "@/lib/drafts/draft-local-edits";
 
 const DOC = {
   type: "doc" as const,
@@ -20,6 +25,7 @@ afterEach(() => {
     pendingSubmittedDraftDeletes: {},
   });
   setDraftLocalEditListener(null);
+  setDraftLocalDeleteListener(null);
 });
 
 describe("composer draft store: detachDraftIdentity", () => {
@@ -51,34 +57,58 @@ describe("composer draft store: detachDraftIdentity", () => {
       };
     });
     const before = useComposerDraftStore.getState().drafts[chatId];
-    expect(before?.draftId).not.toBeNull();
-    const draftIdBefore = before?.draftId ?? null;
-    const generationBefore = before?.generation ?? 0;
+    if (before === undefined) throw new Error("expected a seeded row");
+    const draftIdBefore = before.draftId;
+    const generationBefore = before.generation;
 
     const notified: string[] = [];
+    const notifiedOps: Array<{
+      readonly op: "delete" | "edit";
+      readonly draftId: string;
+    }> = [];
     setDraftLocalEditListener((draftId) => {
       notified.push(draftId);
+      notifiedOps.push({ op: "edit", draftId });
+    });
+    setDraftLocalDeleteListener((draftId) => {
+      notifiedOps.push({ op: "delete", draftId });
     });
 
-    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    expect(draftIdBefore).not.toBeNull();
+    if (draftIdBefore === null) throw new Error("expected a draftId");
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
 
     const after = useComposerDraftStore.getState().drafts[chatId];
-    expect(after?.content).toEqual(DOC);
-    expect(after?.draftId).not.toBeNull();
-    expect(after?.draftId).not.toBe(draftIdBefore);
-    expect(after?.hostRevision).toBe(0);
-    expect(after?.ownerHostId).toBeNull();
-    expect(after?.origin).toBeNull();
-    expect(after?.publication).toBeNull();
-    expect(after?.generation).toBe(generationBefore + 1);
-    expect(notified).toEqual([after?.draftId]);
+    if (after === undefined) throw new Error("expected the row to remain");
+    expect(after.content).toEqual(DOC);
+    expect(after.draftId).not.toBeNull();
+    expect(after.draftId).not.toBe(draftIdBefore);
+    expect(after.hostRevision).toBe(0);
+    expect(after.ownerHostId).toBeNull();
+    expect(after.origin).toBeNull();
+    expect(after.publication).toBeNull();
+    expect(after.generation).toBe(generationBefore + 1);
+    expect(notified).toEqual([after.draftId]);
+
+    // The old id is registered as a pending submitted delete under the
+    // host that would have owned a claim of it.
+    expect(composerSubmittedDraftDeleteIsPending(draftIdBefore)).toBe(true);
+    expect(pendingSubmittedDraftDeleteHostId(draftIdBefore)).toBe("host-a");
+
+    // The delete listener fires for the OLD id before the edit listener
+    // fires for the NEW id.
+    expect(notifiedOps).toEqual([
+      { op: "delete", draftId: draftIdBefore },
+      { op: "edit", draftId: after.draftId },
+    ]);
   });
 
   it("is a no-op for a chat with no draftId", () => {
     const chatId = "chat-never-typed";
     expect(useComposerDraftStore.getState().drafts[chatId]).toBeUndefined();
 
-    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
 
     expect(useComposerDraftStore.getState().drafts[chatId]).toBeUndefined();
   });
@@ -136,7 +166,7 @@ describe("composer draft store: setSelection on a replica row", () => {
     );
     expect(dirtyBeforeDetach).not.toContain(chatId);
 
-    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
 
     const dirtyAfterDetach = collectComposerDirtyWrites().map(
       (entry) => entry.chatId,
@@ -149,6 +179,7 @@ function chatComposerDocument(
   chatId: string,
   draftId: string,
   origin: "own" | "replica",
+  ownerHostId: string,
 ): DraftDocument {
   return {
     draftId,
@@ -157,9 +188,9 @@ function chatComposerDocument(
     revision: 1,
     lastTouchedAt: Date.now(),
     workspace: null,
-    ownerHostId: "host-remote",
+    ownerHostId,
     origin,
-    adoption: { state: "adopted", hostId: "host-remote" },
+    adoption: { state: "adopted", hostId: ownerHostId },
     publication: {
       status: "unpublished",
       lastPublishedAt: null,
@@ -210,16 +241,22 @@ describe("composer draft store: applyComposerHostDocument after detachDraftIdent
       throw new Error("expected a draftId before detach");
     }
 
-    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
     const afterDetach = useComposerDraftStore.getState().drafts[chatId];
     const newId = afterDetach?.draftId ?? null;
     expect(newId).not.toBeNull();
     expect(newId).not.toBe(oldId);
 
-    applyComposerHostDocument(chatComposerDocument(chatId, oldId, "own"));
+    // A late claim of the OLD id by the host it was retired through still
+    // lands, but is refused here: the pending-delete guard keeps the row on
+    // the new id and its content instead of resurfacing the old one.
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, oldId, "own", "host-a"),
+    );
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.draftId).toBe(newId);
+    expect(after?.content).toEqual(DOC);
     expect(after?.origin).toBeNull();
     expect(after?.ownerHostId).toBeNull();
     expect(after?.generation).toBe(afterDetach?.generation);
@@ -262,7 +299,9 @@ describe("composer draft store: applyComposerHostDocument after detachDraftIdent
       notified.push(draftId);
     });
 
-    applyComposerHostDocument(chatComposerDocument(chatId, currentId, "own"));
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, currentId, "own", "host-remote"),
+    );
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.origin).toBe("own");
@@ -296,11 +335,36 @@ describe("composer draft store: applyComposerHostDocument ignores a pending subm
     expect(beforeApply?.draftId).toBeNull();
     expect(beforeApply?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
 
-    applyComposerHostDocument(chatComposerDocument(chatId, "d-old", "own"));
+    applyComposerHostDocument(
+      chatComposerDocument(chatId, "d-old", "own", "host-remote"),
+    );
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.draftId).toBeNull();
     expect(after?.content).toEqual(EMPTY_COMPOSER_DRAFT.content);
+  });
+});
+
+describe("composer draft store: completeSubmittedDraftDelete after detachDraftIdentity", () => {
+  it("clears the pending submitted-delete entry registered by detachDraftIdentity", () => {
+    const chatId = "chat-complete-delete";
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 3 });
+    const oldId = useComposerDraftStore.getState().drafts[chatId]?.draftId;
+    expect(oldId).not.toBeNull();
+    if (oldId === null || oldId === undefined) {
+      throw new Error("expected a draftId before detach");
+    }
+
+    useComposerDraftStore.getState().detachDraftIdentity(chatId, "host-a");
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(true);
+
+    useComposerDraftStore.getState().completeSubmittedDraftDelete(oldId);
+
+    expect(composerSubmittedDraftDeleteIsPending(oldId)).toBe(false);
+    expect(pendingSubmittedDraftDeleteHostId(oldId)).toBeNull();
   });
 });
 
