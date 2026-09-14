@@ -11,6 +11,7 @@ import {
   cloudDraftIngestSeq,
   collectDraftMirrorDirtyWrites,
   deleteLandingDraftThroughHost,
+  draftOwnershipSeq,
   ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
@@ -1635,6 +1636,72 @@ describe("ingestCloudDraftSummary admit fence", () => {
     expect(row?.origin).toBe("replica");
     expect(row?.ownerHostId).toBe("host-a");
     expect(row?.content).toEqual(typed("post-apply body host-a"));
+  });
+});
+
+describe("draftOwnershipSeq", () => {
+  it("reads 0 for a draft id that has never been applied", () => {
+    expect(draftOwnershipSeq("never-applied")).toBe(0);
+  });
+
+  it("increases after applyIncomingDraftDocument applies a landing own document", async () => {
+    const id = "seq-landing-apply";
+    expect(draftOwnershipSeq(id)).toBe(0);
+
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-a", "local own body"),
+      null,
+    );
+
+    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
+  });
+
+  it("increases after bindClaimedDraftOwnership binds a landing document", () => {
+    const id = "seq-landing-bind";
+    expect(draftOwnershipSeq(id)).toBe(0);
+
+    bindClaimedDraftOwnership(
+      landingOwnDocument(id, "host-b", "claimed body"),
+      "host-b",
+    );
+
+    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
+  });
+
+  it("increases after applyIncomingDraftDocument applies a chat-composer document", async () => {
+    const id = "seq-composer-apply";
+    expect(draftOwnershipSeq(id)).toBe(0);
+
+    await applyIncomingDraftDocument(
+      {
+        draftId: id,
+        kind: "chat-composer",
+        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
+        revision: 1,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: HOST_ID,
+        origin: "own",
+        adoption: { state: "adopted", hostId: HOST_ID },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: typed("composer body"),
+          selection: null,
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+      null,
+    );
+
+    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
   });
 });
 

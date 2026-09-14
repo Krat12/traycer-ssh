@@ -7,6 +7,7 @@ import {
   applyIncomingDraftDocument,
   bindClaimedDraftOwnership,
   draftOwnerHostId,
+  draftOwnershipSeq,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
@@ -266,6 +267,13 @@ export function useDraftAuthorityControl(args: {
         const owner = draftOwnerHostId(document);
         return owner !== null && owner !== tabHostId && owner !== ownerAtClaim;
       };
+      // The row's ownership generation when this attempt set out. Any
+      // ownership apply since - from this hook, another view's hook, or a
+      // session echo - bumps it, which an owner comparison cannot see when
+      // the cycle ends on the owner it started from (A -> B -> A).
+      const ownershipSeqAtClaim = draftOwnershipSeq(draftId);
+      const ownershipUnchanged = (): boolean =>
+        draftOwnershipSeq(draftId) === ownershipSeqAtClaim;
       const promise = (async (): Promise<boolean> => {
         // `committed`: this claim moved the cloud row to a host the surface has
         // since left. The local row was never updated (superseded claims do not
@@ -302,7 +310,12 @@ export function useDraftAuthorityControl(args: {
           // in flight: the row now reads unowned here, so the current host
           // claims it afresh for the edit that began this attempt.
           const elsewhere = document !== null && movedElsewhere(document);
-          if (!moved && !outranked && !elsewhere) return null;
+          // A committed response the ownership generation outdated (an
+          // A -> B -> A cycle applied by another view, invisible to owner
+          // comparison): the row reads unowned here again, and the edit
+          // that began this attempt would be stranded without a claim.
+          const outdated = committed && !ownershipUnchanged();
+          if (!moved && !outranked && !elsewhere && !outdated) return null;
           // Joins an attempt already in flight on the current host (a submit
           // may have joined it there, and its suppression must be the one
           // that counts) unless that attempt is an ANCESTOR of this chain:
@@ -357,10 +370,18 @@ export function useDraftAuthorityControl(args: {
         // Superseded: the surface moved to another host while this claim ran.
         // Its document names this host as owner and would route the dirty row
         // back here; the current host's claim is the one that counts.
+        // Before this attempt's own apply (and re-asked by the coordinator
+        // right before the store mutation): the ownership generation must
+        // be the one the claim set out from. After the apply it has moved
+        // on by this attempt's own doing, so the later checks drop it.
         const stillCurrent = (): boolean =>
           currentHostRef.current === tabHostId &&
           (latestApplied.current.get(draftId)?.attempt ?? 0) <= attempt &&
-          !movedElsewhere(result.draft);
+          !movedElsewhere(result.draft) &&
+          ownershipUnchanged();
+        const stillCurrentAfterApply = (): boolean =>
+          currentHostRef.current === tabHostId &&
+          (latestApplied.current.get(draftId)?.attempt ?? 0) <= attempt;
         if (!stillCurrent()) {
           return (await reclaimOnCurrentHost(true, result.draft)) ?? true;
         }
@@ -385,7 +406,7 @@ export function useDraftAuthorityControl(args: {
           // The claim committed: bind the row to its new owner without the
           // document so a deferred submit's delete routes to the host that
           // holds the row, not the previous owner.
-          if (stillCurrent()) {
+          if (stillCurrentAfterApply()) {
             bindOwnership(result.draft, tabHostId);
             // The binding is this draft's newest applied ownership: an older
             // attempt settling later must not put its document over it.
@@ -394,7 +415,7 @@ export function useDraftAuthorityControl(args: {
           }
           return (await reclaimOnCurrentHost(true, result.draft)) ?? true;
         }
-        if (stillCurrent()) {
+        if (stillCurrentAfterApply()) {
           latestApplied.current.set(draftId, { attempt, tabHostId });
           return true;
         }

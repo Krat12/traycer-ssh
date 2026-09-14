@@ -18,6 +18,7 @@ import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import {
   applyIncomingDraftDocument,
   deleteLandingDraftThroughHost,
+  draftOwnershipSeq,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import {
   listHistoryLandingDrafts,
@@ -101,27 +102,30 @@ export function HistoryDraftsList(props: {
       }
       return;
     }
-    const ownerAtClaim = draft.ownerHostId;
+    // The row's ownership generation when the claim set out: any ownership
+    // apply since (another device's claim moving the row on, even back to
+    // the owner it started from) outdates this claim's response.
+    const ownershipSeqAtClaim = draftOwnershipSeq(draftId);
     void claim(draftId).then(
       async (result) => {
         if (result.status === "ok" || result.status === "already-owned") {
           // The row may have moved AGAIN while this response was in flight:
-          // another device's claim onto a third host, whose document already
-          // applied here. That newer ownership is kept - applying this stale
-          // response would erase it and delete through a host that no longer
-          // holds the row - and the delete is left pending on that host.
+          // another device's claim, whose document already applied here.
+          // That newer ownership is kept - applying this stale response
+          // would erase it and delete through a host that no longer holds
+          // the row - and the delete is left pending on the current owner.
           const current = useLandingDraftStore
             .getState()
             .drafts.find((entry) => entry.id === draftId);
-          const movedTo =
+          if (
             current !== undefined &&
-            current.ownerHostId !== null &&
-            current.ownerHostId !== hostId &&
-            current.ownerHostId !== ownerAtClaim
-              ? current.ownerHostId
-              : null;
-          if (movedTo !== null) {
-            deleteLandingDraftThroughHost(draftId, movedTo, null);
+            draftOwnershipSeq(draftId) !== ownershipSeqAtClaim
+          ) {
+            if (current.ownerHostId !== null) {
+              deleteLandingDraftThroughHost(draftId, current.ownerHostId, null);
+            } else {
+              useLandingDraftStore.getState().deleteDraft(draftId);
+            }
             return;
           }
           // The claim has committed on `hostId`; the delete below is routed

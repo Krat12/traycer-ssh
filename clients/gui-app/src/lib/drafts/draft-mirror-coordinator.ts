@@ -165,13 +165,17 @@ let landingAdoptionHostId: string | null = null;
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
 /**
- * The sequence at which each landing row's ownership was last APPLIED here
- * (the store mutation, not a reservation). The cloud-ingest fence over an
- * own row of the ingesting host compares it with the dispatch fence of
- * the directory snapshot the head came from: only a snapshot older than
- * the apply is the stale summary that fence exists for.
+ * The sequence at which each draft row's ownership was last APPLIED here
+ * (the store mutation, not a reservation) - landing and chat-composer
+ * documents alike, from any hook or session, and the ownership-only
+ * binding. Two fences read it: the cloud-ingest fence compares it with the
+ * dispatch fence of the directory snapshot a head came from (only an older
+ * snapshot is the stale summary that fence exists for), and a claim
+ * attempt captures it at start and admits its response only while it is
+ * unchanged (`draftOwnershipSeq`) - an ownership cycle applied by another
+ * view meanwhile is invisible to owner comparison alone.
  */
-const landingOwnerAppliedSeq = new Map<string, number>();
+const ownerAppliedSeqByDraft = new Map<string, number>();
 /**
  * Own landing rows whose edit `routeLocalEdit` withheld because their
  * adoption host is not the current placement (an auto-follow). Only these
@@ -544,11 +548,13 @@ async function applyHostDocument(
     if (rejectRetiredLandingDocument(document)) return;
     // This apply's own reservation, taken before its blob reads: a snapshot
     // dispatched before it is older than the ownership it installs.
-    landingOwnerAppliedSeq.set(document.draftId, applySeq);
+    ownerAppliedSeqByDraft.set(document.draftId, applySeq);
     applyLandingHostDocument(document, document.portable.content);
     return;
   }
   if (document.kind === "chat-composer") {
+    cloudIngestSeq += 1;
+    ownerAppliedSeqByDraft.set(document.draftId, cloudIngestSeq);
     applyComposerHostDocument(document);
     return;
   }
@@ -943,7 +949,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   heldLandingEdits.clear();
   cloudIngestSeq = 0;
   cloudIngestSeqByDraft.clear();
-  landingOwnerAppliedSeq.clear();
+  ownerAppliedSeqByDraft.clear();
   stashHostById.clear();
   stashSeenOnHost.clear();
   warnedUnboundComposer.clear();
@@ -1028,7 +1034,7 @@ export async function ingestCloudDraftSummary(input: {
   // always fresh.
   if (
     landingDraftIsRetired(input.document.draftId) &&
-    (landingOwnerAppliedSeq.get(input.document.draftId) ?? 0) >
+    (ownerAppliedSeqByDraft.get(input.document.draftId) ?? 0) >
       input.snapshotSeq
   ) {
     return;
@@ -1058,7 +1064,7 @@ export async function ingestCloudDraftSummary(input: {
     // newer head this way).
     if (row === undefined || row.origin !== "own") return true;
     return (
-      (landingOwnerAppliedSeq.get(input.document.draftId) ?? 0) <=
+      (ownerAppliedSeqByDraft.get(input.document.draftId) ?? 0) <=
       input.snapshotSeq
     );
   });
@@ -1117,11 +1123,22 @@ export function bindClaimedDraftOwnership(
   if (document.kind === "landing") {
     cloudIngestSeq += 1;
     cloudIngestSeqByDraft.set(document.draftId, cloudIngestSeq);
-    landingOwnerAppliedSeq.set(document.draftId, cloudIngestSeq);
+    ownerAppliedSeqByDraft.set(document.draftId, cloudIngestSeq);
     bindLandingDraftOwnership(document.draftId, hostId, document.revision);
   } else if (document.kind === "chat-composer") {
+    cloudIngestSeq += 1;
+    ownerAppliedSeqByDraft.set(document.draftId, cloudIngestSeq);
     bindComposerDraftOwnership(document.draftId, hostId, document.revision);
   }
+}
+
+/**
+ * The per-draft ownership generation: the sequence of the row's latest
+ * ownership apply here, whichever hook or session applied it. `0` before
+ * any apply.
+ */
+export function draftOwnershipSeq(draftId: string): number {
+  return ownerAppliedSeqByDraft.get(draftId) ?? 0;
 }
 
 /**

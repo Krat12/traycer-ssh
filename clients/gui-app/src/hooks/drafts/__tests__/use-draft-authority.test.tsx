@@ -19,6 +19,9 @@ const deleteClaimedRetiredLandingDraftMock = vi.hoisted(() => ({
 const ownerMock = vi.hoisted(() => ({
   owner: null as string | null,
 }));
+const ownershipSeqMock = vi.hoisted(() => ({
+  seq: 0,
+}));
 
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   useDraftClaim: () => ({
@@ -44,6 +47,7 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     }
   },
   draftOwnerHostId: (): string | null => ownerMock.owner,
+  draftOwnershipSeq: (): number => ownershipSeqMock.seq,
 }));
 vi.mock("@/stores/home/landing-draft-store", async (importOriginal) => {
   const actual =
@@ -109,6 +113,7 @@ afterEach(() => {
   bindLandingOwnershipMock.bind.mockReset();
   deleteClaimedRetiredLandingDraftMock.delete.mockReset();
   ownerMock.owner = null;
+  ownershipSeqMock.seq = 0;
 });
 
 describe("useDraftAuthorityControl", () => {
@@ -3134,6 +3139,114 @@ describe("useDraftAuthorityControl", () => {
     // elsewhere.
     ownerMock.owner = "host-a";
 
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("an ownership cycle (A -> B -> A) that leaves the owner name unchanged but bumps the generation drops the stale response and re-claims on the current host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-a",
+        origin: "replica",
+        tabHostId: "host-b",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    expect(view.result.current.unowned).toBe(true);
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // Another view's applies cycle ownership A -> B -> A while attempt 1 is
+    // in flight: the owner name ends up exactly where it started (host-a,
+    // the pre-claim owner - the owner comparison alone would admit), but
+    // the generation bumped twice.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    ownershipSeqMock.seq = 2;
+    ownerMock.owner = "host-a";
+
+    // Attempt 1 resolves ok: the generation moved on since this attempt
+    // captured it, so the response is dropped - its document is never
+    // applied, even though the owner name alone would have admitted it -
+    // and the edit that began it is re-claimed on this host automatically,
+    // with no further edit.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 2 captured generation 2 at its own start; leave it unchanged
+    // so it is still current when it resolves.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+    expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+      STUB_DRAFT,
+      expect.any(Function),
+    );
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("contrast: an unchanged generation applies attempt 1's document directly with no second claim", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-a",
+        origin: "replica",
+        tabHostId: "host-b",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    expect(view.result.current.unowned).toBe(true);
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // No other view touches the draft's ownership: the generation stays at
+    // the value attempt 1 captured at start.
     await act(async () => {
       first.resolve({ status: "ok", draft: STUB_DRAFT });
       await first.promise;

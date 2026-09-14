@@ -294,9 +294,15 @@ const deleteThroughHostMock = vi.hoisted(() => ({
   record:
     vi.fn<(draftId: string, hostId: string, hasClient: boolean) => void>(),
 }));
+/** Per-draft ownership generation the real coordinator would report. */
+const ownershipSeqMock = vi.hoisted(() => ({
+  byDraft: new Map<string, number>(),
+}));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", async () => {
   const store = await import("@/stores/home/landing-draft-store");
   return {
+    draftOwnershipSeq: (draftId: string): number =>
+      ownershipSeqMock.byDraft.get(draftId) ?? 0,
     applyIncomingDraftDocument: (
       draft: unknown,
       admit: unknown,
@@ -507,6 +513,7 @@ describe("<EpicsListPanel />", () => {
       Promise.resolve(),
     );
     deleteThroughHostMock.record.mockReset();
+    ownershipSeqMock.byDraft.clear();
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     queryClient.clear();
@@ -3550,7 +3557,8 @@ describe("<EpicsListPanel />", () => {
     });
 
     // A third host's document applies here while the claim is still
-    // in flight - simulating another device's claim completing first.
+    // in flight - simulating another device's claim completing first. An
+    // ownership apply bumps the draft's ownership generation.
     useLandingDraftStore.setState((state) => ({
       drafts: state.drafts.map((draft) =>
         draft.id === draftId
@@ -3562,6 +3570,7 @@ describe("<EpicsListPanel />", () => {
           : draft,
       ),
     }));
+    ownershipSeqMock.byDraft.set(draftId, 1);
 
     resolveClaim({
       status: "already-owned",
@@ -3606,6 +3615,115 @@ describe("<EpicsListPanel />", () => {
       false,
     );
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-c");
+  });
+
+  it("keeps the delete pending on the pre-claim owner when ownership cycled away and back (A -> C -> B) while the claim response was in flight", async () => {
+    // The claim starts from owner "host-b" (`seedForeignOwnedLandingDraft`)
+    // and resolves ok, but while the response was in flight other devices
+    // moved the row on to "host-c" and BACK to "host-b": the owner name
+    // ends up equal to the pre-claim owner, so an owner comparison alone
+    // would admit the stale response. The ownership generation bumped, so
+    // the response is dropped and the delete stays pending on "host-b".
+    const draftId = seedForeignOwnedLandingDraft("cycled draft");
+    let resolveClaim: (value: {
+      status: "already-owned";
+      draft: {
+        draftId: string;
+        kind: "landing";
+        target: { epicId: null; chatId: null; blockId: null };
+        revision: number;
+        lastTouchedAt: number;
+        workspace: null;
+        ownerHostId: string;
+        origin: "own";
+        adoption: { state: "adopted"; hostId: string };
+        publication: {
+          status: "unpublished";
+          lastPublishedAt: null;
+          publishedRevision: null;
+          halted: null;
+        };
+        portable: {
+          content: JsonContent;
+          selection: null;
+          runSettings: null;
+          composerMode: "chat";
+          blobHashes: string[];
+          closed: boolean;
+        };
+      };
+    }) => void = () => undefined;
+    const pendingClaim = new Promise((resolve) => {
+      resolveClaim = resolve;
+    });
+    draftClaimTestState.claim.mockImplementation(() => pendingClaim);
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+    });
+
+    // Two ownership applies land while the claim is still in flight: the
+    // row's owner is back where it started, and the generation is two on.
+    useLandingDraftStore.setState((state) => ({
+      drafts: state.drafts.map((draft) =>
+        draft.id === draftId
+          ? {
+              ...draft,
+              ownerHostId: "host-b",
+              adoption: { state: "adopted" as const, hostId: "host-b" },
+            }
+          : draft,
+      ),
+    }));
+    ownershipSeqMock.byDraft.set(draftId, 2);
+
+    resolveClaim({
+      status: "already-owned",
+      draft: {
+        draftId,
+        kind: "landing",
+        target: { epicId: null, chatId: null, blockId: null },
+        revision: 1,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: "host-test",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-test" },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: { type: "doc", content: [] },
+          selection: null,
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(applyIncomingDraftDocumentMock.apply).not.toHaveBeenCalled();
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      "host-b",
+      false,
+    );
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-b");
   });
 
   it("deletes an own row already owned by the History host through that host, even though the landing placement points elsewhere", async () => {
