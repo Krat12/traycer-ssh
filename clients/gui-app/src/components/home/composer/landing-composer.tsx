@@ -963,7 +963,10 @@ export function LandingComposer(props: LandingComposerProps) {
       const settledFor = resolvedHostId;
       void authority.settleOwnership().then((settled) => {
         ownershipSettling.current = false;
-        ownershipSettledFor.current = settledFor;
+        // The host the settle ENDED on: a claim that chained into the host
+        // the placement auto-followed to settles for that host, and the
+        // latest handler there must proceed rather than settle again.
+        ownershipSettledFor.current = settled.hostId ?? settledFor;
         let sent = false;
         try {
           sent = handleSubmitRef.current();
@@ -1013,10 +1016,11 @@ export function LandingComposer(props: LandingComposerProps) {
         const settledFor = resolvedHostId;
         void authority.settleOwnership().then((settled) => {
           ownershipSettling.current = false;
-          ownershipSettledFor.current = settledFor;
+          const finalHost = settled.hostId ?? settledFor;
+          ownershipSettledFor.current = finalHost;
           let started = false;
           try {
-            started = handleStartTerminalRef.current(launch, settledFor);
+            started = handleStartTerminalRef.current(launch, finalHost);
           } finally {
             ownershipSettledFor.current = null;
           }

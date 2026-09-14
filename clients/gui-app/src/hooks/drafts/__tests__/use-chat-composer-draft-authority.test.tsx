@@ -36,7 +36,8 @@ vi.mock("@/hooks/drafts/use-draft-authority", () => ({
       noteEdit: () => {
         claimMock.claim(args.draftId ?? "");
       },
-      settleOwnership: () => Promise.resolve({ abandon: () => {} }),
+      settleOwnership: () =>
+        Promise.resolve({ hostId: "host-test", abandon: () => {} }),
     };
   },
 }));

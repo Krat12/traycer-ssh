@@ -105,7 +105,7 @@ describe("chat-composer submit gate (path resolution)", () => {
           attachmentPreparationPending: pending,
           draftUnowned: false,
           settleDraftOwnership: () =>
-            Promise.resolve({ abandon: () => undefined }),
+            Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
           onSubmitMessage,
           onSideChat: null,
         }),
@@ -429,7 +429,7 @@ describe("unowned draft", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettled?.({ abandon: vi.fn() });
+      resolveSettled?.({ hostId: "host-test", abandon: vi.fn() });
       await Promise.resolve();
     });
 
@@ -508,7 +508,7 @@ describe("unowned draft", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettled?.({ abandon });
+      resolveSettled?.({ hostId: "host-test", abandon });
       await Promise.resolve();
     });
 
@@ -544,7 +544,7 @@ describe("unowned draft", () => {
     });
 
     const settleDraftOwnership = vi.fn(() =>
-      Promise.resolve({ abandon: vi.fn() }),
+      Promise.resolve({ hostId: "host-test", abandon: vi.fn() }),
     );
 
     const { result } = renderHook(() =>
@@ -650,7 +650,7 @@ describe("unowned draft", () => {
     rerender({ sendDisabled: true });
 
     await act(async () => {
-      resolveSettled?.({ abandon });
+      resolveSettled?.({ hostId: "host-test", abandon });
       await Promise.resolve();
     });
 
@@ -701,7 +701,8 @@ function mountSubmitHook(args: {
       imagesUnsupported: false,
       attachmentPreparationPending: false,
       draftUnowned: false,
-      settleDraftOwnership: () => Promise.resolve({ abandon: () => undefined }),
+      settleDraftOwnership: () =>
+        Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),

@@ -80,7 +80,8 @@ function mountSubmit(args: {
       imagesUnsupported: false,
       attachmentPreparationPending: false,
       draftUnowned: false,
-      settleDraftOwnership: () => Promise.resolve({ abandon: () => undefined }),
+      settleDraftOwnership: () =>
+        Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: args.onSideChat,
     }),

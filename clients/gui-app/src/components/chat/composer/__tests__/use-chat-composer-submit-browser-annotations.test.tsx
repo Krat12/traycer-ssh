@@ -194,7 +194,8 @@ function mountSubmit(args: {
       draftUnowned: args.draftUnowned ?? false,
       settleDraftOwnership:
         args.settleDraftOwnership ??
-        (() => Promise.resolve({ abandon: () => undefined })),
+        (() =>
+          Promise.resolve({ hostId: "host-test", abandon: () => undefined })),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),
@@ -558,7 +559,9 @@ describe("useChatComposerSubmit ownership settle + annotation prep", () => {
         }),
     );
     const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(() => Promise.resolve({ abandon }));
+    const settleDraftOwnership = vi.fn(() =>
+      Promise.resolve({ hostId: "host-test", abandon }),
+    );
     const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
     const { result } = mountSubmit({
       taskId,
@@ -609,7 +612,9 @@ describe("useChatComposerSubmit ownership settle + annotation prep", () => {
         }),
     );
     const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(() => Promise.resolve({ abandon }));
+    const settleDraftOwnership = vi.fn(() =>
+      Promise.resolve({ hostId: "host-test", abandon }),
+    );
     const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
     const { result } = mountSubmit({
       taskId,

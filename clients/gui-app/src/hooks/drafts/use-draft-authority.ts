@@ -45,6 +45,14 @@ export interface DraftAuthorityControl {
 
 export interface SettledOwnership {
   /**
+   * The host the ownership question was finally settled through: the LAST
+   * link of the chain when the settle chained into the current host's
+   * re-claim after the surface moved, else the host the settle started on.
+   * A continuation that decides "settled for host X" must use this, not
+   * the host it captured at the start. `null` when nothing was settled.
+   */
+  readonly hostId: string | null;
+  /**
    * The caller did NOT dispatch after the settle (a guard changed, a launch
    * was dropped). A refusal that an edit had armed a repair for is repaired
    * now instead of staying suppressed for a send that never happened.
@@ -447,7 +455,7 @@ export function useDraftAuthorityControl(args: {
   }, [claimForEdit]);
 
   const settleOwnership = useCallback(async (): Promise<SettledOwnership> => {
-    const noop: SettledOwnership = { abandon: () => undefined };
+    const noop: SettledOwnership = { hostId: null, abandon: () => undefined };
     if (!unowned) return noop;
     const entry = runClaim(null, false);
     if (entry === null) return noop;
@@ -461,7 +469,10 @@ export function useDraftAuthorityControl(args: {
       link.repairSuppressed = true;
     }
     await entry.promise;
+    let settledOn = entry;
+    while (settledOn.chained !== null) settledOn = settledOn.chained;
     return {
+      hostId: settledOn.tabHostId,
       abandon: () => {
         // The attempt may have chained into the current host's re-claim, and
         // a refused attempt chains without being awaited here, so the last

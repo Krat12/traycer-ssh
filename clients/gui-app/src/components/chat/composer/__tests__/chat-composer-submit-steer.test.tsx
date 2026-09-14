@@ -630,7 +630,7 @@ describe("useChatComposerSubmit steer drift gate", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettle?.({ abandon });
+      resolveSettle?.({ hostId: "host-test", abandon });
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -692,7 +692,8 @@ function toHookProps(input: MountSubmitInput): MountSubmitHookProps {
     draftUnowned: input.draftUnowned === true,
     settleDraftOwnership:
       input.settleDraftOwnership ??
-      (() => Promise.resolve({ abandon: () => undefined })),
+      (() =>
+        Promise.resolve({ hostId: "host-test", abandon: () => undefined })),
   };
 }
 

@@ -2866,4 +2866,122 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
+
+  it("settleOwnership resolves hostId for the host it settled on when no host move happens", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-c",
+        origin: "own",
+        tabHostId: "host-b",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    // A holder, not a narrowed `let`: TS narrows the local to `null` after
+    // the assignment and reads the field below off `never`.
+    const settled: { value: SettledOwnership | null } = { value: null };
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled.value = s;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settled.value).not.toBeNull();
+    expect(settled.value?.hostId).toBe("host-b");
+  });
+
+  it("settleOwnership's hostId names the LAST link when the surface moves and the attempt chains into the current host's re-claim", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-b" } },
+    );
+
+    // settleOwnership starts the claim on host-b.
+    // A holder, not a narrowed `let`: TS narrows the local to `null` after
+    // the assignment and reads the field below off `never`.
+    const settled: { value: SettledOwnership | null } = { value: null };
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled.value = s;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The surface moves to host-a while host-b's attempt is still pending;
+    // host-a is unowned too (owner is host-c throughout).
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-a" });
+
+    // Attempt 1 (host-b) is refused while host-a is current, so its own
+    // re-claim continuation chains a fresh attempt 2 on host-a.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+
+    // Attempt 2 (the chained-into re-claim on host-a) settles - the original
+    // settle resolves with the LAST link's host, not the host it started on.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    expect(settled.value).not.toBeNull();
+    expect(settled.value?.hostId).toBe("host-a");
+  });
+
+  it("settleOwnership on an already-owned draft returns the noop with hostId null", async () => {
+    const repairOnEdit = vi.fn();
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-a",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    expect(view.result.current.unowned).toBe(false);
+
+    // A holder, not a narrowed `let`: TS narrows the local to `null` after
+    // the assignment and reads the field below off `never`.
+    const settled: { value: SettledOwnership | null } = { value: null };
+    await act(async () => {
+      settled.value = await view.result.current.settleOwnership();
+    });
+
+    expect(claimMock.claim).not.toHaveBeenCalled();
+    expect(settled.value).not.toBeNull();
+    expect(settled.value?.hostId).toBeNull();
+  });
 });
