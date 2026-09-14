@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { DraftHeadReaderRecord } from "@traycer/protocol/persistence/draft/schemas";
 import { DRAFT_HEAD_DIALECT } from "@traycer/protocol/persistence/draft/version";
+import { appLogger } from "@/lib/logger";
 
 const directoryMock = vi.hoisted(() => ({
   chats: [] as ReadonlyArray<CloudChatSummary>,
@@ -294,6 +295,38 @@ describe("useCloudDraftsIngest", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a rejected ingest via the same backoff, then succeeds without warning on the first failure", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest
+      .mockRejectedValueOnce(new Error("transient apply failure"))
+      .mockResolvedValueOnce(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    // The first ingest rejects. Let that promise settle so the catch block
+    // arms the retry timer before the clock moves.
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Backoff for attempt 0: HEAD_READ_RETRY_BASE_MS * 2 ** 0 = 2s. The
+    // retry re-reads the head before calling ingest again.
+    await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS);
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(2);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 
   it("clears a pending retry timer on unmount, so it never fires a read", async () => {

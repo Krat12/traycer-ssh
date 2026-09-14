@@ -780,6 +780,81 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("an older success is withheld after a newer attempt's failed apply already bound ownership", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockRejectedValueOnce(
+      new Error("blob read failed"),
+    );
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Attempt 1: started on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Composer moves to host-b; attempt 2 starts there, also left pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // Attempt 2 (host-b) claims ok while host-b is current, but its apply
+    // throws. The claim already committed, so the catch binds ownership to
+    // host-b and records attempt 2 as this draft's newest applied attempt.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+    await waitFor(() => {
+      expect(bindLandingOwnershipMock.bind).toHaveBeenCalledTimes(1);
+    });
+    expect(bindLandingOwnershipMock.bind).toHaveBeenCalledWith(
+      "draft-1",
+      "host-b",
+    );
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+
+    // Composer returns to host-a - the surface that started attempt 1.
+    act(() => {
+      view.rerender({ tabHostId: "host-a" });
+    });
+
+    // Attempt 1 (host-a) settles next: host-a is current again (so the host
+    // check alone would pass), but attempt 1 is older than attempt 2's
+    // already-bound apply failure, so `stillCurrent()` still reads false on
+    // the generation check and `applyIncomingDraftDocument` is never called
+    // for attempt 1's document. Its own host still matches, so no further
+    // reclaim/re-claim fires either.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    // Only attempt 2's apply ever ran; attempt 1's document is dropped.
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    expect(bindLandingOwnershipMock.bind).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("abandon after a refused settle runs an edit-armed repair once", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();

@@ -477,6 +477,11 @@ async function applyHostDocument(
 function collectAllDirtyWrites(hostId: string): readonly DraftDirtyWrite[] {
   const out: DraftDirtyWrite[] = [];
   for (const { draft } of collectLandingDirtyWrites(hostId)) {
+    // Held while the landing placement points elsewhere (see
+    // `routeLocalEdit`); the placement host's claim re-routes the row.
+    if (landingAdoptionHostId !== null && hostId !== landingAdoptionHostId) {
+      continue;
+    }
     out.push({
       generation: draft.generation,
       write: composerDraftWrite({
@@ -646,6 +651,17 @@ function routeLocalEdit(draftId: string): void {
   // device's edit onto that owner's row before the claim settles. The row is
   // re-routed when the claim lands (`adoptOwnershipOverLocalEdit`).
   if (landing !== undefined && landing.origin === "replica") return;
+  // An own row adopted on a host the landing placement has since left (an
+  // auto-follow) is held the same way: its first edit here claims for the
+  // placement host, and the old host's session must not publish it first.
+  if (
+    landing !== undefined &&
+    landing.adoption.state === "adopted" &&
+    landingAdoptionHostId !== null &&
+    landing.adoption.hostId !== landingAdoptionHostId
+  ) {
+    return;
+  }
   if (landing !== undefined && landing.adoption.state === "unadopted") {
     if (landingAdoptionHostId === null) return;
     sessions.get(landingAdoptionHostId)?.session.noteDirty(draftId);

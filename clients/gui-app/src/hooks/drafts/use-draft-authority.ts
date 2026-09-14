@@ -219,6 +219,9 @@ export function useDraftAuthorityControl(args: {
         // holds the row, not the previous owner.
         if (stillCurrent()) {
           bindOwnership(result.draft, tabHostId);
+          // The binding is this draft's newest applied ownership: an older
+          // attempt settling later must not put its document over it.
+          latestApplied.current.set(draftId, attempt);
         } else {
           reclaimOnCurrentHost();
         }

@@ -23,7 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useDraftSurfaceId } from "@/providers/draft-surface-hooks";
 import {
-  adoptLandingDraft,
+  bindLandingDraftOwnership,
   useLandingDraftStore,
 } from "@/stores/home/landing-draft-store";
 
@@ -103,7 +103,7 @@ export function HistoryDraftsList(props: {
             // The claim committed even though the local apply did not: bind
             // the row to this host so the delete below routes its tombstone
             // to the host that now owns the row, not the previous owner.
-            adoptLandingDraft(draftId, hostId);
+            bindLandingDraftOwnership(draftId, hostId);
           }
           useLandingDraftStore.getState().deleteDraft(draftId);
           return;

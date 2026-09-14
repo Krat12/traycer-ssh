@@ -494,21 +494,26 @@ function destroyLandingDraft(
   // A local delete needs a row to route its host request. A host tombstone is
   // already authoritative even when its local mirror was evicted.
   if (closing === undefined && routeHostDelete) return;
+  // A replica is never deleted through its adoption host: that host is the
+  // previous owner (or one this placement has left), and a tombstone routed
+  // there removes a row this device does not own. It is retired locally;
+  // a claim that lands first turns it into an own row, which routes.
+  const routeDelete = routeHostDelete && closing?.origin !== "replica";
   if (closing !== undefined) {
     retireLandingDraft(
       id,
-      routeHostDelete && closing.adoption.state === "adopted"
+      routeDelete && closing.adoption.state === "adopted"
         ? closing.adoption.hostId
         : null,
     );
   }
-  if (!routeHostDelete) completeLandingDraftDelete(id);
+  if (!routeDelete) completeLandingDraftDelete(id);
   pruneRecoveryDraft(id);
   if (closing === undefined) return;
   draftRuntimeRegistry.close(id);
   // Route the host delete while the row still exists: `routeLocalDelete`
   // resolves the session via `hostIdForDraft`, which reads this store.
-  if (routeHostDelete && closing.adoption.state === "adopted") {
+  if (routeDelete && closing.adoption.state === "adopted") {
     notifyDraftLocalDelete(id);
   }
   set({

@@ -65,6 +65,7 @@ export function useCloudDraftsIngest(
     // and the chains themselves return without touching the set once aborted.
     const pendingTimers = new Set<TimerHandle>();
     const unsettledKeys = new Set<string>();
+    const tornDown = (): boolean => scope.signal.aborted;
     const foreign = directory.chats.filter(
       (chat) => chat.ownerHostId !== hostId,
     );
@@ -143,15 +144,32 @@ export function useCloudDraftsIngest(
         try {
           await ingestCloudDraftSummary({ hostId, summary, document });
         } catch (error: unknown) {
+          // Re-read through the scope: the earlier check narrowed the
+          // property, and the await above may have torn the effect down.
+          if (tornDown()) return;
           // The store is the only projection this row has on this device, so
-          // a failed apply (a blob read or write that threw) must release the
-          // guard: the next run of this effect asks again instead of leaving
-          // the draft invisible until a remount. (Unconditional: after a
-          // teardown the key is already gone, and deleting twice is nothing.)
-          ingestedKeys.delete(key);
-          appLogger.warn("[cloud-drafts] head apply failed", {
-            error: describeLogError(error),
-          });
+          // a failed apply (a blob read or write that threw) is retried on
+          // the same bounded schedule as a failed head read; nothing else
+          // would re-run this effect. Out of attempts, release the guard so
+          // a later run (or a remount) asks again.
+          const nextAttempt = attempt + 1;
+          if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
+            ingestedKeys.delete(key);
+            appLogger.warn("[cloud-drafts] head apply failed", {
+              attempts: nextAttempt,
+              error: describeLogError(error),
+            });
+            return;
+          }
+          unsettledKeys.add(key);
+          const timer = setTimeout(
+            () => {
+              pendingTimers.delete(timer);
+              void attemptRead(nextAttempt);
+            },
+            HEAD_READ_RETRY_BASE_MS * 2 ** attempt,
+          );
+          pendingTimers.add(timer);
         }
       };
       void attemptRead(0);

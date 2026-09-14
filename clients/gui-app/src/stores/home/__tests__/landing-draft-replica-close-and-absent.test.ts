@@ -12,6 +12,7 @@ import {
 } from "@/stores/home/landing-draft-store";
 import {
   landingDraftIsRetired,
+  pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
 } from "@/lib/drafts/landing-draft-retirement";
 import {
@@ -617,5 +618,68 @@ describe("landing draft store: closeDraft on empty content routes host delete on
     expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
     expect(landingDraftIsRetired("own-empty")).toBe(true);
     expect(deleted).toEqual(["own-empty"]);
+  });
+});
+
+describe("landing draft store: deleteDraft never routes a replica's host delete through its adoption host", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalDeleteListener(null);
+  });
+
+  it("destroys a non-empty replica adopted on host-b locally, with no pending host-route receipt and no local-delete notification", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-non-empty", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("replica-non-empty");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-non-empty");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("replica-non-empty")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("replica-non-empty")).toBeNull();
+    expect(deleted).toEqual([]);
+  });
+
+  it("contrast: destroys a non-empty own row adopted on host-a locally and still routes the host delete", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-non-empty", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("own-non-empty");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-non-empty");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-non-empty")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("own-non-empty")).toBe("host-a");
+    expect(deleted).toEqual(["own-non-empty"]);
   });
 });

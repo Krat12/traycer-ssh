@@ -6,6 +6,7 @@ import {
   applyIncomingDraftDocument,
   bindComposerDraftHost,
   bindInterviewDraftHost,
+  bindLandingAdoptionHost,
   collectDraftMirrorDirtyWrites,
   ingestCloudDraftSummary,
   releaseDraftMirrorSession,
@@ -14,6 +15,7 @@ import {
   unbindInterviewDraftHost,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
+import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import { useInterviewDraftStore } from "@/stores/composer/interview-draft-store";
 import {
@@ -131,6 +133,138 @@ describe("interview host binding", () => {
 
     unbindInterviewDraftHost(CHAT_ID, BLOCK_ID, HOST_ID);
     expect(collectDraftMirrorDirtyWrites(HOST_ID)).toEqual([]);
+  });
+});
+
+describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placement has left", () => {
+  const HOST_A = "host-a-adopted";
+  const HOST_B = "host-b-placement";
+
+  function mountHostSession(hostId: string, log: HostLog) {
+    return acquireDraftMirrorSession({
+      hostId,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.upsert") {
+            const write = (params as { draft: DraftWrite }).draft;
+            log.upserts.push(write);
+            const document: DraftDocument = {
+              ...write,
+              ownerHostId: hostId,
+              origin: "own",
+              adoption: { state: "adopted", hostId },
+              publication: {
+                status: "unpublished",
+                lastPublishedAt: null,
+                publishedRevision: null,
+                halted: null,
+              },
+              revision: 1,
+            };
+            log.rows = [document];
+            return Promise.resolve({ draft: document });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+  }
+
+  function ownAdoptedLandingDraft(id: string) {
+    return {
+      id,
+      content: typed("edited body"),
+      selection: null,
+      lastTouchedAt: 0,
+      settings: null,
+      composerMode: "chat" as const,
+      workspace: emptyLandingDraftWorkspaceSnapshot(),
+      ...freshLandingMirrorState(),
+      adoption: { state: "adopted" as const, hostId: HOST_A },
+      origin: "own" as const,
+      ownerHostId: HOST_A,
+      generation: 3,
+      syncedGeneration: 2,
+    };
+  }
+
+  it("withholds noteDirty on the adopted host when the landing placement has moved to another host", async () => {
+    const id = "own-withheld";
+    const logA: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_A, logA);
+    bindLandingAdoptionHost(HOST_B);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    // Let any scheduled (debounceMs: 0) send resolve before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(logA.upserts).toEqual([]);
+  });
+
+  it("contrast: notes dirty on the adopted host when the placement still matches it", async () => {
+    const id = "own-routed";
+    const logA: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_A, logA);
+    bindLandingAdoptionHost(HOST_A);
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    notifyDraftLocalEdit(id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
+  });
+
+  it("collectAllDirtyWrites skips a landing row adopted on hostId when the placement points elsewhere", () => {
+    const id = "own-skip-collect";
+    bindLandingAdoptionHost(HOST_B);
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
+  });
+
+  it("contrast: collectAllDirtyWrites includes the row when the placement matches its adoption host", () => {
+    const id = "own-include-collect";
+    bindLandingAdoptionHost(HOST_A);
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingDraft(id)],
+      activeDraftId: null,
+    });
+
+    expect(
+      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
+    ).toEqual([id]);
   });
 });
 
