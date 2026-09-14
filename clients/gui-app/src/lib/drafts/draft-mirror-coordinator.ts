@@ -545,20 +545,35 @@ async function applyHostDocument(
     return;
   }
   if (document.kind === "landing") {
-    if (rejectRetiredLandingDocument(document)) return;
-    // This apply's own reservation, taken before its blob reads: a snapshot
-    // dispatched before it is older than the ownership it installs.
-    ownerAppliedSeqByDraft.set(document.draftId, applySeq);
-    applyLandingHostDocument(document, document.portable.content);
+    applyLandingOwnershipDocument(document, applySeq);
     return;
   }
   if (document.kind === "chat-composer") {
     cloudIngestSeq += 1;
-    ownerAppliedSeqByDraft.set(document.draftId, cloudIngestSeq);
-    applyComposerHostDocument(document);
+    if (applyComposerHostDocument(document)) {
+      ownerAppliedSeqByDraft.set(document.draftId, cloudIngestSeq);
+    }
     return;
   }
   applyNewChatHostDocument(document);
+}
+
+/**
+ * Applies a landing document and records its ownership apply at
+ * `applySeq` - this apply's own reservation, taken before its blob reads,
+ * so a snapshot dispatched before it is older than the ownership it
+ * installs. Only an ACCEPTED document is an ownership apply: one the store
+ * rejected (an older echo from the row's current owner) changed nothing,
+ * and must not read as ownership moving to a claim in flight.
+ */
+function applyLandingOwnershipDocument(
+  document: Extract<DraftDocument, { kind: "landing" }>,
+  applySeq: number,
+): void {
+  if (rejectRetiredLandingDocument(document)) return;
+  if (applyLandingHostDocument(document, document.portable.content)) {
+    ownerAppliedSeqByDraft.set(document.draftId, applySeq);
+  }
 }
 
 function collectAllDirtyWrites(hostId: string): readonly DraftDirtyWrite[] {

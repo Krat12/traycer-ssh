@@ -710,10 +710,16 @@ export function bindComposerDraftOwnership(
   notifyDraftLocalEdit(draftId);
 }
 
-export function applyComposerHostDocument(document: DraftDocument): void {
-  if (document.kind !== "chat-composer") return;
+/**
+ * Applies a chat-composer document to the store. Returns whether the row
+ * took it: a retired id, an id the row no longer carries, or an id fenced
+ * by a submit is rejected without touching the row - and without counting
+ * as an ownership apply for the fences that read `draftOwnershipSeq`.
+ */
+export function applyComposerHostDocument(document: DraftDocument): boolean {
+  if (document.kind !== "chat-composer") return false;
   const chatId = document.target.chatId;
-  if (chatId === null) return;
+  if (chatId === null) return false;
   // A row re-minted by the repair (or fenced after a submit) must not be
   // pulled back to a retired identity by an echo for the old id that was
   // already in flight; the host only ever echoes ids this client minted.
@@ -742,12 +748,13 @@ export function applyComposerHostDocument(document: DraftDocument): void {
       }));
       notifyDraftLocalDelete(document.draftId);
     }
-    return;
+    return false;
   }
-  if (before.draftId !== null && before.draftId !== document.draftId) return;
+  if (before.draftId !== null && before.draftId !== document.draftId)
+    return false;
   // An id fenced by a submit is on its way to a tombstone; its late echo
   // must not put the sent content back into the cleared composer.
-  if (composerSubmittedDraftDeleteIsPending(document.draftId)) return;
+  if (composerSubmittedDraftDeleteIsPending(document.draftId)) return false;
   useComposerDraftStore.setState((state) => {
     const current = ensureDraft(state.drafts, chatId);
     if (current.generation > current.syncedGeneration) {
@@ -793,6 +800,7 @@ export function applyComposerHostDocument(document: DraftDocument): void {
   if (before.origin === "replica" && document.origin === "own") {
     notifyDraftLocalEdit(document.draftId);
   }
+  return true;
 }
 
 export function applyComposerHostDelete(draftId: string): void {

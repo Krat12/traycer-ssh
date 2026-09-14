@@ -1703,6 +1703,76 @@ describe("draftOwnershipSeq", () => {
 
     expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
   });
+
+  it("leaves draftOwnershipSeq and row content unchanged for an older document from the same owner", async () => {
+    const id = "seq-landing-stale";
+    const first = {
+      ...landingOwnDocument(id, "host-a", "first body"),
+      revision: 2,
+    };
+    await applyIncomingDraftDocument(first, null);
+    const seqAfterFirst = draftOwnershipSeq(id);
+    expect(seqAfterFirst).toBeGreaterThan(0);
+    const rowAfterFirst = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(rowAfterFirst?.content).toEqual(typed("first body"));
+
+    // Older than the row's hostRevision (2), but still `revision > 0` - the
+    // stale-echo case `applyLandingHostDocument` now rejects.
+    const older = {
+      ...landingOwnDocument(id, "host-a", "stale body"),
+      revision: 1,
+    };
+    await applyIncomingDraftDocument(older, null);
+
+    expect(draftOwnershipSeq(id)).toBe(seqAfterFirst);
+    const rowAfterStale = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(rowAfterStale?.content).toEqual(typed("first body"));
+  });
+
+  it("leaves draftOwnershipSeq unchanged for a chat-composer document fenced by a pending submitted delete", async () => {
+    const store = useComposerDraftStore.getState();
+    store.bindTarget(CHAT_ID, EPIC_ID);
+    store.setSnapshot(CHAT_ID, typed("submitted"), { from: 1, to: 10 });
+    const draftId = readDraftId();
+    store.clearDraft(CHAT_ID);
+    store.fenceAndDetachSubmittedDraft(CHAT_ID, draftId, HOST_ID);
+    const seqBefore = draftOwnershipSeq(draftId);
+
+    await applyIncomingDraftDocument(
+      {
+        draftId,
+        kind: "chat-composer",
+        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
+        revision: 3,
+        lastTouchedAt: 1,
+        workspace: null,
+        ownerHostId: HOST_ID,
+        origin: "own",
+        adoption: { state: "adopted", hostId: HOST_ID },
+        publication: {
+          status: "unpublished",
+          lastPublishedAt: null,
+          publishedRevision: null,
+          halted: null,
+        },
+        portable: {
+          content: typed("submitted"),
+          selection: { from: 1, to: 10 },
+          runSettings: null,
+          composerMode: "chat",
+          blobHashes: [],
+          closed: false,
+        },
+      },
+      null,
+    );
+
+    expect(draftOwnershipSeq(draftId)).toBe(seqBefore);
+  });
 });
 
 describe("sweepAbsentCloudDraftMirrors", () => {

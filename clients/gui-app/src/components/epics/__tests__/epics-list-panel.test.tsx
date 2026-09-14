@@ -1,5 +1,6 @@
 import "./stub-sweep-dialog-host-hooks";
 
+import type { DraftClaimResult } from "@/hooks/drafts/use-draft-claim";
 import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 
 vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
@@ -277,7 +278,7 @@ vi.mock("@/hooks/epic/use-epic-activity-status", () => ({
 }));
 
 const draftClaimTestState = vi.hoisted(() => ({
-  claim: vi.fn(),
+  claim: vi.fn<(draftId: string) => Promise<DraftClaimResult>>(),
 }));
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   useDraftClaim: () => ({
@@ -3515,35 +3516,8 @@ describe("<EpicsListPanel />", () => {
     // ownership must win: the stale response is not applied, and the delete
     // is left pending on "host-c" instead of completing through `hostId`.
     const draftId = seedForeignOwnedLandingDraft("raced draft");
-    let resolveClaim: (value: {
-      status: "already-owned";
-      draft: {
-        draftId: string;
-        kind: "landing";
-        target: { epicId: null; chatId: null; blockId: null };
-        revision: number;
-        lastTouchedAt: number;
-        workspace: null;
-        ownerHostId: string;
-        origin: "own";
-        adoption: { state: "adopted"; hostId: string };
-        publication: {
-          status: "unpublished";
-          lastPublishedAt: null;
-          publishedRevision: null;
-          halted: null;
-        };
-        portable: {
-          content: JsonContent;
-          selection: null;
-          runSettings: null;
-          composerMode: "chat";
-          blobHashes: string[];
-          closed: boolean;
-        };
-      };
-    }) => void = () => undefined;
-    const pendingClaim = new Promise((resolve) => {
+    let resolveClaim: (value: DraftClaimResult) => void = () => undefined;
+    const pendingClaim = new Promise<DraftClaimResult>((resolve) => {
       resolveClaim = resolve;
     });
     draftClaimTestState.claim.mockImplementation(() => pendingClaim);
@@ -3625,35 +3599,8 @@ describe("<EpicsListPanel />", () => {
     // would admit the stale response. The ownership generation bumped, so
     // the response is dropped and the delete stays pending on "host-b".
     const draftId = seedForeignOwnedLandingDraft("cycled draft");
-    let resolveClaim: (value: {
-      status: "already-owned";
-      draft: {
-        draftId: string;
-        kind: "landing";
-        target: { epicId: null; chatId: null; blockId: null };
-        revision: number;
-        lastTouchedAt: number;
-        workspace: null;
-        ownerHostId: string;
-        origin: "own";
-        adoption: { state: "adopted"; hostId: string };
-        publication: {
-          status: "unpublished";
-          lastPublishedAt: null;
-          publishedRevision: null;
-          halted: null;
-        };
-        portable: {
-          content: JsonContent;
-          selection: null;
-          runSettings: null;
-          composerMode: "chat";
-          blobHashes: string[];
-          closed: boolean;
-        };
-      };
-    }) => void = () => undefined;
-    const pendingClaim = new Promise((resolve) => {
+    let resolveClaim: (value: DraftClaimResult) => void = () => undefined;
+    const pendingClaim = new Promise<DraftClaimResult>((resolve) => {
       resolveClaim = resolve;
     });
     draftClaimTestState.claim.mockImplementation(() => pendingClaim);

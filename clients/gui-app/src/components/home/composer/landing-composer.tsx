@@ -1016,11 +1016,14 @@ export function LandingComposer(props: LandingComposerProps) {
         const settledFor = resolvedHostId;
         void authority.settleOwnership().then((settled) => {
           ownershipSettling.current = false;
-          const finalHost = settled.hostId ?? settledFor;
-          ownershipSettledFor.current = finalHost;
+          ownershipSettledFor.current = settled.hostId ?? settledFor;
           let started = false;
           try {
-            started = handleStartTerminalRef.current(launch, finalHost);
+            // The launch keeps the host it was ASSEMBLED for: a settle
+            // that ended on another host does not relabel it, and the
+            // handler's provenance guard drops it there rather than
+            // forwarding one host's catalog ids to another.
+            started = handleStartTerminalRef.current(launch, assembledFor);
           } finally {
             ownershipSettledFor.current = null;
           }

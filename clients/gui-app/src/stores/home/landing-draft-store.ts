@@ -1915,12 +1915,18 @@ function incomingClosedState(
   return portableClosed;
 }
 
+/**
+ * Applies a landing document to the store. Returns whether the row was
+ * mutated by it: a retired id, or an older document from the row's current
+ * owner, is rejected without touching the row - and without counting as an
+ * ownership apply for the fences that read `draftOwnershipSeq`.
+ */
 export function applyLandingHostDocument(
   document: DraftDocument,
   content: JsonContent,
-): void {
+): boolean {
   if (document.kind !== "landing" || landingDraftIsRetired(document.draftId))
-    return;
+    return false;
   const existing = useLandingDraftStore
     .getState()
     .drafts.find((draft) => draft.id === document.draftId);
@@ -1934,13 +1940,13 @@ export function applyLandingHostDocument(
     document.revision > 0 &&
     existing.hostRevision > document.revision
   )
-    return;
+    return false;
   if (
     existing !== undefined &&
     existing.generation > existing.syncedGeneration
   ) {
     adoptOwnershipOverLocalEdit(document, existing);
-    return;
+    return true;
   }
   const next: LandingDraftTab = {
     id: document.draftId,
@@ -1976,6 +1982,7 @@ export function applyLandingHostDocument(
         : state.activeDraftId;
     return { drafts, activeDraftId };
   });
+  return true;
 }
 
 export function applyLandingHostDelete(draftId: string): void {
