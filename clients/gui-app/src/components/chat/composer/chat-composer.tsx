@@ -169,8 +169,13 @@ interface ChatComposerProps {
    * that predates same-turn steering.
    */
   readonly steerProtocolSupported: boolean;
-  /** Own live stream's draft-blob bridge capability, reserved for submit preparation. */
-  readonly draftBlobBridgeSupported: boolean;
+  /**
+   * Whether this chat's OWN live stream can materialize a hash-only draft image
+   * at send (T1's `chat.subscribe` 1.10 capability). Gates the hash-only send:
+   * a bare hash on a stream that cannot resolve it is a refusal the user has to
+   * read, so the flag is the chat's own, never an app-wide one.
+   */
+  readonly getDraftBlobBridgeSupported: () => boolean;
   /**
    * Reads the live active turn at submit time (not a reactive prop) so the
    * settings-drift comparison for a Cmd+Enter steer never re-creates the submit
@@ -289,6 +294,7 @@ function ChatComposerImpl(props: ChatComposerProps) {
     workspaceAvailability,
     topSpacing,
     topSlot,
+    getDraftBlobBridgeSupported,
   } = props;
   const runnerHost = useRunnerHost();
   const hostClient = useTabHostClient();
@@ -597,6 +603,7 @@ function ChatComposerImpl(props: ChatComposerProps) {
       workspaceBlocked,
       imagesUnsupported,
       attachmentPreparationPending: pastePending,
+      getDraftBlobBridgeSupported,
       draftReadOnly: authority.readOnly,
       onSubmitMessage,
       onSideChat,

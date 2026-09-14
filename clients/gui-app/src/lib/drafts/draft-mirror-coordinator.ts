@@ -7,6 +7,7 @@ import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { registerExtraImageRootSource } from "@/lib/composer/landing-image-budget";
 import {
+  currentDraftBlobOwnerId,
   forgetBlobUnsupportedHost,
   putDraftBlobs,
   putDraftBlobsForWrite,
@@ -374,7 +375,12 @@ const sink: DraftMirrorSink = {
   async prepareWrite(hostId, write) {
     const client = sessionClients.get(hostId);
     if (client === undefined) return write;
-    const confirmed = await putDraftBlobsForWrite(hostId, client, write);
+    const confirmed = await putDraftBlobsForWrite(
+      hostId,
+      client,
+      write,
+      currentDraftBlobOwnerId(),
+    );
     rememberLandingBlobsOnHost(write.draftId, confirmed);
     return write;
   },
@@ -750,9 +756,11 @@ export async function adoptUnadoptedLandingDraftsForHost(
     if (client === undefined) continue;
     const hashes = blobHashesFromContent(draft.content);
     uploads.push(
-      putDraftBlobs(hostId, client, hashes).then((confirmed) => {
-        rememberLandingBlobsOnHost(draft.id, confirmed);
-      }),
+      putDraftBlobs(hostId, client, hashes, currentDraftBlobOwnerId()).then(
+        (confirmed) => {
+          rememberLandingBlobsOnHost(draft.id, confirmed);
+        },
+      ),
     );
   }
   await Promise.all(uploads);

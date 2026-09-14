@@ -346,7 +346,7 @@ function surfacesProps(patch: {
       activeTurnStatus: null,
       steerCapable: false,
       steerProtocolSupported: true,
-      draftBlobBridgeSupported: false,
+      getDraftBlobBridgeSupported: () => false,
       getActiveTurnForSteer: () => null,
       stopDisabled: true,
       onStopTurn: () => null,

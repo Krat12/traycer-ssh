@@ -12,6 +12,7 @@ import {
 } from "@traycer/protocol/host";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { isDraftsCapabilityMissing } from "./draft-capability";
+import { forgetConfirmedDraftBlobs } from "./draft-blob-transport";
 import { clientDraftSubscribeFrameApplies } from "./draft-subscribe-apply";
 import {
   DEFAULT_DRAFT_MIRROR_TIMING,
@@ -147,6 +148,14 @@ export class DraftMirrorSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // Fence the blob memo too, not just the bootstrap generation. An upload
+    // already on the wire when this mirror closes can be acknowledged
+    // afterwards, and without this that late ACK re-confirmed a digest for a
+    // connection that no longer exists - leaving the send gate confident about
+    // bytes on a host this client has stopped talking to. Losing host
+    // readiness closes the mirror without any later acquisition, so relying on
+    // the next acquire to clear it left that whole lifetime unfenced.
+    forgetConfirmedDraftBlobs(this.hostId);
     this.bootGeneration += 1;
     this.clearAllTimers();
     this.sendChain.clear();
@@ -263,6 +272,14 @@ export class DraftMirrorSession {
 
   private async bootstrap(): Promise<void> {
     if (this.bootPromise !== null) return this.bootPromise;
+    // A genuinely new bootstrap - not one joining the in-flight promise above -
+    // starts a new conversation with this host, so every blob confirmation the
+    // previous one collected is now unverified. This is the path acquisition
+    // does NOT cover: the reconnect handler below re-lists without
+    // re-acquiring, which is exactly when a host that restarted has silently
+    // lost its blob store. Placed after the dedupe so a joined caller does not
+    // invalidate the confirmations the bootstrap it joined is still gathering.
+    forgetConfirmedDraftBlobs(this.hostId);
     const generation = this.bootGeneration;
     this.bootPromise = this.runBootstrap(generation).finally(() => {
       if (this.bootGeneration === generation) this.bootPromise = null;

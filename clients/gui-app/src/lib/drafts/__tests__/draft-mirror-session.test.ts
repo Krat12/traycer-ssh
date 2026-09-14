@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messenger";
 import type {
   IStreamSession,
@@ -40,6 +40,16 @@ import {
   useLandingDraftStore,
 } from "@/stores/home/landing-draft-store";
 import { cloudDraftsDirectoryIsVisible } from "@/lib/drafts/cloud-drafts-visibility";
+import {
+  isDraftBlobConfirmed,
+  putDraftBlobs,
+  resetDraftBlobTransportForTests,
+  type DraftBlobClient,
+} from "@/lib/drafts/draft-blob-transport";
+import { putImage } from "@/lib/composer/landing-image-store";
+import { installFreshIndexedDb } from "@/lib/composer/__tests__/prompt-stash-fake-idb";
+import type { HostRequester } from "@traycer-clients/shared/host-client/host-client";
+import type { HostRpcRegistry } from "@/lib/host";
 
 const HOST_ID = "host-1";
 const SCOPE_ID = "scp_testdraftsscopeid000001";
@@ -239,9 +249,14 @@ function createSink(options: {
   };
 }
 
+beforeEach(() => {
+  installFreshIndexedDb();
+});
+
 afterEach(() => {
   vi.useRealTimers();
   useComposerDraftStore.setState({ drafts: {} });
+  resetDraftBlobTransportForTests();
 });
 
 describe("DraftMirrorSession", () => {
@@ -1054,5 +1069,86 @@ describe("DraftMirrorSession", () => {
     session.close();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     resetDraftMirrorCoordinatorForTests();
+  });
+
+  // ─── F6: close() fences the blob memo ───────────────────────────────────
+
+  const BLOB_HOST = "host-close-fence";
+  const BLOB_OWNER = "owner-close-fence";
+
+  it("F6 (10): close() fences a late putBlob acknowledgement - a confirmation that lands after close is not recorded", async () => {
+    // Real bytes, a real upload dispatched, `close()` called while it is
+    // still on the wire, and only THEN the response resolves.
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const hash = await putImage(bytes);
+    let releaseUpload: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const client: DraftBlobClient = {
+      request: (async (_method, _params) => {
+        await gate;
+        return { ok: true as const };
+      }) as HostRequester<HostRpcRegistry>["request"],
+    };
+
+    const uploadPromise = putDraftBlobs(BLOB_HOST, client, [hash], BLOB_OWNER);
+    // The request has dispatched (it is parked on `gate`, inside the
+    // client's own `request` call) by the time we get here - synchronous up
+    // to its first await, same as every other upload-in-flight fixture in
+    // this suite.
+
+    const session = new DraftMirrorSession({
+      hostId: BLOB_HOST,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: () => Promise.reject(new Error("not used")),
+        delete: () => Promise.reject(new Error("not used")),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.close();
+
+    releaseUpload();
+    const confirmed = await uploadPromise;
+
+    // The wire call still succeeded, so the caller's own bookkeeping counts
+    // it -
+    expect(confirmed).toEqual([hash]);
+    // - but the MEMO does not: `close()` fenced it, so the send gate must not
+    // trust bytes on a connection this client has stopped talking to.
+    expect(isDraftBlobConfirmed(BLOB_HOST, hash, BLOB_OWNER)).toBe(false);
+  });
+
+  it("F6 positive control: without close(), the identical sequence DOES confirm", async () => {
+    const bytes = new Uint8Array([5, 6, 7, 8]);
+    const hash = await putImage(bytes);
+    let releaseUpload: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const client: DraftBlobClient = {
+      request: (async (_method, _params) => {
+        await gate;
+        return { ok: true as const };
+      }) as HostRequester<HostRpcRegistry>["request"],
+    };
+
+    const uploadPromise = putDraftBlobs(
+      "host-close-fence-control",
+      client,
+      [hash],
+      BLOB_OWNER,
+    );
+    releaseUpload();
+    const confirmed = await uploadPromise;
+
+    expect(confirmed).toEqual([hash]);
+    expect(
+      isDraftBlobConfirmed("host-close-fence-control", hash, BLOB_OWNER),
+    ).toBe(true);
   });
 });

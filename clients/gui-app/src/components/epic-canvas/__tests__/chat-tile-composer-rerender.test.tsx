@@ -28,14 +28,14 @@ let composerRenderCount = 0;
 vi.mock("@/components/chat/composer/chat-composer", () => ({
   ChatComposer: (props: {
     readonly workspaceControls: import("react").ReactNode | null;
-    readonly draftBlobBridgeSupported: boolean;
+    readonly getDraftBlobBridgeSupported: () => boolean;
   }) => {
     composerRenderCount += 1;
     return (
       <div
         data-testid="composer-stub"
         data-draft-blob-bridge-supported={String(
-          props.draftBlobBridgeSupported,
+          props.getDraftBlobBridgeSupported(),
         )}
       >
         {props.workspaceControls}
@@ -152,7 +152,7 @@ const TURN_IDLE: ChatLowerTurnState = {
   onStopTurn: () => null,
   steerCapable: false,
   steerProtocolSupported: true,
-  draftBlobBridgeSupported: false,
+  getDraftBlobBridgeSupported: () => false,
   getActiveTurnForSteer: () => null,
 };
 const TURN_RUNNING: ChatLowerTurnState = {
@@ -161,7 +161,7 @@ const TURN_RUNNING: ChatLowerTurnState = {
   onStopTurn: () => null,
   steerCapable: false,
   steerProtocolSupported: true,
-  draftBlobBridgeSupported: false,
+  getDraftBlobBridgeSupported: () => false,
   getActiveTurnForSteer: () => null,
 };
 const INTERVIEW: ChatLowerInterviewState = {
@@ -318,7 +318,7 @@ describe("composer isolation from per-token dock churn", () => {
 
     rerender(
       <ChatLowerInteractionSurfaces
-        {...props({ ...TURN_IDLE, draftBlobBridgeSupported: true }, 1)}
+        {...props({ ...TURN_IDLE, getDraftBlobBridgeSupported: () => true }, 1)}
       />,
     );
     expect(
@@ -329,7 +329,10 @@ describe("composer isolation from per-token dock churn", () => {
 
     rerender(
       <ChatLowerInteractionSurfaces
-        {...props({ ...TURN_IDLE, draftBlobBridgeSupported: false }, 2)}
+        {...props(
+          { ...TURN_IDLE, getDraftBlobBridgeSupported: () => false },
+          2,
+        )}
       />,
     );
     expect(

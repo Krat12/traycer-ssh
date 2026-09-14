@@ -93,6 +93,13 @@ export function withAbortableDeadline<T>(
       });
     }, timeoutMs);
     if (signal.aborted) {
+      // Observe `promise` even though its value is now worthless. It is ALREADY
+      // RUNNING - it was constructed at the call site, before this function was
+      // entered - so returning without attaching a handler leaves its rejection
+      // with no owner, which surfaces as an unhandled rejection the user's
+      // console reports and nothing catches. Every other exit observes it
+      // through the `promise.then` below; this one has to do it explicitly.
+      void promise.catch(() => undefined);
       onAbort();
       return;
     }
@@ -894,6 +901,12 @@ async function hashImageAttrsFromFiles(
           () => `Reading ${file.name || "image"} timed out`,
         );
         const bytes = new Uint8Array(buffer);
+        // Checked BEFORE `putImage` is called, not after it settles. The
+        // argument to `withAbortableDeadline` is evaluated eagerly, so a
+        // cancellation landing in the gap between the read finishing and this
+        // line would otherwise still start a store write - work for a batch
+        // that is already abandoned, landing bytes nothing will reference.
+        signal.throwIfAborted();
         const hash = await withAbortableDeadline(
           putImage(bytes),
           IMAGE_READ_TIMEOUT_MS,

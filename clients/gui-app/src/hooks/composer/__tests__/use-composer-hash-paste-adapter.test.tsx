@@ -434,3 +434,71 @@ describe("useComposerHashPasteAdapter - F5(c): a late completion after abort mus
     expect(pendingIngestImageHashRoots()).not.toContain(slowHash);
   });
 });
+
+describe("useComposerHashPasteAdapter - T4: abort between the file read completing and the store starting", () => {
+  it("aborting in that exact window calls putImage zero times and produces no unhandled rejection", async () => {
+    // Pre-fix: `hashImageAttrsFromFiles` had no `signal.throwIfAborted()`
+    // between the awaited `file.arrayBuffer()` and constructing the
+    // `putImage(bytes)` call. There is no `await` between them, so the only
+    // way to land an abort strictly AFTER the read settles but BEFORE
+    // `putImage` is called is to abort from INSIDE the read's own
+    // resolution - a plain `Promise` cannot do this (resolving it only
+    // SCHEDULES its `.then` callback as a later microtask, well after
+    // `withAbortableDeadline`'s wrapper has already resolved and its own
+    // `await` continuation - the one that calls `putImage` - has already run,
+    // as this test proved empirically before landing). A custom thenable
+    // whose own `then()` calls back into the caller SYNCHRONOUSLY is the only
+    // way to interpose exactly there: it runs the abort in the same
+    // synchronous stretch that resolved `withAbortableDeadline`'s wrapper,
+    // strictly before that wrapper's pending `await` continuation gets its
+    // own turn on the microtask queue. Without the guard, this test's
+    // `putImage` assertion fails (it is called once) - confirmed by
+    // temporarily removing the guard and re-running this exact test.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onRejection);
+    try {
+      const inserted: ImageAttachmentAttrs[][] = [];
+      const { unmount } = render(<PasteHarness inserted={inserted} />);
+
+      const file = pngFile("mid-abort.png", [1, 2, 3]);
+      const readCompletesThenAborts = {
+        then(onFulfilled: (buffer: ArrayBuffer) => void): void {
+          onFulfilled(new Uint8Array([1, 2, 3]).buffer);
+          // The read has now resolved `withAbortableDeadline`'s wrapper
+          // (its `finish` already ran, synchronously, inside `onFulfilled`
+          // above) - the ONE window this test exists to hit. Aborting here,
+          // still synchronously, lands strictly before the outer `await`'s
+          // continuation runs.
+          unmount();
+        },
+      };
+      Object.defineProperty(file, "arrayBuffer", {
+        value: () => readCompletesThenAborts,
+      });
+
+      fireEvent.paste(screen.getByTestId("paste-zone"), {
+        clipboardData: makeFileTransfer([file]),
+      });
+
+      // Let every already-queued microtask drain.
+      await act(async () => {
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+
+      expect(inserted).toHaveLength(0);
+      expect(landingImageStoreMocks.putImage).not.toHaveBeenCalled();
+      expect(rejections).toHaveLength(0);
+
+      // Positive control: prove this listener actually observes an unhandled
+      // rejection, so the zero-length assertion above is not vacuous.
+      void Promise.reject(new Error("control: unhandled rejection listener"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(rejections).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+});

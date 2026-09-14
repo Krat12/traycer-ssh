@@ -15,12 +15,16 @@ import { reportableErrorToast } from "@/lib/reportable-error-toast";
 import {
   appendImageAttachmentAtoms,
   containsImageAtoms,
+  hashOnlyImageHashes,
   inlineHashOnlyImageBytes,
 } from "@/lib/composer/image-atoms";
 import {
   clearHostHeldImageHashes,
-  hostHeldImageHashes,
+  NO_HOST_HELD_HASHES,
 } from "@/lib/composer/host-held-image-hashes";
+import { submitHostHeldImageHashes } from "@/lib/composer/submit-host-held-image-hashes";
+import { reinlineRefusedSendContent } from "@/lib/drafts/draft-image-retry-content";
+import { currentDraftBlobOwnerId } from "@/lib/drafts/draft-blob-transport";
 import { withHeldComposerContentImageRoots } from "@/lib/composer/composer-content-image-roots";
 import {
   draftImageInliningNeeded,
@@ -134,6 +138,23 @@ interface UseChatComposerSubmitArgs {
    * not deliver into whatever the composer is pointed at when it finishes.
    */
   readonly queueEditTargetId: string | null;
+  /**
+   * Whether THIS chat's live stream can materialize a hash-only draft image at
+   * send (T1's `chat.subscribe` 1.10 capability). The gate is per-session and
+   * not app-wide: one host can serve one chat on a bridging stream and another
+   * on a 1.9 one.
+   *
+   * A GETTER bound to the session store, deliberately - the same shape as
+   * `getActiveTurnForSteer`, and for a sharper version of the same reason. A
+   * render prop is a value from the last COMMITTED render, and a ref refreshed
+   * in an effect is the last committed EFFECT; neither is the store. A stream
+   * transition to a non-bridging session queued between two microtasks of an
+   * image preparation is visible in the store and not yet in either copy, and
+   * the final required-hash read then authorizes a bare hash on a stream that
+   * cannot resolve it. Reading the store at the decision is the only version
+   * of this that is true when it is asked.
+   */
+  readonly getDraftBlobBridgeSupported: () => boolean;
 }
 
 export interface ChatComposerSideChatInput {
@@ -203,6 +224,7 @@ export function useChatComposerSubmit(
     onSideChat,
     targetHostId,
     queueEditTargetId,
+    getDraftBlobBridgeSupported,
   } = args;
   const appendMessage = useChatStore((state) => state.appendMessage);
   // The LIVE queue-edit target, for the continuation to re-check. A captured
@@ -215,6 +237,17 @@ export function useChatComposerSubmit(
   }, [queueEditTargetId]);
   const [pendingConflict, setPendingConflict] =
     useState<PendingSteerConflict | null>(null);
+  // The LIVE staged conflict, for the deferred confirm's continuation to
+  // re-check. Its closure froze `pendingConflict` at the render that started
+  // the read, which is precisely the value that cannot answer "is this consent
+  // still standing".
+  const conflictStagedRef = useRef<PendingSteerConflict | null>(null);
+  useEffect(() => {
+    conflictStagedRef.current = pendingConflict;
+  }, [pendingConflict]);
+  // One confirmation flight at a time, so repeated clicks cannot start a
+  // second read or produce a second send.
+  const conflictInliningFlight = useRef(false);
   const [annotationPreparationPending, setAnnotationPreparationPending] =
     useState(false);
   const annotationPrepFlight = useRef(false);
@@ -279,6 +312,14 @@ export function useChatComposerSubmit(
       workspaceBlocked,
     ],
   );
+
+  // The LIVE blocking predicate, for the deferred confirmation's continuation.
+  // `submitBlocked` is rebuilt per render from props; a continuation holds the
+  // one from the render it started in, which is the render before the block.
+  const submitBlockedRef = useRef(submitBlocked);
+  useEffect(() => {
+    submitBlockedRef.current = submitBlocked;
+  }, [submitBlocked]);
 
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
@@ -372,6 +413,43 @@ export function useChatComposerSubmit(
         if (onSideChat !== null) {
           const sideChat = splitLeadingSideChatCommand(submittedContent);
           if (sideChat !== null) {
+            // A `/btw` prompt does NOT go to this chat's stream - it becomes a
+            // forked chat's `initialMessage` through `epic.createChat`. That
+            // is a CREATE, and the settled decision is that every create
+            // travels inline: there is no negotiated session yet whose bridge
+            // capability could have been consulted, and nothing on the create
+            // path re-inlines. So a memo-confirmed hash that the gate quite
+            // correctly let through for an ordinary send has to be inlined
+            // again on its way out here. Missing this made `/btw` the one
+            // create path that could forward a bare hash.
+            // Whatever bytes this needed were resolved by the preparation
+            // loop ABOVE, because the pre-flight required set forces every
+            // hash-only node on a would-be side chat (see `sideChatPreflight`).
+            // Nothing is awaited here, so this commit keeps the pending flag,
+            // the incarnation check, the intent token and the live re-read the
+            // ordinary send has. A detached read placed here instead froze the
+            // document, left the pending flag false, and cleared text typed
+            // during it.
+            //
+            // Two very different situations produce a surviving hash here, and
+            // the first version treated both as the race and returned - which
+            // made a `/btw` whose image resolves NOWHERE into a permanently
+            // dead send button: every Enter did the read, returned, and said
+            // nothing, and a second Enter could not help because the pre-flight
+            // had agreed with the document the first time too.
+            //
+            //  - The command appeared DURING the read (`sideChatPreflight`
+            //    disagreed with this commit). The required set was computed
+            //    for a non-side-chat, so these bytes were never asked for and
+            //    the next Enter will pre-flight correctly. Abandon, keeping
+            //    the draft.
+            //  - The pre-flight DID ask and every leg missed. Another Enter
+            //    changes nothing. Send it: the accepted policy for an
+            //    unresolved hash is that the host's guard is the authority,
+            //    which is exactly what an ordinary send does with one.
+            if (hashOnlyImageHashes(sideChat.rest).length > 0) {
+              if (!sideChatPreflight) return;
+            }
             if (onSideChat({ content: sideChat.rest, settings })) {
               clearAcceptedDraft();
             }
@@ -426,10 +504,42 @@ export function useChatComposerSubmit(
       // existed. Keyed to this editor incarnation, so a re-created editor never
       // carries a previous one's inheritance forward.
       const incarnation = editor.getEditorIncarnation();
-      const hostHeld = hostHeldImageHashes(taskId, incarnation);
+      // Recomputed per document rather than captured once: an upload confirmed
+      // (or a confirmation invalidated) while the async leg runs must be
+      // visible to the live re-read below, and so must a capability the store
+      // has changed since preparation began.
+      // A `/btw` prompt forks a new chat, and a CREATE always travels inline -
+      // there is no negotiated session whose bridge capability could have been
+      // consulted, and nothing on the create path re-inlines. So when this
+      // document reads as a side chat, nothing is host-held for it and every
+      // hash-only node joins the required set, resolved by the same loop and
+      // committed under the same guards as an ordinary send.
+      //
+      // Checked against the CONVERTED document, the same one
+      // `splitLeadingSideChatCommand` sees at commit, so a typed `/btw` and a
+      // picked chip agree here exactly as they do there.
+      const sideChatPreflight =
+        onSideChat !== null &&
+        splitLeadingSideChatCommand(
+          buildSubmittedChatJSONContent(
+            editorContent,
+            pickerStore.getState().knownSlashCommands,
+          ),
+        ) !== null;
+      const hostHeldFor = (content: JsonContent): ReadonlySet<string> =>
+        sideChatPreflight
+          ? NO_HOST_HELD_HASHES
+          : submitHostHeldImageHashes({
+              surfaceKey: taskId,
+              incarnation,
+              content,
+              hostId: targetHostId,
+              bridgeSupported: getDraftBlobBridgeSupported(),
+              ownerUserId: currentDraftBlobOwnerId(),
+            });
       const pendingImageHashes = draftImageInliningNeeded(
         editorContent,
-        hostHeld,
+        hostHeldFor(editorContent),
       );
       // The submit INTENT, captured whole. The incarnation alone cannot answer
       // "is this still the submit the user asked for": `restoreQueuedEditDraft`
@@ -515,7 +625,11 @@ export function useChatComposerSubmit(
             readRequiredHashes: () => {
               const live = editorRef.current;
               if (live === null) return [];
-              return draftImageInliningNeeded(live.getJSON(), hostHeld);
+              const liveContent = live.getJSON();
+              return draftImageInliningNeeded(
+                liveContent,
+                hostHeldFor(liveContent),
+              );
             },
             // Synchronous with the final required-set read above it: no image
             // can arrive between that check and this send.
@@ -560,6 +674,7 @@ export function useChatComposerSubmit(
       steerEnabled,
       steerProtocolSupported,
       queueEditTargetId,
+      getDraftBlobBridgeSupported,
       submitBlocked,
       targetHostId,
       taskId,
@@ -567,57 +682,145 @@ export function useChatComposerSubmit(
     ],
   );
 
+  const restartStagedConflict = useCallback(
+    (pendingConflict: PendingSteerConflict): void => {
+      // The same guards the live submit path enforces (submitDraft) must block this
+      // deferred confirm too. If any holds now, the consent cannot be honored -
+      // dismiss the dialog (the composer text is kept, so the user can retry once it
+      // clears) rather than pushing the send through the guards.
+      if (submitBlocked()) {
+        setPendingConflict(null);
+        return;
+      }
+      // Bind the consent to the turn it was DISPLAYED for. The composer persists
+      // across turn replacement, so if the running turn changed (a successor turn
+      // is live, or none is) since the dialog opened, steering/restarting it would
+      // act on consent shown for a DIFFERENT turn. Only re-resolve to a steer when
+      // it is still that same turn; otherwise degrade to a plain queued send - never
+      // interrupt-restart a successor turn on stale consent. (Re-resolving also
+      // degrades to "auto" if the host reconnected/downgraded while the dialog was
+      // open.) It was always a `mod-enter` chord that opened this dialog.
+      const currentTurn = getActiveTurnForSteer();
+      const sameTurn =
+        currentTurn !== null &&
+        pendingConflict.originTurnId !== null &&
+        currentTurn.turnId === pendingConflict.originTurnId;
+      const deliveryPolicy = sameTurn
+        ? resolveSubmitDeliveryPolicy({
+            source: "mod-enter",
+            activeTurnStatus,
+            steerEnabled,
+            steerProtocolSupported,
+          })
+        : "auto";
+      if (
+        finalizeSend({
+          content: pendingConflict.content,
+          contentText: pendingConflict.contentText,
+          attachments: pendingConflict.attachments,
+          settings: pendingConflict.settings,
+          deliveryPolicy,
+          restore: pendingConflict.restore,
+        })
+      ) {
+        setPendingConflict(null);
+      }
+    },
+    [
+      finalizeSend,
+      activeTurnStatus,
+      steerEnabled,
+      steerProtocolSupported,
+      getActiveTurnForSteer,
+      submitBlocked,
+    ],
+  );
+
   const onRestart = useCallback((): void => {
     if (pendingConflict === null) return;
-    // The same guards the live submit path enforces (submitDraft) must block this
-    // deferred confirm too. If any holds now, the consent cannot be honored -
-    // dismiss the dialog (the composer text is kept, so the user can retry once it
-    // clears) rather than pushing the send through the guards.
-    if (submitBlocked()) {
-      setPendingConflict(null);
+    // The staged content was prepared when the dialog OPENED, and a steer
+    // conflict can sit open for as long as the user takes to read it. If the
+    // bridge capability has gone false in that time, whatever bare hashes this
+    // content carries can no longer be resolved by the stream it is about to
+    // go out on - the same staleness F5 fixes for the async submit path, one
+    // dialog further out. Re-inline through the one inlining path before
+    // dispatching, and only when it is actually needed.
+    // RR4: full ELIGIBILITY, not just the capability boolean. A dialog can sit
+    // open long enough for a mirror close or new bootstrap to invalidate the
+    // confirmation, or for another refusal to mark the hash unbridgeable,
+    // while the stream still speaks 1.10. Checking only the flag sent the old
+    // bare hash in all of those cases. `submitHostHeldImageHashes` is the one
+    // place that knows the whole question, so ask it rather than a piece of it.
+    const stagedHashes = hashOnlyImageHashes(pendingConflict.content);
+    const stillHeld = submitHostHeldImageHashes({
+      surfaceKey: taskId,
+      // `null` matches any incarnation, which is the right answer here: the
+      // staged content is frozen, so the question is whether its hashes are
+      // still eligible, not which editor instance is mounted now.
+      incarnation: null,
+      content: pendingConflict.content,
+      hostId: targetHostId,
+      bridgeSupported: getDraftBlobBridgeSupported(),
+      ownerUserId: currentDraftBlobOwnerId(),
+    });
+    if (stagedHashes.some((hash) => !stillHeld.has(hash))) {
+      // Single owner. A second confirmation while this read is outstanding
+      // must not start a second one, and must not dispatch: the click that
+      // opened this flight is the consent, and there is exactly one of it.
+      if (conflictInliningFlight.current) return;
+      conflictInliningFlight.current = true;
+      const staged = pendingConflict;
+      const intent = {
+        queueEditTargetId: queueEditTargetIdRef.current,
+        resetEpoch: readComposerDraftSnapshot(taskId).resetEpoch,
+      };
+      void reinlineRefusedSendContent({
+        content: staged.content,
+        hostId: targetHostId,
+      })
+        .then(({ content }) => {
+          // Consent is re-checked OUTSIDE the state updater, and the dispatch
+          // is gated on that check rather than following it unconditionally.
+          // Guarding only the updater left the send running after the dialog
+          // was cancelled: the old prompt went out and cleared a replacement
+          // draft the user had typed in the meantime.
+          //
+          // `conflictStagedRef` is the live value, not the closed-over one -
+          // `pendingConflict` here is from the render that started the read.
+          if (conflictStagedRef.current !== staged) return;
+          // And the same submit intent the ordinary path re-checks: the
+          // queue-edit destination may have moved, or the document been
+          // replaced, across this newly added wait.
+          if (
+            queueEditTargetIdRef.current !== intent.queueEditTargetId ||
+            readComposerDraftSnapshot(taskId).resetEpoch !== intent.resetEpoch
+          ) {
+            return;
+          }
+          // RR3: the BLOCKING guards, read live. `restartStagedConflict`
+          // closes over the `submitBlocked` of the render that staged this
+          // dialog, so a workspace that became blocked or a draft that became
+          // read-only during the byte read was invisible to it - the old
+          // prompt went out and the composer was cleared against a live block.
+          // Neither the staged identity nor `resetEpoch` moves for those.
+          if (submitBlockedRef.current()) {
+            setPendingConflict(null);
+            return;
+          }
+          restartStagedConflict({ ...staged, content });
+        })
+        .finally(() => {
+          conflictInliningFlight.current = false;
+        });
       return;
     }
-    // Bind the consent to the turn it was DISPLAYED for. The composer persists
-    // across turn replacement, so if the running turn changed (a successor turn
-    // is live, or none is) since the dialog opened, steering/restarting it would
-    // act on consent shown for a DIFFERENT turn. Only re-resolve to a steer when
-    // it is still that same turn; otherwise degrade to a plain queued send - never
-    // interrupt-restart a successor turn on stale consent. (Re-resolving also
-    // degrades to "auto" if the host reconnected/downgraded while the dialog was
-    // open.) It was always a `mod-enter` chord that opened this dialog.
-    const currentTurn = getActiveTurnForSteer();
-    const sameTurn =
-      currentTurn !== null &&
-      pendingConflict.originTurnId !== null &&
-      currentTurn.turnId === pendingConflict.originTurnId;
-    const deliveryPolicy = sameTurn
-      ? resolveSubmitDeliveryPolicy({
-          source: "mod-enter",
-          activeTurnStatus,
-          steerEnabled,
-          steerProtocolSupported,
-        })
-      : "auto";
-    if (
-      finalizeSend({
-        content: pendingConflict.content,
-        contentText: pendingConflict.contentText,
-        attachments: pendingConflict.attachments,
-        settings: pendingConflict.settings,
-        deliveryPolicy,
-        restore: pendingConflict.restore,
-      })
-    ) {
-      setPendingConflict(null);
-    }
+    restartStagedConflict(pendingConflict);
   }, [
-    finalizeSend,
+    getDraftBlobBridgeSupported,
     pendingConflict,
-    activeTurnStatus,
-    steerEnabled,
-    steerProtocolSupported,
-    getActiveTurnForSteer,
-    submitBlocked,
+    restartStagedConflict,
+    targetHostId,
+    taskId,
   ]);
 
   const onOpenChange = useCallback((open: boolean): void => {

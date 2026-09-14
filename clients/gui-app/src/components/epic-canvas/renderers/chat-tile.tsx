@@ -3154,12 +3154,23 @@ function useChatTileSessionViewModel(
     () => handle.store.getState().activeTurn,
     [handle.store],
   );
+  // Read from the STORE at submit time, not from the projected boolean below.
+  // The projection is a value from the last committed render and a ref of it is
+  // the last committed effect; a stream transition to a non-bridging session
+  // can be queued in the store while an image preparation is mid-flight, and
+  // neither copy knows it yet. The send gate's whole job is to answer "can this
+  // session resolve a bare hash", and only the store can answer it at the
+  // moment it is asked.
+  const getDraftBlobBridgeSupported = useCallback(
+    () => handle.store.getState().draftBlobBridgeSupported,
+    [handle.store],
+  );
   const lowerTurn = useMemo(
     () => ({
       activeTurnStatus: composerActiveTurnStatus,
       steerCapable,
       steerProtocolSupported,
-      draftBlobBridgeSupported: state.draftBlobBridgeSupported,
+      getDraftBlobBridgeSupported,
       getActiveTurnForSteer,
       stopDisabled,
       onStopTurn: chatActions.stopTurn,
@@ -3168,7 +3179,7 @@ function useChatTileSessionViewModel(
       composerActiveTurnStatus,
       steerCapable,
       steerProtocolSupported,
-      state.draftBlobBridgeSupported,
+      getDraftBlobBridgeSupported,
       getActiveTurnForSteer,
       stopDisabled,
       chatActions.stopTurn,
