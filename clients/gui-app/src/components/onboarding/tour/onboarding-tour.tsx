@@ -59,7 +59,7 @@ export function OnboardingTour(): React.ReactElement | null {
         {controller.announcement}
       </div>
       <Joyride
-        key={controller.epoch}
+        key={controller.rendererKey}
         run={controller.run}
         stepIndex={controller.stepIndex}
         continuous

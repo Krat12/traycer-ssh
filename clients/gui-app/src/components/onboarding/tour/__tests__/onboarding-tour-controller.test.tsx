@@ -32,6 +32,7 @@ import {
   registerPresentedModal,
   resetModalPresenceForTests,
 } from "@/components/ui/modal-presence";
+import { registerTileRect } from "@/lib/browser-view/tiles/tile-rect-registry";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -535,6 +536,50 @@ describe("targets and presentation", () => {
       throw new Error("expected a function target");
     }
     expect(step.target()).toBe(surface.anchors["landing-terminal-switch"]);
+  });
+
+  it("a live local browser guest on screen suspends the spotlight (B2): same lesson and copy, centred, no dim, a new renderer; the spotlight returns when it leaves", () => {
+    const surface = keep(mountEpicSurface(EPIC_TAB_ID, false));
+    focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    render(<OnboardingTour />);
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    const spotlit = props().steps.at(0);
+    if (spotlit === undefined || typeof spotlit.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(spotlit.target()).toBe(surface.anchors.column);
+    expect(spotlit.hideOverlay).not.toBe(true);
+    const mountsBefore = joyride.mounts;
+    let unregister: () => void = () => undefined;
+    act(() => {
+      unregister = registerTileRect(
+        {
+          viewTabId: "view-1",
+          paneId: "pane-1",
+          tileInstanceId: "tile-1",
+          pageSessionId: "page-1",
+        },
+        sized(document.createElement("div")),
+      );
+    });
+    const suspended = props().steps.at(0);
+    expect(suspended?.id).toBe("task-panels");
+    expect(suspended?.placement).toBe("center");
+    expect(suspended?.hideOverlay).toBe(true);
+    expect(suspended?.content).toBe(spotlit.content);
+    expect(joyride.mounts).toBeGreaterThan(mountsBefore);
+    expect(flow().activeTourId).toBe("task-panels");
+    act(() => {
+      unregister();
+    });
+    const restored = props().steps.at(0);
+    if (restored === undefined || typeof restored.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(restored.placement).toBe("right");
+    expect(restored.target()).toBe(surface.anchors.column);
   });
 
   it("task-panels spotlights the column, else the rail, inside the context epic surface; mounting never finishes it", () => {

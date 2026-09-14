@@ -34,6 +34,7 @@ import {
   startActivationWatch,
   subscribeActivation,
 } from "@/components/onboarding/tour/tour-activation";
+import { useLiveBrowserGuestPresent } from "@/components/onboarding/tour/use-live-browser-guest-present";
 import {
   createTargetTracker,
   cssAttributeValue,
@@ -116,10 +117,15 @@ export interface OnboardingTourController {
   /** Joyride's controlled `stepIndex`. */
   readonly stepIndex: number;
   /** `key` for `<Joyride>`: a new value re-presents the active lesson. */
-  readonly epoch: number;
+  readonly rendererKey: string;
   readonly presentation: TourPresentation;
   /** A counted modal or the folder picker owns the screen (and Esc). */
   readonly modalSuspended: boolean;
+  /**
+   * A live local browser guest is on screen: the lesson stays, as the
+   * unanchored card, since no dim can cover a native view.
+   */
+  readonly spotlightSuspended: boolean;
   readonly reducedMotion: boolean;
   readonly onEvent: (data: EventData) => void;
   /** Polite live-region text for the step that just presented. */
@@ -518,15 +524,19 @@ function buildSteps(
   target: TargetSnapshot,
   lessonKey: string | null,
   unbound: UnboundPresentation | null,
+  spotlightSuspended: boolean,
 ): Step[] {
   if (activeTourId === null) return [];
-  // Anchored only on a node resolved for THIS lesson/context. Anything else
-  // - a snapshot from the previous lesson, no node yet, a node Joyride
-  // refused - is the unanchored card at once: the same lesson, centred, no
-  // dim, Next / Skip / Esc live. Never a bare dim while a target is missing
-  // (an anchor that mounts later re-presents under a new epoch).
+  // Anchored only on a node resolved for THIS lesson/context, and only
+  // while a spotlight can be drawn. Anything else - a snapshot from the
+  // previous lesson, no node yet, a node Joyride refused, a live browser
+  // guest the dim cannot cover - is the unanchored card at once: the same
+  // lesson, centred, no dim, Next / Skip / Esc live. Never a bare dim while
+  // a target is missing (an anchor that mounts later re-presents under a
+  // new epoch).
   const fresh = target.key === lessonKey;
-  const node = fresh && !target.unanchored ? target.node : null;
+  const node =
+    fresh && !target.unanchored && !spotlightSuspended ? target.node : null;
   if (node === null) {
     return buildTourSteps(order, activeTourId, {
       kind: "unanchored",
@@ -982,13 +992,16 @@ function presentationOf(
   chainActive: boolean,
   active: ActiveStep | null,
   modalSuspended: boolean,
+  spotlightSuspended: boolean,
   tracking: TargetTracking,
 ): TourPresentation {
   if (!chainActive || active === null) return "idle";
   if (modalSuspended) return "modal-suspended";
   const { target, lessonKey } = tracking;
   if (target.key !== lessonKey) return "resolving";
-  if (target.unanchored || target.node === null) return "unanchored";
+  if (spotlightSuspended || target.unanchored || target.node === null) {
+    return "unanchored";
+  }
   return target.presented ? "presenting" : "resolving";
 }
 
@@ -1067,9 +1080,18 @@ export function useOnboardingTourController(): OnboardingTourController {
         : null,
     [panelsUnbound, latestEpicId, openEpicTab],
   );
+  const spotlightSuspended = useLiveBrowserGuestPresent();
   const steps = useMemo(
-    () => buildSteps(order, activeTourId, target, lessonKey, unbound),
-    [order, activeTourId, target, lessonKey, unbound],
+    () =>
+      buildSteps(
+        order,
+        activeTourId,
+        target,
+        lessonKey,
+        unbound,
+        spotlightSuspended,
+      ),
+    [order, activeTourId, target, lessonKey, unbound, spotlightSuspended],
   );
 
   useFocusOriginAndChainEnd(run, flow);
@@ -1106,9 +1128,19 @@ export function useOnboardingTourController(): OnboardingTourController {
     run,
     steps,
     stepIndex,
-    epoch: target.epoch,
-    presentation: presentationOf(chainActive, active, modalSuspended, tracking),
+    // Joyride neither moves nor drops a card on its own (F5): the renderer
+    // is replaced whenever the chosen node changes AND whenever the
+    // spotlight is suspended or restored around the same node.
+    rendererKey: `${target.epoch}:${spotlightSuspended ? "suspended" : "spotlit"}`,
+    presentation: presentationOf(
+      chainActive,
+      active,
+      modalSuspended,
+      spotlightSuspended,
+      tracking,
+    ),
     modalSuspended,
+    spotlightSuspended,
     reducedMotion,
     onEvent,
     announcement,
