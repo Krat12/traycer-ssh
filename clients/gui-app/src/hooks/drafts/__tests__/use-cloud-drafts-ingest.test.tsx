@@ -329,6 +329,44 @@ describe("useCloudDraftsIngest", () => {
     warnSpy.mockRestore();
   });
 
+  it("releases the key when teardown interrupts a failing apply, so the next setup asks again", async () => {
+    const warnSpy = vi.spyOn(appLogger, "warn").mockImplementation(() => {});
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    const pending: Array<() => void> = [];
+    ingestMock.ingest
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            pending.push(() => {
+              reject(new Error("apply failed after teardown"));
+            });
+          }),
+      )
+      .mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    const view = renderHook(
+      ({ client }) => useCloudDraftsIngest(client, HOST_ID),
+      { initialProps: { client: CLIENT as never } },
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+
+    // A new client instance re-runs the effect: the old scope is torn down
+    // while its apply is still in flight, and that apply then rejects.
+    view.rerender({ client: { ...CLIENT } as never });
+    for (const reject of pending) reject();
+
+    // The torn-down chain must have released the key, so the fresh setup
+    // ingests the same head again instead of skipping it.
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it("clears a pending retry timer on unmount, so it never fires a read", async () => {
     vi.useFakeTimers();
     readMock.read.mockRejectedValue(new Error("transient read failure"));

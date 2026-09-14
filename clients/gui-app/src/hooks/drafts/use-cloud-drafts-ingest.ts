@@ -140,9 +140,11 @@ export function useCloudDraftsIngest(
           return;
         }
         const document = draftDocumentFromCloudHead(summary, outcome.record);
-        settle();
+        // The key stays unsettled through the apply, so a teardown that
+        // interrupts it still releases the guard.
         try {
           await ingestCloudDraftSummary({ hostId, summary, document });
+          settle();
         } catch (error: unknown) {
           // Re-read through the scope: the earlier check narrowed the
           // property, and the await above may have torn the effect down.
@@ -154,6 +156,7 @@ export function useCloudDraftsIngest(
           // a later run (or a remount) asks again.
           const nextAttempt = attempt + 1;
           if (nextAttempt >= MAX_HEAD_READ_ATTEMPTS) {
+            settle();
             ingestedKeys.delete(key);
             appLogger.warn("[cloud-drafts] head apply failed", {
               attempts: nextAttempt,
@@ -161,7 +164,6 @@ export function useCloudDraftsIngest(
             });
             return;
           }
-          unsettledKeys.add(key);
           const timer = setTimeout(
             () => {
               pendingTimers.delete(timer);
