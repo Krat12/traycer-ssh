@@ -16,6 +16,7 @@ import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
   ingestCloudDraftSummary,
+  reserveCloudDraftIngestFence,
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
@@ -106,6 +107,10 @@ export function useCloudDraftsIngest(
         unsettledKeys.delete(key);
       };
       const attemptRead = async (attempt: number): Promise<void> => {
+        // Reserved BEFORE the head read: another mount's older directory
+        // snapshot settling during the read must not sweep the mirror this
+        // head is about to refresh (and clear its active surface with it).
+        reserveCloudDraftIngestFence(summary.identity.chatId);
         let outcome: CloudDraftReadOutcome;
         try {
           outcome = await readCloudDraft({

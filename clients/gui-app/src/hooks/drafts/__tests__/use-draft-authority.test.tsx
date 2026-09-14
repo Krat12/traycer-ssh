@@ -681,6 +681,165 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a submit-started claim superseded by a forced re-claim resolves only once the forced attempt settles, and a refusal there repairs through the forced attempt's own arming rather than abandon", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    // The submit path starts the claim on host-b; no edit has touched it.
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The composer returns to host-a while host-b's claim is still pending.
+    // Host-a's own row already names it as owner, so the render-derived
+    // `unowned` guard reads false there - it alone would refuse a re-claim.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    // Host-b's (superseded) claim commits: the local row still names
+    // host-a as owner while the cloud now says host-b, so the re-claim on
+    // host-a is forced past the `unowned` guard.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    // The original settle chains onto the forced re-claim (attempt 2),
+    // which is still pending - it must not resolve before attempt 2 does.
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 (the forced re-claim on host-a) is refused.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    // The refusal repairs through attempt 2's own arming - every forced
+    // re-claim runs through `claimForEdit`, which always arms its own
+    // promise - not through the original settle's `abandon()`.
+    await waitFor(() => {
+      expect(repairOnEdit).toHaveBeenCalledTimes(1);
+    });
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+
+    // The original attempt's own entry was never armed (a submit-only
+    // claim, host-fenced to host-b), so abandon() on it is a no-op: it
+    // must not double-repair.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("contrast: when the forced re-claim after supersession succeeds, the original settle resolves owned and no repair fires", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 (the forced re-claim on host-a) succeeds.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
   it("a forced re-claim starts a genuinely new attempt instead of joining the one already pending on the current host, and the fresh attempt's document wins over the stale one", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();

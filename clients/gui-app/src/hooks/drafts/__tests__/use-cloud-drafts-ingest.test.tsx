@@ -13,6 +13,9 @@ const directoryMock = vi.hoisted(() => ({
 const readMock = vi.hoisted(() => ({
   read: vi.fn<() => Promise<{ kind: string; record: unknown }>>(),
 }));
+const reserveMock = vi.hoisted(() => ({
+  reserve: vi.fn<(draftId: string) => void>(),
+}));
 const ingestMock = vi.hoisted(() => ({
   ingest: vi.fn<() => Promise<void>>(),
 }));
@@ -40,6 +43,8 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
     readMock.read(),
 }));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
+  reserveCloudDraftIngestFence: (draftId: string): void =>
+    reserveMock.reserve(draftId),
   ingestCloudDraftSummary: (): Promise<void> => ingestMock.ingest(),
   sweepAbsentCloudDraftMirrors: (
     hostId: string,
@@ -115,6 +120,7 @@ afterEach(() => {
   directoryMock.settled = true;
   directoryMock.snapshotSeq = 0;
   readMock.read.mockReset();
+  reserveMock.reserve.mockReset();
   ingestMock.ingest.mockReset();
   sweepMock.sweep.mockReset();
   vi.useRealTimers();
@@ -139,6 +145,36 @@ describe("useCloudDraftsIngest", () => {
     view.rerender();
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("reserves the ingest fence before the head read resolves, then ingests once the read settles", async () => {
+    const pending: Array<() => void> = [];
+    readMock.read.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending.push(() => {
+            resolve({ kind: "ok", record: HEAD });
+          });
+        }),
+    );
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    // The fence is reserved BEFORE the head read resolves - while the read
+    // is still pending, the reserve has already happened but nothing has
+    // ingested yet.
+    await vi.waitFor(() => {
+      expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).not.toHaveBeenCalled();
+
+    for (const resolve of pending) resolve();
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -193,6 +229,9 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(2);
+    // Reserved once per attempt: the failed first read and the successful
+    // retry each reserve the fence before their own read.
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
   });
 
   it("gives up after MAX_HEAD_READ_ATTEMPTS reads and makes no further attempt", async () => {

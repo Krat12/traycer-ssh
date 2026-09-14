@@ -126,7 +126,9 @@ export function useDraftAuthorityControl(args: {
   // The latest `noteEdit` and the draft the surface shows now, for a
   // settlement that finds its host superseded: the re-claim is for THIS
   // draft only - a move to another draft is not an edit of that draft.
-  const noteEditRef = useRef<(force: boolean) => void>(() => undefined);
+  const noteEditRef = useRef<(force: boolean) => Promise<boolean> | null>(
+    () => null,
+  );
   const currentDraftRef = useRef(args.draftId);
   useLayoutEffect(() => {
     currentDraftRef.current = args.draftId;
@@ -191,7 +193,15 @@ export function useDraftAuthorityControl(args: {
         // render-derived `unowned` guard would refuse the re-claim; it is
         // forced, or the current host's next write is fenced as stale
         // authority with nothing to re-arm it.
-        const reclaimOnCurrentHost = (committed: boolean): void => {
+        // Returns the current host's claim when one was started, so a
+        // settlement chains into it: a submit that settled on THIS claim
+        // must not dispatch on a committed-elsewhere ownership while the
+        // current host's own claim is undecided (a refusal there would retire
+        // the draft through the current host against a cloud row this claim
+        // moved away from it).
+        const reclaimOnCurrentHost = (
+          committed: boolean,
+        ): Promise<boolean> | null => {
           // The surface moved hosts and no further edit started that host's
           // claim: start it now, for this same draft, so the edit that began
           // this claim is not stranded on the old host.
@@ -199,14 +209,15 @@ export function useDraftAuthorityControl(args: {
             currentHostRef.current !== tabHostId &&
             currentDraftRef.current === draftId
           ) {
-            noteEditRef.current(committed);
+            return noteEditRef.current(committed);
           }
+          return null;
         };
         const result = await claimDraft(draftId);
         if (result.status !== "ok" && result.status !== "already-owned") {
           // A refusal is repaired on its own host (host-fenced); on a host the
           // surface has left it repairs nothing, so the current host claims.
-          reclaimOnCurrentHost(false);
+          void reclaimOnCurrentHost(false);
           return false;
         }
         // Superseded: the surface moved to another host while this claim ran.
@@ -216,8 +227,7 @@ export function useDraftAuthorityControl(args: {
           currentHostRef.current === tabHostId &&
           (latestApplied.current.get(draftId) ?? 0) <= attempt;
         if (!stillCurrent()) {
-          reclaimOnCurrentHost(true);
-          return true;
+          return (await reclaimOnCurrentHost(true)) ?? true;
         }
         // Re-asked by the coordinator after its blob reads, right before the
         // store mutation: the surface can move while the fetch is in flight.
@@ -245,19 +255,17 @@ export function useDraftAuthorityControl(args: {
             // The binding is this draft's newest applied ownership: an older
             // attempt settling later must not put its document over it.
             latestApplied.current.set(draftId, attempt);
-          } else {
-            reclaimOnCurrentHost(true);
+            return true;
           }
-          return true;
+          return (await reclaimOnCurrentHost(true)) ?? true;
         }
         if (stillCurrent()) {
           latestApplied.current.set(draftId, attempt);
-        } else {
-          // The coordinator declined the mutation after its blob reads: the
-          // surface moved during the apply, past the pre-await check.
-          reclaimOnCurrentHost(true);
+          return true;
         }
-        return true;
+        // The coordinator declined the mutation after its blob reads: the
+        // surface moved during the apply, past the pre-await check.
+        return (await reclaimOnCurrentHost(true)) ?? true;
       })();
       const entry: PendingClaim = {
         promise,
@@ -277,26 +285,29 @@ export function useDraftAuthorityControl(args: {
   // that committed elsewhere leaves the local row naming this host as owner
   // while the cloud says otherwise (see `reclaimOnCurrentHost`).
   const claimForEdit = useCallback(
-    (force: boolean): void => {
-      if (!force && !unowned) return;
+    (force: boolean): Promise<boolean> | null => {
+      if (!force && !unowned) return null;
       const draftId = args.draftId;
       const tabHostId = args.tabHostId;
-      if (draftId === null || tabHostId === null) return;
+      if (draftId === null || tabHostId === null) return null;
       // An edit joins a claim already in flight - one the submit path or an
       // earlier edit started - and arms the repair on it once. Dropping the
       // edit instead would leave it on the unowned identity if that claim is
       // refused. A forced re-claim is always a fresh attempt.
       const entry = runClaim(force);
-      if (entry === null || entry.repairArmed) return;
-      entry.repairArmed = true;
-      void entry.promise.then((owned) => {
-        if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
-      });
+      if (entry === null) return null;
+      if (!entry.repairArmed) {
+        entry.repairArmed = true;
+        void entry.promise.then((owned) => {
+          if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
+        });
+      }
+      return entry.promise;
     },
     [args.draftId, args.tabHostId, repairFor, runClaim, unowned],
   );
   const noteEdit = useCallback((): void => {
-    claimForEdit(false);
+    void claimForEdit(false);
   }, [claimForEdit]);
 
   useLayoutEffect(() => {

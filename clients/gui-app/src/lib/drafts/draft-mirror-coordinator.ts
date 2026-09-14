@@ -972,9 +972,22 @@ export async function ingestCloudDraftSummary(input: {
   });
 }
 
-/** The current ingest sequence; a directory captures it at fetch start. */
+/** The current ingest sequence; a directory captures it at dispatch. */
 export function cloudDraftIngestSeq(): number {
   return cloudIngestSeq;
+}
+
+/**
+ * Reserve the absence-sweep fence for a draft whose cloud head is about
+ * to be READ: the read (head plus parts) can take a while, and an older
+ * directory snapshot settling meanwhile must not sweep the existing mirror
+ * the apply is about to refresh. `applyHostDocument` reserves again at the
+ * apply; a read with a terminal outcome simply leaves this reservation,
+ * which protects the row until a later snapshot.
+ */
+export function reserveCloudDraftIngestFence(draftId: string): void {
+  cloudIngestSeq += 1;
+  cloudIngestSeqByDraft.set(draftId, cloudIngestSeq);
 }
 
 /**
