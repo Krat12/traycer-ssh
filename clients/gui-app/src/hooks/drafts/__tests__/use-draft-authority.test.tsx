@@ -1332,17 +1332,21 @@ describe("useDraftAuthorityControl", () => {
     // check alone would pass), but attempt 1 is older than attempt 2's
     // already-bound apply failure, so `stillCurrent()` still reads false on
     // the generation check and `applyIncomingDraftDocument` is never called
-    // for attempt 1's document. Its own host still matches, so no further
-    // reclaim/re-claim fires either.
+    // for attempt 1's document. Attempt 1 committed on the CURRENT host yet
+    // was outranked by another host's apply, so the row sits adopted on
+    // host-b: a fresh host-a claim (attempt 3) is started for it.
+    const third = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(third.promise);
     await act(async () => {
       first.resolve({ status: "ok", draft: STUB_DRAFT });
       await first.promise;
     });
 
-    // Only attempt 2's apply ever ran; attempt 1's document is dropped.
+    // Only attempt 2's apply ever ran; attempt 1's document is dropped, and
+    // the fresh attempt 3 is the one that will bring host-a's ownership.
     expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
     expect(bindLandingOwnershipMock.bind).toHaveBeenCalledTimes(1);
-    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(claimMock.claim).toHaveBeenCalledTimes(3);
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
@@ -1861,5 +1865,334 @@ describe("useDraftAuthorityControl", () => {
       );
     });
     expect(deleteClaimedRetiredLandingDraftMock.delete).not.toHaveBeenCalled();
+  });
+
+  it("abandon on a chain whose last link is still pending defers repair until it settles ok, and no repair ever fires", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    // The submit path starts the claim on host-b (attempt 1).
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The composer moves to host-a; a replica origin keeps it unowned
+    // there too, so the refusal-path re-claim's own (unforced) guard
+    // passes.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 1 is refused: its refusal-path re-claim on host-a (attempt 2)
+    // is started WITHOUT being awaited, so settleOwnership resolves right
+    // away even though attempt 2 is still pending.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    // abandon() walks to attempt 2 - the chain's last link - and releases
+    // its suppression, but attempt 2 has not settled yet, so nothing
+    // repairs.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // Attempt 2 settles ok: owned, so its own handler never repairs.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("abandon on a chain whose last link is still pending, followed by that link's own refusal, repairs exactly once", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+    expect(settleResolved).toBe(true);
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settled).not.toBeNull();
+
+    // abandon() releases attempt 2's inherited suppression while it is
+    // still pending - no repair yet, matching the sibling test above.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // Attempt 2 now settles refused: its own handler repairs, since
+    // abandon already released the suppression it inherited.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await second.promise;
+    });
+
+    // Repairs exactly once - attempt 1's own refusal handler deferred to
+    // the chain when IT refused, so it never double-fires here.
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a chain link's refusal that chains again after abandon defers repair to the new final link, fenced to its host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    const third = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+    expect(settleResolved).toBe(true);
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settled).not.toBeNull();
+
+    // abandon() releases attempt 2's suppression while it is still pending.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // The surface moves again, to host-c, before attempt 2 settles.
+    claimMock.claim.mockReturnValueOnce(third.promise);
+    view.rerender({
+      tabHostId: "host-c",
+      ownerHostId: "host-d",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 2's refusal now chains into attempt 3 on host-c instead of
+    // repairing itself: the chain has a new final link.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await second.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // Attempt 3 - the chain's new final link - refuses: it repairs,
+    // fenced to draft-1 on host-c, which the surface still shows.
+    await act(async () => {
+      third.resolve({ status: "unavailable", reason: "not-found" });
+      await third.promise;
+    });
+
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandon repairs an already-refused chain link exactly once, and a second abandon is a no-op", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-c",
+      origin: "replica",
+    });
+    expect(view.result.current.unowned).toBe(true);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+    expect(settleResolved).toBe(true);
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settled).not.toBeNull();
+
+    // Attempt 2 refuses BEFORE abandon() runs: it inherited suppression
+    // from attempt 1, so its own handler does not repair yet even though
+    // it has already settled.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await second.promise;
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // abandon() walks to the already-refused last link, releases its
+    // suppression and repairs it through the chain's guard.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+
+    // A second abandon() is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
 });

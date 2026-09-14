@@ -63,6 +63,13 @@ interface PendingClaim {
    * suppression and its deferred repair apply to the LAST link.
    */
   chained: PendingClaim | null;
+  /** Settled outcome, recorded before any repair handler runs. */
+  outcome: "pending" | "owned" | "refused";
+  /**
+   * Shared by every link of a chain: the edit-armed repair runs at most
+   * once per chain, on its final refused link.
+   */
+  repairGuard: { done: boolean };
   repairArmed: boolean;
   /**
    * A submit joined this claim. Its refusal handling is the send itself
@@ -114,7 +121,12 @@ export function useDraftAuthorityControl(args: {
   // answered and applied, and the older document would roll the row's owner
   // back behind it. Only an applied success supersedes - a newer attempt
   // that was refused must not discard an older, still-current success.
-  const latestApplied = useRef(new Map<string, number>());
+  // The newest applied attempt per draft, with the host it claimed through:
+  // an older attempt is admitted only while nothing newer has applied, and
+  // a committed attempt outranked by one from ANOTHER host re-claims.
+  const latestApplied = useRef(
+    new Map<string, { readonly attempt: number; readonly tabHostId: string }>(),
+  );
   const attemptCounter = useRef(0);
   // Read through a ref by the in-flight continuation: the repair belongs to
   // the render that observes the refusal, not the one that started the claim
@@ -211,24 +223,34 @@ export function useDraftAuthorityControl(args: {
         const reclaimOnCurrentHost = (
           committed: boolean,
         ): Promise<boolean> | null => {
+          if (currentDraftRef.current !== draftId) return null;
           // The surface moved hosts and no further edit started that host's
           // claim: start it now, for this same draft, so the edit that began
-          // this claim is not stranded on the old host.
-          if (
-            currentHostRef.current !== tabHostId &&
-            currentDraftRef.current === draftId
-          ) {
-            const next = noteEditRef.current(committed);
-            if (next === null) return null;
-            // A submit that settled on this attempt is settling on the chain:
-            // the re-claim inherits its suppression, or a refusal there would
-            // fork the draft under the deferred send. `abandon` releases it
-            // on the last link.
-            next.repairSuppressed = entry.repairSuppressed;
-            entry.chained = next;
-            return next.promise;
-          }
-          return null;
+          // this claim is not stranded on the old host. A committed attempt
+          // on the CURRENT host that a newer attempt outranked (the placement
+          // left, another host applied, the placement returned before this
+          // response) needs a fresh claim here just the same: its document
+          // is stale and the row still sits adopted on that other host.
+          const moved = currentHostRef.current !== tabHostId;
+          const latest = latestApplied.current.get(draftId);
+          const outranked =
+            committed &&
+            latest !== undefined &&
+            latest.attempt > attempt &&
+            latest.tabHostId !== tabHostId;
+          if (!moved && !outranked) return null;
+          const next = noteEditRef.current(committed);
+          if (next === null) return null;
+          // A submit that settled on this attempt is settling on the chain:
+          // the re-claim inherits its suppression (a refusal there would
+          // otherwise fork the draft under the deferred send) and the chain's
+          // repair guard; `abandon` releases the suppression on the last
+          // link. Linked BEFORE this attempt resolves, so its own refusal
+          // handler sees the chain and defers to it.
+          next.repairSuppressed = entry.repairSuppressed;
+          next.repairGuard = entry.repairGuard;
+          entry.chained = next;
+          return next.promise;
         };
         const result = await claimDraft(draftId);
         if (result.status !== "ok" && result.status !== "already-owned") {
@@ -242,7 +264,7 @@ export function useDraftAuthorityControl(args: {
         // back here; the current host's claim is the one that counts.
         const stillCurrent = (): boolean =>
           currentHostRef.current === tabHostId &&
-          (latestApplied.current.get(draftId) ?? 0) <= attempt;
+          (latestApplied.current.get(draftId)?.attempt ?? 0) <= attempt;
         if (!stillCurrent()) {
           return (await reclaimOnCurrentHost(true)) ?? true;
         }
@@ -271,13 +293,13 @@ export function useDraftAuthorityControl(args: {
             bindOwnership(result.draft, tabHostId);
             // The binding is this draft's newest applied ownership: an older
             // attempt settling later must not put its document over it.
-            latestApplied.current.set(draftId, attempt);
+            latestApplied.current.set(draftId, { attempt, tabHostId });
             return true;
           }
           return (await reclaimOnCurrentHost(true)) ?? true;
         }
         if (stillCurrent()) {
-          latestApplied.current.set(draftId, attempt);
+          latestApplied.current.set(draftId, { attempt, tabHostId });
           return true;
         }
         // The coordinator declined the mutation after its blob reads: the
@@ -289,9 +311,16 @@ export function useDraftAuthorityControl(args: {
         tabHostId,
         draftId,
         chained: null,
+        outcome: "pending",
+        repairGuard: { done: false },
         repairArmed: false,
         repairSuppressed: false,
       };
+      // Registered first, so every later handler (the edit-armed repair, a
+      // settlement's `abandon`) reads a settled outcome.
+      void promise.then((owned) => {
+        entry.outcome = owned ? "owned" : "refused";
+      });
       void promise.finally(() => {
         if (inflight.current.get(key) === entry) inflight.current.delete(key);
       });
@@ -319,7 +348,13 @@ export function useDraftAuthorityControl(args: {
       if (!entry.repairArmed) {
         entry.repairArmed = true;
         void entry.promise.then((owned) => {
-          if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
+          if (owned || entry.repairSuppressed) return;
+          // A refusal that chained into the current host's re-claim defers
+          // to that link: the chain repairs at most once, on its final
+          // refused link.
+          if (entry.chained !== null || entry.repairGuard.done) return;
+          entry.repairGuard.done = true;
+          repairFor(draftId, tabHostId);
         });
       }
       return entry;
@@ -340,16 +375,21 @@ export function useDraftAuthorityControl(args: {
     const entry = runClaim(false);
     if (entry === null) return noop;
     entry.repairSuppressed = true;
-    const owned = await entry.promise;
-    // The attempt may have chained into the current host's re-claim (one or
-    // more times); the outcome, the armed repair and the suppression to
-    // release all belong to the last link.
-    let last = entry;
-    while (last.chained !== null) last = last.chained;
+    await entry.promise;
     return {
       abandon: () => {
-        if (owned || !last.repairArmed || !last.repairSuppressed) return;
+        // The attempt may have chained into the current host's re-claim, and
+        // a refused attempt chains without being awaited here, so the last
+        // link is found NOW and may still be pending. Releasing its
+        // suppression lets its own refusal handler repair when it settles;
+        // a link already refused is repaired here, through the chain's
+        // guard, at most once.
+        let last = entry;
+        while (last.chained !== null) last = last.chained;
+        if (!last.repairArmed || !last.repairSuppressed) return;
         last.repairSuppressed = false;
+        if (last.outcome !== "refused" || last.repairGuard.done) return;
+        last.repairGuard.done = true;
         repairFor(last.draftId, last.tabHostId);
       },
     };
