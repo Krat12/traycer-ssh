@@ -1,5 +1,5 @@
 import { createRef, type RefObject } from "react";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatQueueDeliveryPolicy,
@@ -347,6 +347,149 @@ describe("chat-composer submit multi-surface clear", () => {
     expect(useComposerDraftStore.getState().drafts[taskId]?.content).toEqual(
       EMPTY_DOC,
     );
+  });
+});
+
+/**
+ * `draftUnowned` gates a live submit behind `ensureDraftOwned()`. The gate
+ * must re-enter through the LATEST `submitDraft` closure (via
+ * `submitDraftRef`, assigned in a `useEffect`) so that once the caller
+ * re-renders with `draftUnowned: false`, the message actually goes out
+ * exactly once - and only if ownership was actually granted.
+ */
+describe("unowned draft", () => {
+  it("re-enters the latest submitDraft once ensureDraftOwned resolves true after a rerender", async () => {
+    const onSubmitMessage = vi.fn(acceptSubmit);
+    const editorRef = createRef<ComposerPromptEditorHandle | null>();
+    editorRef.current = editorHandle({ content: DIRTY, ready: true });
+    const pickerStore = createComposerPickerStore();
+    const toolbarStore = createComposerToolbarStore({
+      seedKey: "chat-submit-gate-unowned-test",
+      values: {
+        permission: "supervised",
+        selection: {
+          harnessId: "claude",
+          modelSlug: "claude-sonnet",
+          profileId: null,
+        },
+        reasoning: "medium",
+        serviceTier: "",
+      },
+      onSettingsChange: null,
+      tuiOnly: false,
+      hostId: null,
+    });
+
+    let resolveOwned: ((owned: boolean) => void) | null = null;
+    const ensureDraftOwned = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveOwned = resolve;
+        }),
+    );
+
+    const { result, rerender } = renderHook(
+      (draftUnowned: boolean) =>
+        useChatComposerSubmit({
+          taskId: "task-unowned",
+          editorRef,
+          pickerStore,
+          toolbarStore,
+          activeTurnStatus: null,
+          steerCapable: false,
+          steerEnabled: true,
+          steerProtocolSupported: true,
+          getActiveTurnForSteer: () => null,
+          hasPendingApprovals: false,
+          sendDisabled: false,
+          workspaceBlocked: false,
+          imagesUnsupported: false,
+          attachmentPreparationPending: false,
+          draftUnowned,
+          ensureDraftOwned,
+          onSubmitMessage,
+          onSideChat: null,
+        }),
+      { initialProps: true },
+    );
+
+    act(() => {
+      result.current.submitDraft("enter");
+    });
+
+    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    // Caller re-renders with draftUnowned: false BEFORE the claim resolves -
+    // the still-pending promise must re-enter through the LATEST closure.
+    rerender(false);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOwned?.(true);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends nothing when ensureDraftOwned resolves false", async () => {
+    const onSubmitMessage = vi.fn(acceptSubmit);
+    const editorRef = createRef<ComposerPromptEditorHandle | null>();
+    editorRef.current = editorHandle({ content: DIRTY, ready: true });
+    const pickerStore = createComposerPickerStore();
+    const toolbarStore = createComposerToolbarStore({
+      seedKey: "chat-submit-gate-unowned-refused-test",
+      values: {
+        permission: "supervised",
+        selection: {
+          harnessId: "claude",
+          modelSlug: "claude-sonnet",
+          profileId: null,
+        },
+        reasoning: "medium",
+        serviceTier: "",
+      },
+      onSettingsChange: null,
+      tuiOnly: false,
+      hostId: null,
+    });
+
+    const ensureDraftOwned = vi.fn(() => Promise.resolve(false));
+
+    const { result } = renderHook(() =>
+      useChatComposerSubmit({
+        taskId: "task-unowned-refused",
+        editorRef,
+        pickerStore,
+        toolbarStore,
+        activeTurnStatus: null,
+        steerCapable: false,
+        steerEnabled: true,
+        steerProtocolSupported: true,
+        getActiveTurnForSteer: () => null,
+        hasPendingApprovals: false,
+        sendDisabled: false,
+        workspaceBlocked: false,
+        imagesUnsupported: false,
+        attachmentPreparationPending: false,
+        draftUnowned: true,
+        ensureDraftOwned,
+        onSubmitMessage,
+        onSideChat: null,
+      }),
+    );
+
+    await act(async () => {
+      result.current.submitDraft("enter");
+      await Promise.resolve();
+    });
+
+    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
   });
 });
 
