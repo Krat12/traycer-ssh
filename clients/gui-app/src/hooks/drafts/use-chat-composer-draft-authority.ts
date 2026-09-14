@@ -1,7 +1,10 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
-import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
+import {
+  composerDraftIsDirty,
+  useComposerDraftStore,
+} from "@/stores/composer/composer-draft-store";
 import {
   useDraftAuthorityControl,
   type DraftAuthorityControl,
@@ -39,7 +42,7 @@ export function useChatComposerDraftAuthority(args: {
     }
     useComposerDraftStore.getState().detachDraftIdentity(chatId);
   }, [chatId, tabHostId]);
-  return useDraftAuthorityControl({
+  const control = useDraftAuthorityControl({
     draftId,
     ownerHostId,
     origin,
@@ -47,4 +50,14 @@ export function useChatComposerDraftAuthority(args: {
     client: args.client,
     repairOnEdit,
   });
+  // A dirty unowned row at mount is an edit whose claim never settled here
+  // (the chat was switched away from before the refusal, or the app
+  // restarted): re-arm it, as the landing composer does, instead of holding
+  // the edit out of the mirror until the next keystroke.
+  const { unowned, noteEdit } = control;
+  useEffect(() => {
+    if (!unowned || draftId === null) return;
+    if (composerDraftIsDirty(draftId)) noteEdit();
+  }, [draftId, noteEdit, unowned]);
+  return control;
 }

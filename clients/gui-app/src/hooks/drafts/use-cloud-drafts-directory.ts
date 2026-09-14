@@ -20,6 +20,23 @@ import { cloudDraftsDirectoryIsVisible } from "@/lib/drafts/cloud-drafts-visibil
 
 const EMPTY_CLOUD_DRAFTS: ReadonlyArray<CloudChatSummary> = [];
 
+/**
+ * The cloud ingest sequence at the DISPATCH of the latest list request per
+ * cache slot (viewer + scope). Written inside the queryFn, so it is exact
+ * for whichever mount of this hook TanStack ran the fetch through - every
+ * observer of this slot is one of them - and read by all of them when the
+ * slot's data settles. Observing `isFetching` from an effect instead would
+ * record a sequence AFTER the dispatch, past any ingest that ran meanwhile.
+ */
+const dispatchSeqBySlot = new Map<string, number>();
+
+function directorySlotKey(
+  viewerUserId: string,
+  scopeId: string | null,
+): string {
+  return `${viewerUserId}\u0000${scopeId ?? ""}`;
+}
+
 export interface CloudDraftsDirectory {
   /**
    * False for free-tier, old-host, or publication-not-ready. The
@@ -63,6 +80,16 @@ export function useCloudDraftsDirectory(
     client,
     method: "epic.listCloudChats",
     params: { taskId: scopeId ?? "" },
+    // Runs inside the queryFn immediately before dispatch. The capture is a
+    // side effect into the per-slot map; the identity-mapped query carries
+    // no request context of its own.
+    captureRequestContext: () => {
+      dispatchSeqBySlot.set(
+        directorySlotKey(viewerUserId, scopeId),
+        cloudDraftIngestSeq(),
+      );
+      return undefined;
+    },
     options: {
       enabled:
         client !== null &&
@@ -86,17 +113,14 @@ export function useCloudDraftsDirectory(
   const chats = visible
     ? (query.data?.chats ?? EMPTY_CLOUD_DRAFTS)
     : EMPTY_CLOUD_DRAFTS;
-  // Effect order matters: the fetch-start capture is declared before the
-  // snapshot capture, so a commit where a fetch both starts and (later)
-  // settles records the sequence from the START of that fetch.
-  const fetchStartSeq = useRef(0);
+  // The snapshot's fence is the dispatch sequence recorded for this slot by
+  // whichever mount ran the fetch (see `dispatchSeqBySlot`).
   const snapshotSeq = useRef(0);
   useEffect(() => {
-    if (query.isFetching) fetchStartSeq.current = cloudDraftIngestSeq();
-  }, [query.isFetching]);
-  useEffect(() => {
-    if (query.isSuccess) snapshotSeq.current = fetchStartSeq.current;
-  }, [query.dataUpdatedAt, query.isSuccess]);
+    if (!query.isSuccess) return;
+    snapshotSeq.current =
+      dispatchSeqBySlot.get(directorySlotKey(viewerUserId, scopeId)) ?? 0;
+  }, [query.dataUpdatedAt, query.isSuccess, scopeId, viewerUserId]);
   const snapshotIngestSeq = useCallback(() => snapshotSeq.current, []);
   return {
     visible,
