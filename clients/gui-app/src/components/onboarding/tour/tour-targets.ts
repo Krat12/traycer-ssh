@@ -29,16 +29,26 @@ export type TourSurfaceScope =
   | { readonly kind: "epic"; readonly tabId: string };
 
 /**
- * The plan's target filter: connected, `checkVisibility()` (display,
- * visibility, content-visibility), a nonzero box, and no inert or hidden
- * ancestor. Deliberately NOT a viewport check - an offscreen target is
- * still a target, and Joyride scrolls to it.
+ * The plan's target filter: connected, `checkVisibility()` with the
+ * `visibility` and `opacity` properties counted (display, visibility,
+ * opacity, content-visibility - at least as strict as Joyride's own walk,
+ * which rejects `visibility: hidden` that the default call lets through,
+ * and so hands Joyride nothing it would wait on), a nonzero box, and no
+ * inert or hidden ancestor. Deliberately NOT a viewport check - an
+ * offscreen target is still a target, and Joyride scrolls to it.
  */
 export function presentableElement(
   element: Element | null,
 ): HTMLElement | null {
   if (!(element instanceof HTMLElement) || !element.isConnected) return null;
-  if (!element.checkVisibility()) return null;
+  if (
+    !element.checkVisibility({
+      visibilityProperty: true,
+      opacityProperty: true,
+    })
+  ) {
+    return null;
+  }
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
   if (element.closest("[inert], [hidden]") !== null) return null;
@@ -200,7 +210,12 @@ export interface TargetSnapshot {
   readonly node: HTMLElement | null;
   /** Joyride refused `node` (its target wait timed out): shown centred. */
   readonly unanchored: boolean;
-  /** The anchored card has presented at least once for this key. */
+  /**
+   * Joyride presented the anchored card for `node`. Until then the anchored
+   * step hides its overlay: the dim follows the card, so Joyride's own
+   * target wait (should it disagree with the resolver after all) is a
+   * blank moment, never a bare dim.
+   */
   readonly presented: boolean;
   /** Bumps whenever the renderer must be replaced (a `key` for Joyride). */
   readonly epoch: number;
@@ -265,9 +280,10 @@ export function createTargetTracker(): TargetTracker {
     publish({
       ...current,
       node,
-      // A refusal was about the previous node; the new one gets its try.
+      // A refusal was about the previous node; the new one gets its try -
+      // card first, dim once it has presented.
       unanchored: false,
-      presented: node === null ? false : current.presented,
+      presented: false,
       epoch: current.epoch + 1,
     });
   };

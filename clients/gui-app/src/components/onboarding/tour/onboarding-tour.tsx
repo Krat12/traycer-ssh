@@ -67,6 +67,10 @@ export function OnboardingTour(): React.ReactElement | null {
         steps={controller.steps}
         onEvent={controller.onEvent}
         tooltipComponent={OnboardingTourTooltip}
+        // No spinner either: the anchored step hides its overlay until the
+        // card presents, and a lone spinner on an undimmed app would read
+        // as the app loading.
+        loaderComponent={null}
         styles={styles}
         floatingOptions={floatingOptions}
         options={{

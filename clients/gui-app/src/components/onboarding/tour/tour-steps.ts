@@ -111,6 +111,8 @@ export type StepPresentation =
   | {
       readonly kind: "anchored";
       readonly target: () => HTMLElement | null;
+      /** The card has presented: only then is the dim drawn around it. */
+      readonly presented: boolean;
     }
   | {
       readonly kind: "unanchored";
@@ -167,6 +169,10 @@ export function buildTourSteps(
       ...base,
       target: presentation.target,
       placement: lesson.placement,
+      // No dim before the card: Joyride draws the overlay through its
+      // target wait and scroll transit, both card-less. The step is
+      // re-merged when `presented` flips, and the cutout opens then.
+      hideOverlay: !presentation.presented,
     };
   });
 }

@@ -557,6 +557,7 @@ function buildSteps(input: StepsInput): Step[] {
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
+    presented: target.presented,
   });
 }
 
@@ -871,6 +872,11 @@ function useTerminalModePredicate(args: PredicateArgs): void {
         ? baselineRef.current
         : { key, sawOtherMode: false };
     baselineRef.current = baseline;
+    // Only an OBSERVED chat mode arms the switch: `null` is a draft record
+    // not loaded yet (a saved id restored before its draft), and a record
+    // that then arrives in terminal mode is where the user left it, not a
+    // switch they made.
+    if (composerMode === null) return;
     if (composerMode !== "terminal") {
       baseline.sawOtherMode = true;
       return;

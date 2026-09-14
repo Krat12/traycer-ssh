@@ -159,10 +159,20 @@ beforeEach(() => {
   useImportedUnseenStore.setState({ unseen: {} });
   useRemoteFolderPickerStore.getState().settle(null);
   if (typeof Element.prototype.checkVisibility !== "function") {
+    // jsdom has none: `hidden` ancestors always fail, and inline
+    // `visibility: hidden` fails only when the resolver asks for it, the
+    // way a browser's `visibilityProperty` option does.
     Object.defineProperty(Element.prototype, "checkVisibility", {
       configurable: true,
-      value(this: Element) {
-        return !this.closest("[hidden]");
+      value(this: Element, options: CheckVisibilityOptions | undefined) {
+        if (this.closest("[hidden]") !== null) return false;
+        if (options?.visibilityProperty !== true) return true;
+        const hiddenByStyle = (node: Element | null): boolean =>
+          node !== null &&
+          ((node instanceof HTMLElement &&
+            node.style.visibility === "hidden") ||
+            hiddenByStyle(node.parentElement));
+        return !hiddenByStyle(this);
       },
     });
   }
@@ -444,6 +454,36 @@ describe("targets and presentation", () => {
     expect(joyride.mounts).toBeGreaterThan(epochBefore);
   });
 
+  it("a visibility:hidden anchor is not a target (P2): the unanchored card shows, no overlay; once visible the anchored step keeps its overlay hidden until the card presents, then dims", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
+    const anchor = surface.anchors["landing-folder-add"];
+    if (anchor === undefined) throw new Error("anchor missing");
+    anchor.style.visibility = "hidden";
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    const hidden = props().steps.at(0);
+    expect(hidden?.placement).toBe("center");
+    expect(hidden?.hideOverlay).toBe(true);
+    await mutate(() => {
+      anchor.style.visibility = "";
+    });
+    const anchored = props().steps.at(0);
+    if (anchored === undefined || typeof anchored.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(anchored.target()).toBe(anchor);
+    expect(anchored.placement).toBe("bottom");
+    // Card first: no dim through Joyride's own wait / scroll transit.
+    expect(anchored.hideOverlay).toBe(true);
+    present();
+    const dimmed = props().steps.at(0);
+    expect(dimmed?.hideOverlay).toBe(false);
+    expect(dimmed?.placement).toBe("bottom");
+    expect(joyride.props?.loaderComponent).toBeNull();
+  });
+
   it("a node Joyride refuses (target_not_found on its wait) swaps in the centred fallback without touching progress; Next still acknowledges", () => {
     keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
     render(<OnboardingTour />);
@@ -550,7 +590,8 @@ describe("targets and presentation", () => {
       throw new Error("expected a function target");
     }
     expect(spotlit.target()).toBe(surface.anchors.column);
-    expect(spotlit.hideOverlay).not.toBe(true);
+    present();
+    expect(props().steps.at(0)?.hideOverlay).toBe(false);
     const mountsBefore = joyride.mounts;
     let unregister: () => void = () => undefined;
     act(() => {
@@ -766,6 +807,37 @@ describe("lesson predicates", () => {
       flow().advance("add-folder", "add-folder", "next");
     });
     expect(flow().activeTourId).toBe("submit-prompt");
+  });
+
+  it("terminal-mode: a replay whose draft record loads late (null -> terminal) is not a switch (P3); a later chat -> terminal is", () => {
+    const LATE_DRAFT = "draft-late";
+    keep(mountDraftSurface(LATE_DRAFT, ["landing-terminal-switch"], true));
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().skipChain();
+      flow().replayTour("terminal-mode");
+      // A saved id restored before its record exists.
+      flow().setContext({ draftId: LATE_DRAFT, hostId: HOST_ID });
+    });
+    expect(flow().chain).toBe("active");
+    act(() => {
+      useLandingDraftStore.getState().createDraftWithId(LATE_DRAFT, null);
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(LATE_DRAFT, "terminal");
+    });
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("terminal-mode");
+    act(() => {
+      useLandingDraftStore.getState().setDraftComposerMode(LATE_DRAFT, "chat");
+    });
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(LATE_DRAFT, "terminal");
+    });
+    expect(flow().chain).toBe("completed");
   });
 
   it("submit-prompt: only a prompt-accepted receipt matching draft/host/attempt advances and records the destination; optimistic navigation does not", () => {
