@@ -16,6 +16,7 @@ import {
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
+  retireLandingDraft,
 } from "@/lib/drafts/landing-draft-retirement";
 import {
   setDraftLocalDeleteListener,
@@ -738,6 +739,32 @@ describe("landing draft store: deleteClaimedRetiredLandingDraft", () => {
     deleteClaimedRetiredLandingDraft("never-retired", "host-a");
 
     expect(landingDraftIsRetired("never-retired")).toBe(false);
+    expect(deleted).toEqual([]);
+  });
+
+  it("retargets a receipt whose delete is pending on a DIFFERENT host, and notifies local-delete", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    retireLandingDraft("pending-on-host-a", "host-a");
+    expect(pendingLandingDraftDeleteHostId("pending-on-host-a")).toBe("host-a");
+
+    deleteClaimedRetiredLandingDraft("pending-on-host-a", "host-b");
+
+    expect(pendingLandingDraftDeleteHostId("pending-on-host-a")).toBe("host-b");
+    expect(deleted).toEqual(["pending-on-host-a"]);
+  });
+
+  it("leaves a receipt already pending on the SAME host unchanged and does not notify", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    retireLandingDraft("pending-on-host-b", "host-b");
+    expect(pendingLandingDraftDeleteHostId("pending-on-host-b")).toBe("host-b");
+
+    deleteClaimedRetiredLandingDraft("pending-on-host-b", "host-b");
+
+    expect(pendingLandingDraftDeleteHostId("pending-on-host-b")).toBe("host-b");
     expect(deleted).toEqual([]);
   });
 });

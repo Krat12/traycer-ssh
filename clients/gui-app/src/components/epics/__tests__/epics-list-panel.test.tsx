@@ -55,6 +55,7 @@ import {
   pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
 } from "@/lib/drafts/landing-draft-retirement";
+import { setLandingPlacementHostReader } from "@/lib/drafts/draft-local-edits";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { DraftSurfaceContext } from "@/providers/draft-surface-context";
 import { WindowsBridgeContext } from "@/providers/windows-bridge-context";
@@ -612,6 +613,7 @@ describe("<EpicsListPanel />", () => {
     useHistorySearchStore.setState({ search: DEFAULT_HISTORY_SEARCH });
     resetImportedUnseenStore();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    setLandingPlacementHostReader(null);
   });
 
   it("opens landing history rows through the canonical epic tab route", async () => {
@@ -3473,6 +3475,50 @@ describe("<EpicsListPanel />", () => {
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
   });
 
+  it("deletes an own row already owned by the History host through that host, even though the landing placement points elsewhere", async () => {
+    // The placement-based authority (`deleteDraft` consults it) would call
+    // this row foreign, since the placement reader names a different host
+    // than the row's owner. `HistoryDraftsList` must not go through that
+    // authority for a row it already owns - it routes the delete through
+    // `hostId` explicitly via `deleteLandingDraftOnHost`.
+    setLandingPlacementHostReader(() => "other-host");
+    const draftId = seedOwnLandingDraft("own draft on history host");
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(draftClaimTestState.claim).not.toHaveBeenCalled();
+    expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
+  });
+
+  it("contrast: retires a never-adopted own row locally with a null pending host", async () => {
+    const draftId = seedRetainedLandingDraft("never adopted own draft");
+
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBeNull();
+  });
+
   it("leaves a foreign-owned draft in place when the claim fails (not a not-found/not-published refusal)", async () => {
     const draftId = seedForeignOwnedLandingDraft("failed-claim draft");
     draftClaimTestState.claim.mockResolvedValue({ status: "failed" });
@@ -3614,6 +3660,34 @@ function seedRetainedLandingDraft(text: string): string {
   const id = useLandingDraftStore.getState().createDraft(null);
   useLandingDraftStore.getState().setDraftContent(id, content, null);
   useLandingDraftStore.getState().closeDraft(id);
+  return id;
+}
+
+// A row this panel's host ("host-test") already owns and has adopted.
+function seedOwnLandingDraft(text: string): string {
+  const id = "own-history-draft";
+  useLandingDraftStore.setState((state) => ({
+    drafts: [
+      ...state.drafts,
+      {
+        id,
+        content: {
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+        },
+        selection: null,
+        lastTouchedAt: Date.now(),
+        settings: null,
+        composerMode: "chat",
+        workspace: emptyLandingDraftWorkspaceSnapshot(),
+        ...freshLandingMirrorState(),
+        ownerHostId: "host-test",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-test" },
+        closed: true,
+      },
+    ],
+  }));
   return id;
 }
 

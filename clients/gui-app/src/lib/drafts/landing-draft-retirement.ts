@@ -112,7 +112,11 @@ export function rearmLandingDraftDelete(
   hostId: string,
 ): boolean {
   const receipt = readRetirement(draftId);
-  if (receipt === undefined || receipt.pendingDelete) return false;
+  if (receipt === undefined) return false;
+  // A delete already pending on ANOTHER host is retargeted too: the claim
+  // moved the row, so that host's delete can only ever answer "not here"
+  // while the receipt keeps the claimed row's documents out.
+  if (receipt.pendingDelete && receipt.hostId === hostId) return false;
   writeRetirement(draftId, {
     hostId,
     pendingDelete: true,

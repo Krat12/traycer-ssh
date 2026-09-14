@@ -89,7 +89,15 @@ export function HistoryDraftsList(props: {
       return;
     }
     if (!draftRequiresClaim(draft.ownerHostId, draft.origin, hostId)) {
-      useLandingDraftStore.getState().deleteDraft(draftId);
+      // A row this host already owns is deleted through it explicitly: the
+      // landing placement (which `deleteDraft` consults) can point elsewhere
+      // while History runs on the app-wide host. A row no host has adopted
+      // yet has nowhere to route and retires locally as before.
+      if (draft.ownerHostId === hostId) {
+        deleteLandingDraftOnHost(draftId, hostId);
+      } else {
+        useLandingDraftStore.getState().deleteDraft(draftId);
+      }
       return;
     }
     void claim(draftId).then(
