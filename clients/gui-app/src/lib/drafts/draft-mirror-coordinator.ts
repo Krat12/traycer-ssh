@@ -83,6 +83,7 @@ import {
   setDraftLocalDeleteListener,
   setDraftLocalEditListener,
   setDraftLocalFlushListener,
+  setLandingPlacementHostReader,
 } from "./draft-local-edits";
 import {
   DraftMirrorSession,
@@ -708,6 +709,7 @@ function routeLocalFlush(draftId: string): void {
 setDraftLocalEditListener(routeLocalEdit);
 setDraftLocalDeleteListener(routeLocalDelete);
 setDraftLocalFlushListener(routeLocalFlush);
+setLandingPlacementHostReader(() => landingAdoptionHostId);
 
 export interface AcquireDraftMirrorArgs {
   readonly hostId: string;
@@ -844,6 +846,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   setDraftLocalEditListener(routeLocalEdit);
   setDraftLocalDeleteListener(routeLocalDelete);
   setDraftLocalFlushListener(routeLocalFlush);
+  setLandingPlacementHostReader(() => landingAdoptionHostId);
 }
 
 export function draftMirrorSessionCountForTests(): number {
@@ -903,13 +906,20 @@ export async function ingestCloudDraftSummary(input: {
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
   // Re-asked right before the store mutation, after the head's blob reads: a
-  // claim that landed meanwhile made this device the owner, and a replica
-  // head from the previous owner must not stamp the row back onto it.
+  // claim that landed meanwhile made THIS host the owner, and a replica head
+  // from the previous owner must not stamp the row back onto it. The fence
+  // is scoped to the ingesting host: an own row of another host (the
+  // placement auto-followed here, that host's session absent) is exactly
+  // what this directory legitimately supplies a newer head for.
   await applyHostDocument(input.document, () => {
     const row = useLandingDraftStore
       .getState()
       .drafts.find((draft) => draft.id === input.document.draftId);
-    return row === undefined || row.origin !== "own";
+    return (
+      row === undefined ||
+      row.origin !== "own" ||
+      row.ownerHostId !== input.hostId
+    );
   });
 }
 

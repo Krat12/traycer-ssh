@@ -64,6 +64,7 @@ import {
 import { registerLandingDraftRootSource } from "@/lib/composer/landing-image-budget";
 import { draftRuntimeRegistry } from "./draft-runtime-registry";
 import {
+  landingPlacementHostId,
   notifyDraftLocalDelete,
   notifyDraftLocalEdit,
   notifyDraftLocalFlush,
@@ -484,6 +485,25 @@ function parsePersistedComposerMode(value: unknown): ComposerMode {
     : DEFAULT_COMPOSER_MODE;
 }
 
+/**
+ * A row this device may not write through its adoption host: a replica, or
+ * an own row adopted on a host the landing placement has auto-followed away
+ * from. Deleting, closing, reopening and caret moves on such a row stay
+ * local; the placement host's claim (first substantive edit) rebinds it.
+ */
+function landingRowIsForeign(draft: {
+  readonly origin: "own" | "replica" | null;
+  readonly adoption: LandingDraftAdoption;
+}): boolean {
+  if (draft.origin === "replica") return true;
+  const placement = landingPlacementHostId();
+  return (
+    placement !== null &&
+    draft.adoption.state === "adopted" &&
+    draft.adoption.hostId !== placement
+  );
+}
+
 function destroyLandingDraft(
   get: () => LandingDraftStoreState,
   set: (partial: Partial<LandingDraftStoreState>) => void,
@@ -495,11 +515,12 @@ function destroyLandingDraft(
   // A local delete needs a row to route its host request. A host tombstone is
   // already authoritative even when its local mirror was evicted.
   if (closing === undefined && routeHostDelete) return;
-  // A replica is never deleted through its adoption host: that host is the
-  // previous owner (or one this placement has left), and a tombstone routed
-  // there removes a row this device does not own. It is retired locally;
-  // a claim that lands first turns it into an own row, which routes.
-  const routeDelete = routeHostDelete && closing?.origin !== "replica";
+  // A foreign row is never deleted through its adoption host: that host is
+  // the previous owner (or one this placement has left), and a tombstone
+  // routed there removes a row this device does not own. It is retired
+  // locally; a claim that lands first rebinds the row, which then routes.
+  const routeDelete =
+    routeHostDelete && closing !== undefined && !landingRowIsForeign(closing);
   if (closing !== undefined) {
     retireLandingDraft(
       id,
@@ -653,7 +674,7 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
           // names the previous owner, and a delete routed there would remove
           // the original the repair policy preserves (or go to the wrong
           // host if a claim landed meanwhile).
-          destroyLandingDraft(get, set, id, closing.origin !== "replica");
+          destroyLandingDraft(get, set, id, !landingRowIsForeign(closing));
           return;
         }
         if (closing.closed) {
@@ -664,7 +685,7 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         // owner keeps its own tab state, and dirtying a replica would leave
         // an edit bound to the previous owner's adoption host that nothing
         // here can claim or flush.
-        const local = closing.origin === "replica";
+        const local = landingRowIsForeign(closing);
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
@@ -712,7 +733,7 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         // Reopening a replica is local view state, like closing one: looking
         // at a draft another host owns must not write to that host's row or
         // leave a dirty replica behind. The first substantive edit claims.
-        const local = draft.origin === "replica";
+        const local = landingRowIsForeign(draft);
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
@@ -794,10 +815,11 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         const draft = get().drafts.find((d) => d.id === id);
         if (!draft) return;
         if (sameDraftSelection(draft.selection, selection)) return;
-        // A caret move on a row this host does not own stays local: it is
-        // not an edit, must not claim, and must not dirty the row (a dirty
-        // replica suppresses the owner's later documents).
-        const local = draft.origin === "replica";
+        // A caret move on a row this host does not own (or whose owner the
+        // placement has left) stays local: it is not an edit, must not
+        // claim, and must not dirty the row (a dirty foreign row suppresses
+        // the owner's later documents and has no queued flush).
+        const local = landingRowIsForeign(draft);
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id

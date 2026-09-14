@@ -568,6 +568,81 @@ describe("ingestCloudDraftSummary admit fence", () => {
     expect(row?.origin).toBe("replica");
     expect(row?.content).toEqual(typed("cloud body"));
   });
+
+  it("applies an incoming document owned by a different host than the ingesting host, even onto a local own row", async () => {
+    // Scoped fence: the local row is "own" adopted on host-a, but the
+    // ingesting host is host-b (the placement auto-followed there). host-a's
+    // own document is exactly what this directory legitimately supplies a
+    // newer head for, so it is applied even though the row is "own" locally.
+    const id = "d4";
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id,
+          content: typed("local own body on host-a"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "own",
+          ownerHostId: "host-a",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.content).toEqual(typed("cloud body host-a"));
+  });
+
+  it("does not overwrite a local own row when the ingesting host matches the row's owner host", async () => {
+    // Contrast: same local own row shape, but the ingesting host IS the
+    // row's owner host (host-a). The fence still blocks the apply, exactly
+    // as the first admit-fence test above.
+    const id = "d5";
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id,
+          content: typed("local own body on host-b"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-b" },
+          origin: "own",
+          ownerHostId: "host-b",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
+    await ingestCloudDraftSummary({
+      hostId: "host-b",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === id);
+    expect(row?.content).toEqual(typed("local own body on host-b"));
+  });
 });
 
 function readDraft() {

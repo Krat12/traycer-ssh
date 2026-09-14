@@ -20,6 +20,7 @@ import {
   setDraftLocalDeleteListener,
   setDraftLocalEditListener,
   setDraftLocalFlushListener,
+  setLandingPlacementHostReader,
 } from "@/lib/drafts/draft-local-edits";
 
 const NON_EMPTY_CONTENT = {
@@ -737,5 +738,206 @@ describe("landing draft store: deleteClaimedRetiredLandingDraft", () => {
 
     expect(landingDraftIsRetired("never-retired")).toBe(false);
     expect(deleted).toEqual([]);
+  });
+});
+
+describe("landing draft store: own row adopted on a host the landing placement has left", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setLandingPlacementHostReader(null);
+    setDraftLocalDeleteListener(null);
+    setDraftLocalEditListener(null);
+    setDraftLocalFlushListener(null);
+  });
+
+  it("deleteDraft retires an own row adopted on host-a locally when the placement is host-b: no host-route receipt, no local-delete notification", () => {
+    setLandingPlacementHostReader(() => "host-b");
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-left-behind", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("own-left-behind");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-left-behind");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-left-behind")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("own-left-behind")).toBeNull();
+    expect(deleted).toEqual([]);
+  });
+
+  it("contrast: deleteDraft routes the host delete when the placement is still host-a", () => {
+    setLandingPlacementHostReader(() => "host-a");
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-current-placement", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("own-current-placement");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-current-placement");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-current-placement")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("own-current-placement")).toBe(
+      "host-a",
+    );
+    expect(deleted).toEqual(["own-current-placement"]);
+  });
+
+  it("setDraftSelection on an own row adopted on host-a with placement host-b keeps generation unchanged and does not notify local-edit", () => {
+    setLandingPlacementHostReader(() => "host-b");
+    const notified: string[] = [];
+    setDraftLocalEditListener((id) => notified.push(id));
+
+    const draft = baseDraft("own-left-behind-sel", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+      selection: null,
+      lastTouchedAt: 0,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore
+      .getState()
+      .setDraftSelection("own-left-behind-sel", { from: 1, to: 2 });
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-left-behind-sel");
+    expect(after).toBeDefined();
+    expect(after?.selection).toEqual({ from: 1, to: 2 });
+    expect(after?.generation).toBe(3);
+    expect(after?.lastTouchedAt).toBeGreaterThan(0);
+    expect(notified).toEqual([]);
+  });
+
+  it("contrast: setDraftSelection bumps generation and notifies local-edit when the placement is still host-a", () => {
+    setLandingPlacementHostReader(() => "host-a");
+    const notified: string[] = [];
+    setDraftLocalEditListener((id) => notified.push(id));
+
+    const draft = baseDraft("own-current-placement-sel", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+      selection: null,
+      lastTouchedAt: 0,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore
+      .getState()
+      .setDraftSelection("own-current-placement-sel", { from: 1, to: 2 });
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-current-placement-sel");
+    expect(after).toBeDefined();
+    expect(after?.selection).toEqual({ from: 1, to: 2 });
+    expect(after?.generation).toBe(4);
+    expect(after?.lastTouchedAt).toBeGreaterThan(0);
+    expect(notified).toEqual(["own-current-placement-sel"]);
+  });
+
+  it("closeDraft on an own row adopted on host-a with placement host-b keeps generation unchanged and does not notify, and a subsequent openDraft likewise", () => {
+    setLandingPlacementHostReader(() => "host-b");
+    const editNotified: string[] = [];
+    const flushNotified: string[] = [];
+    setDraftLocalEditListener((id) => editNotified.push(id));
+    setDraftLocalFlushListener((id) => flushNotified.push(id));
+
+    const draft = baseDraft("own-left-behind-close", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().closeDraft("own-left-behind-close");
+
+    const afterClose = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-left-behind-close");
+    expect(afterClose).toBeDefined();
+    expect(afterClose?.closed).toBe(true);
+    expect(afterClose?.generation).toBe(3);
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(editNotified).toEqual([]);
+    expect(flushNotified).toEqual([]);
+
+    useLandingDraftStore.getState().openDraft("own-left-behind-close");
+
+    const afterOpen = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-left-behind-close");
+    expect(afterOpen).toBeDefined();
+    expect(afterOpen?.closed).toBe(false);
+    expect(afterOpen?.generation).toBe(3);
+    expect(useLandingDraftStore.getState().activeDraftId).toBe(
+      "own-left-behind-close",
+    );
+    expect(editNotified).toEqual([]);
+    expect(flushNotified).toEqual([]);
+  });
+
+  it("a null placement reader treats an own row adopted on host-a as own: deleteDraft routes the host delete", () => {
+    setLandingPlacementHostReader(() => null);
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-null-placement", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("own-null-placement");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-null-placement");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-null-placement")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("own-null-placement")).toBe(
+      "host-a",
+    );
+    expect(deleted).toEqual(["own-null-placement"]);
   });
 });
