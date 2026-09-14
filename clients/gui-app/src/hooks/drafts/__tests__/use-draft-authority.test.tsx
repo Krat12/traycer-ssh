@@ -646,11 +646,73 @@ describe("useDraftAuthorityControl", () => {
     });
   });
 
-  it("an older attempt is rejected even after the surface returns to its host", async () => {
+  it("an older success is dropped once a newer attempt has applied", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     const second = deferred<DraftClaimResult>();
     claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Attempt 1: started on host-a, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Composer moves to host-b; attempt 2 starts there, also left pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // Attempt 2 (host-b) settles with an applied success while host-b is
+    // still current.
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+
+    // Composer returns to host-a - the surface that started attempt 1.
+    act(() => {
+      view.rerender({ tabHostId: "host-a" });
+    });
+
+    // Attempt 1 (host-a) settles next: host-a is current again, but attempt 1
+    // is older than the already-applied attempt 2, so its document must not
+    // be applied and no repair fires.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("an older success survives a newer attempt's refusal", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
 
     const view = renderHook(
       (props: { tabHostId: string }) =>
@@ -684,21 +746,24 @@ describe("useDraftAuthorityControl", () => {
       view.rerender({ tabHostId: "host-a" });
     });
 
-    // Attempt 2 (host-b) settles first: host-b is no longer current, so its
-    // document must not be applied even though it is the newest attempt.
+    // Attempt 2 (host-b) is refused: host-b is no longer current, so its
+    // refusal must not repair the draft out from under host-a.
     await act(async () => {
-      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      second.resolve({ status: "unavailable", reason: "not-found" });
       await second.promise;
     });
-    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
 
-    // Attempt 1 (host-a) settles next: host-a IS current again, but attempt 1
-    // is older than attempt 2 for this draft, so it must still be rejected.
+    // Attempt 1 (host-a) succeeds afterward: the refusal never applied
+    // anything, so attempt 1's older success still stands and applies.
     await act(async () => {
       first.resolve({ status: "ok", draft: STUB_DRAFT });
       await first.promise;
     });
-    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 

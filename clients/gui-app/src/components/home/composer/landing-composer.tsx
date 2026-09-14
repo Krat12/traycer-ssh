@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -928,7 +929,9 @@ export function LandingComposer(props: LandingComposerProps) {
     }
     dispatchSubmit();
   }, [authority, canSubmit, dispatchSubmit, resolvedHostId]);
-  useEffect(() => {
+  // Layout effects: the continuation of a claim that settles in the same
+  // tick as a host re-point must see the handler built for the new host.
+  useLayoutEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
@@ -974,7 +977,7 @@ export function LandingComposer(props: LandingComposerProps) {
       workspaceCanStart,
     ],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     handleStartTerminalRef.current = handleStartTerminal;
   }, [handleStartTerminal]);
 

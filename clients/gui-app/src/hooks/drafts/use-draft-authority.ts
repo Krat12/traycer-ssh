@@ -75,12 +75,13 @@ export function useDraftAuthorityControl(args: {
   // has attached the refusal repair to an attempt: a claim the submit path
   // started has none, and the first edit that joins it arms exactly one.
   const inflight = useRef(new Map<string, PendingClaim>());
-  // The newest attempt per draft, whichever host it was made through. A
-  // settlement older than the newest attempt for its draft is stale even
-  // when the surface has come back to its host: the cloud has already
-  // answered a later claim, and applying the older document would roll the
-  // row's owner back behind it.
-  const latestAttempt = useRef(new Map<string, number>());
+  // The newest attempt per draft that has APPLIED its document, whichever
+  // host it was made through. A success older than that is stale even when
+  // the surface has come back to its host: a later claim has already been
+  // answered and applied, and the older document would roll the row's owner
+  // back behind it. Only an applied success supersedes - a newer attempt
+  // that was refused must not discard an older, still-current success.
+  const latestApplied = useRef(new Map<string, number>());
   const attemptCounter = useRef(0);
   // Read through a ref by the in-flight continuation: the repair belongs to
   // the render that observes the refusal, not the one that started the claim
@@ -136,7 +137,6 @@ export function useDraftAuthorityControl(args: {
     if (pending !== undefined) return pending;
     attemptCounter.current += 1;
     const attempt = attemptCounter.current;
-    latestAttempt.current.set(draftId, attempt);
     const promise = (async (): Promise<boolean> => {
       const result = await claimDraft(draftId);
       if (result.status !== "ok" && result.status !== "already-owned") {
@@ -147,11 +147,12 @@ export function useDraftAuthorityControl(args: {
       // back here; the current host's claim is the one that counts.
       const stillCurrent = (): boolean =>
         currentHostRef.current === tabHostId &&
-        latestAttempt.current.get(draftId) === attempt;
+        (latestApplied.current.get(draftId) ?? 0) <= attempt;
       if (!stillCurrent()) return true;
       // Re-asked by the coordinator after its blob reads, right before the
       // store mutation: the surface can move while the fetch is in flight.
       await applyIncomingDraftDocument(result.draft, stillCurrent);
+      if (stillCurrent()) latestApplied.current.set(draftId, attempt);
       return true;
     })();
     const entry: PendingClaim = {
