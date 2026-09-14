@@ -335,7 +335,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
     resetLandingDraftRetirementsForTests();
   });
 
-  it("keeps a clean replica row's closed:true on an incoming replica document, then follows an incoming own document's closed:false", () => {
+  it("keeps a clean replica row's closed:true on an incoming replica document, then keeps closed:true when a later own document lands on the (still-replica-origin) row", () => {
     const seeded = baseDraft("draft-1", {
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
@@ -415,8 +415,63 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
       .getState()
       .drafts.find((d) => d.id === "draft-1");
     expect(afterOwn).toBeDefined();
-    // Own document: `closed` follows the incoming portable value.
-    expect(afterOwn?.closed).toBe(false);
+    // The EXISTING row (before this apply) still had origin "replica", so
+    // `incomingClosedState` keeps its local `closed` even though the
+    // incoming own document's portable value is false, and even though the
+    // row's `origin` itself does follow the incoming document to "own".
+    expect(afterOwn?.closed).toBe(true);
+    expect(afterOwn?.origin).toBe("own");
+  });
+
+  it("keeps a reopened replica row's closed:false when a later own document (claim landing) lands with portable.closed:true", () => {
+    const seeded = baseDraft("draft-2", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      hostRevision: 3,
+      generation: 2,
+      syncedGeneration: 2,
+      closed: false,
+    });
+    useLandingDraftStore.setState({ drafts: [seeded], activeDraftId: null });
+
+    const incomingOwn: DraftDocument = {
+      draftId: "draft-2",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 6,
+      lastTouchedAt: 100,
+      workspace: null,
+      ownerHostId: "host-a",
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 5,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: true,
+      },
+    };
+
+    applyLandingHostDocument(incomingOwn, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "draft-2");
+    expect(after).toBeDefined();
+    // The existing row was origin "replica", so `closed` stays local (false)
+    // even though the incoming own document's portable value is true; the
+    // row's `origin` itself follows the incoming document to "own".
+    expect(after?.closed).toBe(false);
+    expect(after?.origin).toBe("own");
   });
 });
 

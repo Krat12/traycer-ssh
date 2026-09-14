@@ -1808,15 +1808,20 @@ function adoptOwnershipOverLocalEdit(
 
 /**
  * A replica's open/closed state is this device's view (its close and reopen
- * never publish), so a newer head from the owner must not flip it. An own
- * row follows the portable value.
+ * never publish), so a newer head from the owner must not flip it - and the
+ * claim that turns the replica into an own row must not either: the row was
+ * reopened here without publishing, and the claimed document still carries
+ * the owner's `closed`. An own row otherwise follows the portable value.
  */
 function incomingClosedState(
   origin: DraftDocument["origin"],
   portableClosed: boolean,
   existing: LandingDraftTab | undefined,
 ): boolean {
-  if (origin === "replica" && existing !== undefined) return existing.closed;
+  if (existing === undefined) return portableClosed;
+  if (origin === "replica" || existing.origin === "replica") {
+    return existing.closed;
+  }
   return portableClosed;
 }
 
