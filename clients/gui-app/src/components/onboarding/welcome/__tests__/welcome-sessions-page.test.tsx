@@ -141,8 +141,10 @@ vi.mock("@/lib/analytics", () => ({
   },
 }));
 
+import { useWelcomeHostImportRun } from "@/components/onboarding/welcome/use-welcome-host-import-run";
 import { useWelcomeScan } from "@/components/onboarding/welcome/use-welcome-scan";
 import { WelcomeSessionsPage } from "@/components/onboarding/welcome/welcome-sessions-page";
+import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
 import {
   SESSION_IMPORT_RUN_IDLE,
   useSessionImportRunStore,
@@ -165,7 +167,18 @@ function TestPage(props: {
     open: true,
     enabledProviderIds: props.enabledProviderIds,
   });
-  return <WelcomeSessionsPage welcomeScan={welcomeScan} {...props.callbacks} />;
+  // The modal holds the probe and hands it down; page 2 is on screen here.
+  const hostImportRun = useWelcomeHostImportRun(
+    useStreamRuntimeBinding(),
+    true,
+  );
+  return (
+    <WelcomeSessionsPage
+      welcomeScan={welcomeScan}
+      hostImportRun={hostImportRun}
+      {...props.callbacks}
+    />
+  );
 }
 
 interface PageHandle extends PageCallbacks {

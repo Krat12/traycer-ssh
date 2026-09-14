@@ -12,6 +12,14 @@ import { WelcomeConnecting } from "@/components/onboarding/welcome/welcome-conne
 import { WelcomeProvidersPage } from "@/components/onboarding/welcome/welcome-providers-page";
 import { WelcomeSessionsPage } from "@/components/onboarding/welcome/welcome-sessions-page";
 import {
+  buildWelcomeSessionsView,
+  welcomeSessionsBranch,
+} from "@/components/onboarding/welcome/welcome-sessions-model";
+import {
+  useWelcomeHostImportRun,
+  type WelcomeHostImportRun,
+} from "@/components/onboarding/welcome/use-welcome-host-import-run";
+import {
   useWelcomeScan,
   type WelcomeScan,
 } from "@/components/onboarding/welcome/use-welcome-scan";
@@ -84,7 +92,8 @@ export function WelcomeModal(props: {
   // verdict with no host to stream from is the gap between a host swap and
   // the effect that rebuilds the binding.
   const readiness = useSurfaceReadiness("default-host", null);
-  const streamHostId = useStreamRuntimeBinding()?.hostId ?? null;
+  const streamBinding = useStreamRuntimeBinding();
+  const streamHostId = streamBinding?.hostId ?? null;
   const hostReady = readiness.kind === "ready" && streamHostId !== null;
 
   const roster = useWelcomeRoster();
@@ -99,6 +108,26 @@ export function WelcomeModal(props: {
     [providers],
   );
   const welcomeScan = useWelcomeScan({ open: true, enabledProviderIds });
+  // Page 2's import-status probe, held here because the header reads it too.
+  const hostImportRun = useWelcomeHostImportRun(
+    streamBinding,
+    hostReady && modalPage === 2,
+  );
+  // The "untick" hint describes ticked rows on screen, so it is true only
+  // while page 2 is showing the LIST - not the already-running notice, the
+  // scanning line or the empty state - and at least one row is ticked.
+  // Same branch function the page renders from, so the two cannot drift.
+  const sessionsView = useMemo(
+    () => buildWelcomeSessionsView(welcomeScan.scan.state),
+    [welcomeScan.scan.state],
+  );
+  const somethingToUntick =
+    welcomeSessionsBranch({
+      alreadyRunning: hostImportRun.alreadyRunning,
+      support: welcomeScan.support,
+      phase: welcomeScan.scan.state.phase,
+      view: sessionsView,
+    }) === "list" && sessionsView.selectedCount > 0;
 
   const skip = (): void => {
     Analytics.getInstance().track(AnalyticsEvent.OnboardingModalSkipped, {
@@ -151,15 +180,13 @@ export function WelcomeModal(props: {
         <WelcomeModalHeader
           page={modalPage}
           hostReady={hostReady}
-          // The hint is about UNTICKING, so it is only true while there is a
-          // ticked row to untick: the empty state, a scan with nothing yet,
-          // and the notices all render without it.
-          somethingToUntick={welcomeScan.importableCount > 0}
+          somethingToUntick={somethingToUntick}
         />
         {hostReady ? (
           <WelcomeModalBody
             page={modalPage}
             welcomeScan={welcomeScan}
+            hostImportRun={hostImportRun}
             onContinueFromProviders={continueFromProviders}
             onSkip={skip}
             onFinish={finishModal}
@@ -193,12 +220,19 @@ function welcomeBranchAfterProviders(
 function WelcomeModalBody(props: {
   readonly page: WelcomeModalPage;
   readonly welcomeScan: WelcomeScan;
+  readonly hostImportRun: WelcomeHostImportRun;
   readonly onContinueFromProviders: () => void;
   readonly onSkip: () => void;
   readonly onFinish: (branch: OnboardingBranch) => void;
 }): ReactNode {
-  const { page, welcomeScan, onContinueFromProviders, onSkip, onFinish } =
-    props;
+  const {
+    page,
+    welcomeScan,
+    hostImportRun,
+    onContinueFromProviders,
+    onSkip,
+    onFinish,
+  } = props;
   // "Shown" is the page being ON SCREEN, so it is keyed on the page and
   // fires only from the body - the connecting state is not a page.
   useEffect(() => {
@@ -217,6 +251,7 @@ function WelcomeModalBody(props: {
   return (
     <WelcomeSessionsPage
       welcomeScan={welcomeScan}
+      hostImportRun={hostImportRun}
       onImportStarted={() => onFinish("sessions")}
       onSkipImport={() => onFinish("no-sessions")}
       onNoSessions={() => onFinish("no-sessions")}
@@ -250,7 +285,7 @@ const UNTICK_HINT = "Untick anything you'd rather leave behind.";
 function WelcomeModalHeader(props: {
   readonly page: WelcomeModalPage;
   readonly hostReady: boolean;
-  /** Page 2 has ticked rows on screen, so its subtitle may say "untick". */
+  /** Page 2 is showing its list with ticked rows, so it may say "untick". */
   readonly somethingToUntick: boolean;
 }): ReactNode {
   const { page, hostReady, somethingToUntick } = props;
