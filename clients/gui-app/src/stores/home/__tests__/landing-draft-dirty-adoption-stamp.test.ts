@@ -378,4 +378,155 @@ describe("applyLandingHostDocument - dirty local row", () => {
     // hostRevision rather than regressing to the incoming document's.
     expect(draft?.hostRevision).toBe(100);
   });
+
+  it('keeps origin "own" and does not notify when a same-owner document arrives with origin "replica" over a dirty own row', () => {
+    const localContent = {
+      type: "doc" as const,
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "unsaved local edit" }],
+        },
+      ],
+    };
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "draft-1",
+          content: localContent,
+          selection: null,
+          lastTouchedAt: 10,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          ownerHostId: "host-a",
+          origin: "own",
+          adoption: { state: "adopted", hostId: "host-a" },
+          // Dirty: generation ahead of syncedGeneration.
+          generation: 2,
+          syncedGeneration: 1,
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    // Same owner and same adoption host as the existing own row, but the
+    // document itself carries origin "replica" (a cloud ingest made from a
+    // placement that has auto-followed elsewhere).
+    const incoming: DraftDocument = {
+      draftId: "draft-1",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 5,
+      lastTouchedAt: 99,
+      workspace: null,
+      ownerHostId: "host-a",
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-a" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 5,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+
+    const notified: string[] = [];
+    setDraftLocalEditListener((draftId) => {
+      notified.push(draftId);
+    });
+
+    applyLandingHostDocument(incoming, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const draft = useLandingDraftStore
+      .getState()
+      .drafts.find((entry) => entry.id === "draft-1");
+    expect(draft).toBeDefined();
+    // Local content untouched - the dirty edit is not clobbered.
+    expect(draft?.content).toEqual(localContent);
+    // Owner unchanged and existing row was "own": origin stays "own" even
+    // though the incoming document says "replica".
+    expect(draft?.origin).toBe("own");
+    expect(notified).toEqual([]);
+  });
+
+  it('stamps origin "replica" from the incoming document when the owner changes on a dirty own row', () => {
+    const localContent = {
+      type: "doc" as const,
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "unsaved local edit" }],
+        },
+      ],
+    };
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "draft-1",
+          content: localContent,
+          selection: null,
+          lastTouchedAt: 10,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          ownerHostId: "host-a",
+          origin: "own",
+          adoption: { state: "adopted", hostId: "host-a" },
+          // Dirty: generation ahead of syncedGeneration.
+          generation: 2,
+          syncedGeneration: 1,
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    // Owner changes to host-b: the "own row keeps own" carve-out does not
+    // apply, so origin is stamped from the incoming document as before.
+    const incoming: DraftDocument = {
+      draftId: "draft-1",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 5,
+      lastTouchedAt: 99,
+      workspace: null,
+      ownerHostId: "host-b",
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 5,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+
+    applyLandingHostDocument(incoming, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const draft = useLandingDraftStore
+      .getState()
+      .drafts.find((entry) => entry.id === "draft-1");
+    expect(draft).toBeDefined();
+    expect(draft?.content).toEqual(localContent);
+    expect(draft?.ownerHostId).toBe("host-b");
+    expect(draft?.origin).toBe("replica");
+  });
 });

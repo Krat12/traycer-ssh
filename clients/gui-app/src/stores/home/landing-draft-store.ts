@@ -1852,6 +1852,12 @@ function adoptOwnershipOverLocalEdit(
   // the previous owner's (possibly far higher) revision and the stale-read
   // guard would reject the new owner's next echoes.
   const ownerChanged = existing.ownerHostId !== document.ownerHostId;
+  // The same owner's head arriving as a "replica" (a cloud ingest made from
+  // a placement that has auto-followed elsewhere) does not demote an own
+  // row: its pre-transition edit stays routable to the owner's session,
+  // which a replica's is not, and no claim would ever re-arm it.
+  const origin =
+    !ownerChanged && existing.origin === "own" ? "own" : document.origin;
   useLandingDraftStore.setState((state) => ({
     drafts: state.drafts.map((draft) =>
       draft.id === document.draftId
@@ -1859,7 +1865,7 @@ function adoptOwnershipOverLocalEdit(
             ...draft,
             adoption: { state: "adopted", hostId: document.adoption.hostId },
             ownerHostId: document.ownerHostId,
-            origin: document.origin,
+            origin,
             publication: document.publication,
             hostRevision: ownerChanged ? document.revision : draft.hostRevision,
           }
