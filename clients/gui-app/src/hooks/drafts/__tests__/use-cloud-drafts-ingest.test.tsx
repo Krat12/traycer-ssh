@@ -250,6 +250,52 @@ describe("useCloudDraftsIngest", () => {
     expect(dropForeignMock.drop).not.toHaveBeenCalled();
   });
 
+  it("re-attempts ingest for the same head after a rejected ingest, on the next effect run", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockRejectedValueOnce(new Error("ingest failed"));
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+
+    ingestMock.ingest.mockResolvedValueOnce(undefined);
+    // Same head, new array reference (an equal-by-value array with a
+    // different identity) so the effect re-runs.
+    directoryMock.chats = [summary(DIGEST_ONE)];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("ingests the happy path exactly once per head across rerenders", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+
+    // Same head, new array reference each time: the key is already marked
+    // ingested, so no further ingest calls should happen.
+    directoryMock.chats = [summary(DIGEST_ONE)];
+    view.rerender();
+    directoryMock.chats = [summary(DIGEST_ONE)];
+    view.rerender();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+  });
+
   it("clears a pending retry timer on unmount, so it never fires a read", async () => {
     vi.useFakeTimers();
     readMock.read.mockRejectedValue(new Error("transient read failure"));

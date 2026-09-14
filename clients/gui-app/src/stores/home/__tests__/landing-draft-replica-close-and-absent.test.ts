@@ -181,6 +181,78 @@ describe("landing draft store: openDraft origin behavior", () => {
   });
 });
 
+describe("landing draft store: setDraftSelection origin behavior", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalEditListener(null);
+    setDraftLocalFlushListener(null);
+  });
+
+  it("setting selection on a replica row updates selection and lastTouchedAt without bumping generation or notifying local-edit", () => {
+    const notified: string[] = [];
+    setDraftLocalEditListener((id) => notified.push(id));
+
+    const draft = baseDraft("replica-1", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 3,
+      selection: null,
+      lastTouchedAt: 0,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore
+      .getState()
+      .setDraftSelection("replica-1", { from: 1, to: 2 });
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-1");
+    expect(after).toBeDefined();
+    expect(after?.selection).toEqual({ from: 1, to: 2 });
+    expect(after?.generation).toBe(3);
+    expect(after?.lastTouchedAt).toBeGreaterThan(0);
+    expect(notified).toEqual([]);
+  });
+
+  it("setting selection on an own row bumps generation and notifies local-edit", () => {
+    const notified: string[] = [];
+    setDraftLocalEditListener((id) => notified.push(id));
+
+    const draft = baseDraft("own-1", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+      selection: null,
+      lastTouchedAt: 0,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore
+      .getState()
+      .setDraftSelection("own-1", { from: 1, to: 2 });
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-1");
+    expect(after).toBeDefined();
+    expect(after?.selection).toEqual({ from: 1, to: 2 });
+    expect(after?.generation).toBe(4);
+    expect(after?.lastTouchedAt).toBeGreaterThan(0);
+    expect(notified).toEqual(["own-1"]);
+  });
+});
+
 describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
   beforeEach(() => {
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });

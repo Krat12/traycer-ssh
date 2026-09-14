@@ -444,8 +444,10 @@ async function applyHostDocument(
       client,
       hashes,
     );
-    rememberLandingBlobsOnHost(document.draftId, [...images.keys()]);
+    // Admission first: a hash confirmed on a host that no longer owns the
+    // row would let eviction drop the only local bytes.
     if (admit !== null && !admit()) return;
+    rememberLandingBlobsOnHost(document.draftId, [...images.keys()]);
     if (document.kind === "stash-entry") {
       await ingestStashDocument(document, images);
       return;

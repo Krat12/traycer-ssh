@@ -140,7 +140,19 @@ export function useCloudDraftsIngest(
         }
         const document = draftDocumentFromCloudHead(summary, outcome.record);
         settle();
-        await ingestCloudDraftSummary({ hostId, summary, document });
+        try {
+          await ingestCloudDraftSummary({ hostId, summary, document });
+        } catch (error: unknown) {
+          // The store is the only projection this row has on this device, so
+          // a failed apply (a blob read or write that threw) must release the
+          // guard: the next run of this effect asks again instead of leaving
+          // the draft invisible until a remount. (Unconditional: after a
+          // teardown the key is already gone, and deleting twice is nothing.)
+          ingestedKeys.delete(key);
+          appLogger.warn("[cloud-drafts] head apply failed", {
+            error: describeLogError(error),
+          });
+        }
       };
       void attemptRead(0);
     }

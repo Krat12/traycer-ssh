@@ -784,6 +784,10 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         const draft = get().drafts.find((d) => d.id === id);
         if (!draft) return;
         if (sameDraftSelection(draft.selection, selection)) return;
+        // A caret move on a row this host does not own stays local: it is
+        // not an edit, must not claim, and must not dirty the row (a dirty
+        // replica suppresses the owner's later documents).
+        const local = draft.origin === "replica";
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
@@ -791,12 +795,12 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
                   ...d,
                   selection,
                   lastTouchedAt: Date.now(),
-                  generation: d.generation + 1,
+                  generation: local ? d.generation : d.generation + 1,
                 }
               : d,
           ),
         }));
-        notifyDraftLocalEdit(id);
+        if (!local) notifyDraftLocalEdit(id);
       },
 
       setDraftSettings: (id, settings) => {
