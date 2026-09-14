@@ -18,7 +18,6 @@ import {
 import { useWelcomeRoster } from "@/components/onboarding/welcome/use-welcome-roster";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { useStreamRuntimeBinding } from "@/lib/host/stream-runtime-context";
-import { cn } from "@/lib/utils";
 import { useOnboardingFlowStore } from "@/stores/onboarding/onboarding-flow-store";
 import type { OnboardingBranch } from "@/stores/onboarding/onboarding-tour-catalog";
 import { useOnboardingPresenceStore } from "@/stores/onboarding/onboarding-presence-store";
@@ -149,7 +148,14 @@ export function WelcomeModal(props: {
         // both axes are viewport fractions.
         className="flex h-[80vh] w-[80vw] max-w-[min(80vw,var(--safe-area-width))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(80vw,var(--safe-area-width))]"
       >
-        <WelcomeModalHeader page={modalPage} hostReady={hostReady} />
+        <WelcomeModalHeader
+          page={modalPage}
+          hostReady={hostReady}
+          // The hint is about UNTICKING, so it is only true while there is a
+          // ticked row to untick: the empty state, a scan with nothing yet,
+          // and the notices all render without it.
+          somethingToUntick={welcomeScan.importableCount > 0}
+        />
         {hostReady ? (
           <WelcomeModalBody
             page={modalPage}
@@ -222,65 +228,58 @@ function WelcomeModalBody(props: {
 const PAGE_COPY: Readonly<
   Record<
     WelcomeModalPage,
-    { readonly title: string; readonly subtitle: string }
+    { readonly title: string; readonly step: string; readonly subtitle: string }
   >
 > = {
   1: {
     title: "Welcome to Traycer",
+    step: "Providers",
     subtitle:
       "Turn on the coding agents you use. Traycer checks the accounts you're already signed in to.",
   },
   2: {
     title: "Bring your recent work",
-    subtitle:
-      "Sessions found on this machine become Traycer tasks. Untick anything you'd rather leave behind.",
+    step: "Sessions",
+    subtitle: "Sessions found on this machine become Traycer tasks.",
   },
 };
+
+const PAGE_COUNT = 2;
+const UNTICK_HINT = "Untick anything you'd rather leave behind.";
 
 function WelcomeModalHeader(props: {
   readonly page: WelcomeModalPage;
   readonly hostReady: boolean;
+  /** Page 2 has ticked rows on screen, so its subtitle may say "untick". */
+  readonly somethingToUntick: boolean;
 }): ReactNode {
-  const { page, hostReady } = props;
+  const { page, hostReady, somethingToUntick } = props;
   // While connecting the header keeps page 1's title - it is where the user
   // lands - and says what the body is waiting on, so the dialog's accessible
   // description is never a promise about a grid that is not there yet.
   const copy = PAGE_COPY[hostReady ? page : 1];
+  const subtitle =
+    page === 2 && somethingToUntick
+      ? `${copy.subtitle} ${UNTICK_HINT}`
+      : copy.subtitle;
   return (
     <DialogHeader className="shrink-0 gap-1 px-6 pt-5 pb-3">
       <div className="flex items-start justify-between gap-4">
         <DialogTitle className="text-ui-lg">{copy.title}</DialogTitle>
-        <ol
-          aria-label="Setup steps"
-          className="flex shrink-0 items-center gap-1.5 text-ui-xs text-muted-foreground"
+        {/* "Step 1 of 2 · Providers", one phrase: the earlier
+            "1 Providers · 2 Sessions" pair read as counts. */}
+        <p
+          data-testid="welcome-modal-step"
+          className="shrink-0 text-ui-xs text-muted-foreground tabular-nums"
         >
-          <WelcomeStep number={1} label="Providers" current={page === 1} />
-          <li aria-hidden>·</li>
-          <WelcomeStep number={2} label="Sessions" current={page === 2} />
-        </ol>
+          Step {page} of {PAGE_COUNT}
+          <span aria-hidden> · </span>
+          <span className="text-foreground">{copy.step}</span>
+        </p>
       </div>
       <DialogDescription>
-        {hostReady ? copy.subtitle : "Connecting to your machine…"}
+        {hostReady ? subtitle : "Connecting to your machine…"}
       </DialogDescription>
     </DialogHeader>
-  );
-}
-
-function WelcomeStep(props: {
-  readonly number: WelcomeModalPage;
-  readonly label: string;
-  readonly current: boolean;
-}): ReactNode {
-  const { number, label, current } = props;
-  return (
-    <li
-      aria-current={current ? "step" : undefined}
-      className={cn("flex items-center gap-1", current && "text-foreground")}
-    >
-      <span className={cn("tabular-nums", current && "font-medium")}>
-        {number}
-      </span>
-      <span>{label}</span>
-    </li>
   );
 }

@@ -690,6 +690,9 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
     it("moves to page 2 while the scan is still running", () => {
       signIn();
       render(<OnboardingFlowHost />, { wrapper: WithTestQueryClient });
+      expect(screen.getByTestId("welcome-modal-step").textContent).toBe(
+        "Step 1 of 2 · Providers",
+      );
       act(() => {
         callbacks().onStarted(["claude"]);
       });
@@ -700,6 +703,14 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       expect(
         screen.getByRole("dialog", { name: "Bring your recent work" }),
       ).not.toBeNull();
+      expect(screen.getByTestId("welcome-modal-step").textContent).toBe(
+        "Step 2 of 2 · Sessions",
+      );
+      // Nothing to untick yet, so the subtitle does not say "untick".
+      expect(
+        screen.getByText("Sessions found on this machine become Traycer tasks.")
+          .textContent,
+      ).not.toContain("Untick");
       expect(trackedEvents().at(-1)).toEqual([
         "onboarding_modal_shown",
         { page: "2" },
@@ -729,6 +740,12 @@ describe("<OnboardingFlowHost /> + <WelcomeModal />", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       expect(flow().modalPage).toBe(2);
+      // Ticked rows on screen: the subtitle earns its "untick" hint.
+      expect(
+        screen.getByText(
+          "Sessions found on this machine become Traycer tasks. Untick anything you'd rather leave behind.",
+        ),
+      ).not.toBeNull();
       expect(trackedEvents()).toContainEqual([
         "onboarding_modal_continued",
         { page: "1", enabled_provider_count: 1, session_count: 2 },
