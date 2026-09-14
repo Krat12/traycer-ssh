@@ -1863,6 +1863,9 @@ export function collectLandingDirtyWrites(hostId: string): ReadonlyArray<{
     .drafts.filter((draft) => {
       if (draft.generation <= draft.syncedGeneration) return false;
       if (draft.adoption.state === "unadopted") return false;
+      // A replica's dirty edit waits for the claim; the owner's session
+      // must not sweep it onto the owner's row.
+      if (draft.origin === "replica") return false;
       return draft.adoption.hostId === hostId;
     })
     .map((draft) => ({ draft }));

@@ -25,10 +25,20 @@ export function useChatComposerDraftAuthority(args: {
   // is never a replica of another host's row (the ingest declines those);
   // an unowned chat draft is this host's own row demoted after a claim
   // elsewhere. The repair keeps the content and mints a fresh identity.
-  const { chatId } = args;
+  const { chatId, tabHostId } = args;
   const repairOnEdit = useCallback((): void => {
+    // A refusal whose RPC answer was lost while the claim did commit: an
+    // echo may already have made this row this host's own. Re-read first.
+    const row = useComposerDraftStore.getState().drafts[chatId];
+    if (
+      row !== undefined &&
+      row.origin === "own" &&
+      row.ownerHostId === tabHostId
+    ) {
+      return;
+    }
     useComposerDraftStore.getState().detachDraftIdentity(chatId);
-  }, [chatId]);
+  }, [chatId, tabHostId]);
   return useDraftAuthorityControl({
     draftId,
     ownerHostId,

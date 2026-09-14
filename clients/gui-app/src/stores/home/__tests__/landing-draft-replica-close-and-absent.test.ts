@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import {
   applyLandingHostDocument,
+  collectLandingDirtyWrites,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
   EMPTY_LANDING_DRAFT_CONTENT,
@@ -343,5 +344,45 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
     expect(afterOwn).toBeDefined();
     // Own document: `closed` follows the incoming portable value.
     expect(afterOwn?.closed).toBe(false);
+  });
+});
+
+describe("landing draft store: collectLandingDirtyWrites excludes replica rows", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  it("excludes a dirty replica adopted on the given host, and includes a dirty own row adopted on it", () => {
+    const dirtyReplica = baseDraft("dirty-replica", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 2,
+    });
+    const dirtyOwn = baseDraft("dirty-own", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 2,
+    });
+
+    useLandingDraftStore.setState({
+      drafts: [dirtyReplica, dirtyOwn],
+      activeDraftId: null,
+    });
+
+    const dirty = collectLandingDirtyWrites("host-b");
+    const ids = dirty.map(({ draft }) => draft.id);
+
+    expect(ids).not.toContain("dirty-replica");
+    expect(ids).toContain("dirty-own");
   });
 });

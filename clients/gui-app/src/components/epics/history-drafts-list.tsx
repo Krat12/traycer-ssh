@@ -92,7 +92,14 @@ export function HistoryDraftsList(props: {
     void claim(draftId).then(
       async (result) => {
         if (result.status === "ok" || result.status === "already-owned") {
-          await applyIncomingDraftDocument(result.draft, null);
+          // The claim has committed; a failed local apply (a blob read that
+          // threw) must not leave the row here as if nothing happened.
+          try {
+            await applyIncomingDraftDocument(result.draft, null);
+          } catch {
+            // The delete below still retires the row locally and routes the
+            // host delete to whatever adoption the row carries.
+          }
           useLandingDraftStore.getState().deleteDraft(draftId);
           return;
         }

@@ -270,8 +270,21 @@ export function LandingComposer(props: LandingComposerProps) {
   // remounts under the new id with the same content and caret.
   const repairOnEdit = useCallback((): void => {
     if (draftId === null) return;
+    // A refusal whose RPC answer was lost while the claim did commit: a
+    // mirror echo may already have made this row this host's own. Re-read
+    // before forking, or the repair would retire the real row.
+    const row = useLandingDraftStore
+      .getState()
+      .drafts.find((entry) => entry.id === draftId);
+    if (
+      row !== undefined &&
+      row.origin === "own" &&
+      row.ownerHostId === resolvedHostId
+    ) {
+      return;
+    }
     forkLandingDraftInPlace(draftId);
-  }, [draftId]);
+  }, [draftId, resolvedHostId]);
   const authority = useDraftAuthorityControl({
     draftId,
     ownerHostId: landingOwnerHostId,

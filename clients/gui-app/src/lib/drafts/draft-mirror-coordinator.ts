@@ -639,6 +639,11 @@ function routeLocalEdit(draftId: string): void {
   const landing = useLandingDraftStore
     .getState()
     .drafts.find((draft) => draft.id === draftId);
+  // A replica's edit is not queued anywhere: its adoption still names the
+  // previous owner, whose session (if mounted here) must not publish this
+  // device's edit onto that owner's row before the claim settles. The row is
+  // re-routed when the claim lands (`adoptOwnershipOverLocalEdit`).
+  if (landing !== undefined && landing.origin === "replica") return;
   if (landing !== undefined && landing.adoption.state === "unadopted") {
     if (landingAdoptionHostId === null) return;
     sessions.get(landingAdoptionHostId)?.session.noteDirty(draftId);

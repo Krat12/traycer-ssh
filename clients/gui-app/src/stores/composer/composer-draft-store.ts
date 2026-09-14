@@ -234,6 +234,15 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         ) {
           return;
         }
+        // A caret move on a row this host does not own stays local: it is
+        // not an edit, must not claim, and must not queue an upsert through
+        // the stale identity.
+        if (current.origin === "replica") {
+          set((state) => ({
+            drafts: { ...state.drafts, [chatId]: { ...current, selection } },
+          }));
+          return;
+        }
         const draftId = touchLocalComposerDraft(chatId, {
           content: current.content,
           selection,
@@ -684,6 +693,9 @@ export function collectComposerDirtyWrites(): ReadonlyArray<{
     if (draft === undefined) continue;
     if (draft.generation <= draft.syncedGeneration) continue;
     if (draft.draftId === null) continue;
+    // A demoted row's dirty edit waits for the claim (or the repair's fresh
+    // identity); it is never upserted under the stale identity.
+    if (draft.origin === "replica") continue;
     if (isNeverTypedEmptyComposerDraft(draft)) continue;
     out.push({ chatId, draft });
   }
