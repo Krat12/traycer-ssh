@@ -54,6 +54,15 @@ export interface SettledOwnership {
 
 interface PendingClaim {
   readonly promise: Promise<boolean>;
+  /** The host this attempt claims through and the draft it claims. */
+  readonly tabHostId: string;
+  readonly draftId: string;
+  /**
+   * The current host's re-claim this attempt chained into after the
+   * surface left its host (see `reclaimOnCurrentHost`). A settlement's
+   * suppression and its deferred repair apply to the LAST link.
+   */
+  chained: PendingClaim | null;
   repairArmed: boolean;
   /**
    * A submit joined this claim. Its refusal handling is the send itself
@@ -126,7 +135,7 @@ export function useDraftAuthorityControl(args: {
   // The latest `noteEdit` and the draft the surface shows now, for a
   // settlement that finds its host superseded: the re-claim is for THIS
   // draft only - a move to another draft is not an edit of that draft.
-  const noteEditRef = useRef<(force: boolean) => Promise<boolean> | null>(
+  const noteEditRef = useRef<(force: boolean) => PendingClaim | null>(
     () => null,
   );
   const currentDraftRef = useRef(args.draftId);
@@ -209,7 +218,15 @@ export function useDraftAuthorityControl(args: {
             currentHostRef.current !== tabHostId &&
             currentDraftRef.current === draftId
           ) {
-            return noteEditRef.current(committed);
+            const next = noteEditRef.current(committed);
+            if (next === null) return null;
+            // A submit that settled on this attempt is settling on the chain:
+            // the re-claim inherits its suppression, or a refusal there would
+            // fork the draft under the deferred send. `abandon` releases it
+            // on the last link.
+            next.repairSuppressed = entry.repairSuppressed;
+            entry.chained = next;
+            return next.promise;
           }
           return null;
         };
@@ -269,6 +286,9 @@ export function useDraftAuthorityControl(args: {
       })();
       const entry: PendingClaim = {
         promise,
+        tabHostId,
+        draftId,
+        chained: null,
         repairArmed: false,
         repairSuppressed: false,
       };
@@ -285,7 +305,7 @@ export function useDraftAuthorityControl(args: {
   // that committed elsewhere leaves the local row naming this host as owner
   // while the cloud says otherwise (see `reclaimOnCurrentHost`).
   const claimForEdit = useCallback(
-    (force: boolean): Promise<boolean> | null => {
+    (force: boolean): PendingClaim | null => {
       if (!force && !unowned) return null;
       const draftId = args.draftId;
       const tabHostId = args.tabHostId;
@@ -302,7 +322,7 @@ export function useDraftAuthorityControl(args: {
           if (!owned && !entry.repairSuppressed) repairFor(draftId, tabHostId);
         });
       }
-      return entry.promise;
+      return entry;
     },
     [args.draftId, args.tabHostId, repairFor, runClaim, unowned],
   );
@@ -317,20 +337,23 @@ export function useDraftAuthorityControl(args: {
   const settleOwnership = useCallback(async (): Promise<SettledOwnership> => {
     const noop: SettledOwnership = { abandon: () => undefined };
     if (!unowned) return noop;
-    const draftId = args.draftId;
-    const tabHostId = args.tabHostId;
     const entry = runClaim(false);
     if (entry === null) return noop;
     entry.repairSuppressed = true;
     const owned = await entry.promise;
+    // The attempt may have chained into the current host's re-claim (one or
+    // more times); the outcome, the armed repair and the suppression to
+    // release all belong to the last link.
+    let last = entry;
+    while (last.chained !== null) last = last.chained;
     return {
       abandon: () => {
-        if (owned || !entry.repairArmed || !entry.repairSuppressed) return;
-        entry.repairSuppressed = false;
-        repairFor(draftId, tabHostId);
+        if (owned || !last.repairArmed || !last.repairSuppressed) return;
+        last.repairSuppressed = false;
+        repairFor(last.draftId, last.tabHostId);
       },
     };
-  }, [args.draftId, args.tabHostId, repairFor, runClaim, unowned]);
+  }, [repairFor, runClaim, unowned]);
 
   return { unowned, noteEdit, settleOwnership };
 }

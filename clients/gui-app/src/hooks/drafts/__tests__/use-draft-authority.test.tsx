@@ -681,7 +681,7 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
-  it("a submit-started claim superseded by a forced re-claim resolves only once the forced attempt settles, and a refusal there repairs through the forced attempt's own arming rather than abandon", async () => {
+  it("a submit-started claim superseded by a forced re-claim resolves only once the forced attempt settles, and a refusal there repairs only through abandon walking to the last link", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     const second = deferred<DraftClaimResult>();
@@ -732,7 +732,9 @@ describe("useDraftAuthorityControl", () => {
 
     // Host-b's (superseded) claim commits: the local row still names
     // host-a as owner while the cloud now says host-b, so the re-claim on
-    // host-a is forced past the `unowned` guard.
+    // host-a is forced past the `unowned` guard. The forced attempt
+    // inherits the original attempt's suppression and is linked as its
+    // `chained` link.
     await act(async () => {
       first.resolve({ status: "ok", draft: STUB_DRAFT });
       await first.promise;
@@ -752,21 +754,114 @@ describe("useDraftAuthorityControl", () => {
     });
 
     expect(settleResolved).toBe(true);
-    // The refusal repairs through attempt 2's own arming - every forced
-    // re-claim runs through `claimForEdit`, which always arms its own
-    // promise - not through the original settle's `abandon()`.
-    await waitFor(() => {
-      expect(repairOnEdit).toHaveBeenCalledTimes(1);
-    });
+    // The forced attempt inherited suppression, so its own refusal handler
+    // does not repair immediately - the settle promise resolves with no
+    // repair having fired yet.
+    expect(repairOnEdit).not.toHaveBeenCalled();
     expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
 
-    // The original attempt's own entry was never armed (a submit-only
-    // claim, host-fenced to host-b), so abandon() on it is a no-op: it
-    // must not double-repair.
+    // abandon() walks to the last link (attempt 2), releases its
+    // suppression and repairs for its draft/host - the surface is on
+    // host-a showing draft-1, so the fence passes.
     act(() => {
       settled?.abandon();
     });
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
+
+    // A second abandon() call is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("contrast: a refusal chained through a forced re-claim is not repaired by abandon once the surface has moved past the fence", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+        draftId: string;
+      }) =>
+        useDraftAuthorityControl({
+          draftId: props.draftId,
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-b",
+          ownerHostId: "host-c",
+          origin: "own",
+          draftId: "draft-1",
+        },
+      },
+    );
+
+    // The submit path starts the claim on host-b; no edit has touched it.
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The composer returns to host-a while host-b's claim is still pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+      draftId: "draft-1",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    // Host-b's (superseded) claim commits, forcing a re-claim on host-a
+    // (attempt 2) that the original settle chains onto.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(settleResolved).toBe(false);
+
+    // Attempt 2 (the forced re-claim on host-a) is refused.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    // Before abandon() runs, the surface moves to another draft/host - the
+    // fence attempt 2's repair is keyed to (draft-1 on host-a) no longer
+    // matches what the surface shows.
+    view.rerender({
+      tabHostId: "host-b",
+      ownerHostId: "host-c",
+      origin: "own",
+      draftId: "draft-2",
+    });
+
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
   it("contrast: when the forced re-claim after supersession succeeds, the original settle resolves owned and no repair fires", async () => {
