@@ -6119,6 +6119,50 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
   }
 
   /**
+   * One witness pixel per (occupied civic seat, other agent) pair, and how many
+   * pixels were read to find them.
+   *
+   * A pixel counts when the LAST thing painted there is a sprite somebody else
+   * owns: the ground is a sprite too and is the first painter of every pixel, and
+   * a fixture drawn over a character - Campus's bench is, standing a row nearer -
+   * takes the pixel back and is no witness.
+   */
+  function civicWitnesses(
+    scene: OfficeScene,
+    frame: OfficeFrame,
+    held: ReadonlyArray<{ readonly id: string; readonly seat: OfficeSeat }>,
+  ): {
+    readonly witnesses: ReadonlyArray<CivicWitness>;
+    readonly pixels: number;
+  } {
+    const witnesses: CivicWitness[] = [];
+    let pixels = 0;
+    for (const holder of held) {
+      const box = civicBoxOf(scene, holder.seat);
+      const owners = new Set<string>();
+      for (let y = box.y; y < box.y + box.height; y += 1) {
+        for (let x = box.x; x < box.x + box.width; x += 1) {
+          pixels += 1;
+          const point: OfficePoint = { x, y };
+          const top = paintersAt(frame, point).at(-1);
+          const owner = top?.ownerAgentId ?? null;
+          if (top === undefined || owner === null) continue;
+          if (owner === holder.id || owners.has(owner)) continue;
+          owners.add(owner);
+          witnesses.push({
+            seatId: holder.seat.seatId,
+            occupant: holder.id,
+            owner,
+            point,
+            name: top.name,
+          });
+        }
+      }
+    }
+    return { witnesses, pixels };
+  }
+
+  /**
    * READ AA'S AA1: THE FURNITURE'S OWN LAYER DECIDES, NOT A FABRICATED DEPTH.
    *
    * X1 gave a civic seat's box the depth of its own tile at prop bias, which is
@@ -6189,43 +6233,58 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
       if (seat === null || seat.civicRoomId === null) continue;
       held.push({ id: person.id, seat });
     }
-    expect(held.length, "nobody took a civic seat").toBeGreaterThan(0);
+    // THE FIXTURE IS REQUIRED, not sampled. Three held LOUNGE seats are what put
+    // a box behind the walk, and q's errand to the counter is what sends it across
+    // the row: C7 names that counter the help desk wherever it is, so this is the
+    // one string that says q is queueing rather than sitting somewhere. Make q
+    // idle instead and the pairs this fixture yields are both already-correct
+    // ones - a head over the box of the seat in FRONT of it - and the case would
+    // pass with the defect untouched.
+    expect(
+      held.map((one) => one.id),
+      "the waiting agents did not all take a civic seat",
+    ).toEqual(["a", "b", "c"]);
+    expect(
+      held.map((one) => one.seat.kind),
+      "a waiting agent took something other than a lounge seat",
+    ).toEqual(["lounge", "lounge", "lounge"]);
+    expect(
+      scene.whereabouts("q") ?? "nowhere",
+      "q is not queueing at the counter, so it is not crossing the row",
+    ).toBe("Help desk");
 
-    const witnesses: CivicWitness[] = [];
-    let pixels = 0;
-    for (const holder of held) {
-      const box = civicBoxOf(scene, holder.seat);
-      const owners = new Set<string>();
-      for (let y = box.y; y < box.y + box.height; y += 1) {
-        for (let x = box.x; x < box.x + box.width; x += 1) {
-          pixels += 1;
-          const point: OfficePoint = { x, y };
-          // THE LAST PAINTER IS WHAT THE READER SEES. The ground is a sprite
-          // too, so it is the first painter of every pixel here and never the
-          // answer; a fixture drawn over a character - Campus's bench is, being
-          // a row nearer - takes the pixel back and is not a witness either.
-          const top = paintersAt(frame, point).at(-1);
-          if (top === undefined) continue;
-          const owner = top.ownerAgentId;
-          if (owner === null || owner === holder.id || owners.has(owner)) {
-            continue;
-          }
-          owners.add(owner);
-          witnesses.push({
-            seatId: holder.seat.seatId,
-            occupant: holder.id,
-            owner,
-            point,
-            name: top.name,
-          });
-        }
-      }
-    }
+    const { witnesses, pixels } = civicWitnesses(scene, frame, held);
     if (witnesses.length === 0) {
+      // RESERVED FOR THE TWO VIEWS WHOSE SHAPE CANNOT PRODUCE ONE, and asserted
+      // rather than assumed: the storeyed pair paint their civic seats
+      // THEMSELVES, so an occupied box is filled by that seat's own owned art and
+      // no other agent can be the last painter inside it. The isometric pair draw
+      // no art for a civic seat at all, which is why they can and do.
+      expect(
+        ["towers", "building"],
+        `${viewId} found no witness pixel, and its shape does not explain that`,
+      ).toContain(viewId);
       context.skip(
         `${viewId}: of ${String(pixels)} pixels in ${String(held.length)} occupied civic boxes, none has another agent's art as its last painter`,
       );
       return;
+    }
+
+    // AND ON CAMPUS, THE DISCRIMINATING PAIR BY NAME: q's own torso over the
+    // THIRD lounge box, which is the box whose fabricated `96.008` beat the
+    // character's `76`. Its two other pairs are heads over the box of the seat in
+    // front, where the character was already the nearer of the two, so a case
+    // that took any pair would have passed unfixed.
+    const third = held.at(2);
+    if (third === undefined) throw new Error("three claims owe a third seat");
+    if (viewId === "campus") {
+      expect(third.id, "the third lounge seat is not c's").toBe("c");
+      expect(
+        witnesses
+          .filter((witness) => witness.seatId === third.seat.seatId)
+          .map((witness) => `${witness.owner}/${witness.name}`),
+        "no pixel of the third lounge box is painted by q's own art",
+      ).toContain("q/character");
     }
 
     const owed = witnesses.map(
@@ -6258,11 +6317,13 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
    * every desk on screen the seat borrowed its owner's DESK depth, so a region
    * existed and looked right. Frame a window that leaves the patient's own
    * building out - which is every camera actually pointed at a ward - and the bed
-   * had no region at all: no hover card, nothing for a click to select, and no
-   * ring when Find matched its occupant - the three readers that go through the
-   * regions, and not the directory, the playback or the "where" line, which derive
-   * their own answers - while the patient is plainly drawn lying in it. `hitTest`
-   * took the same path and so did not need a camera to fail.
+   * had no region at all: no hover card and no click on the pixels where the BED
+   * is the only thing drawn, and a Find match that rings the body alone, since the
+   * ring covers the regions the matched agent has and the bed's extent was no
+   * longer one of them. The patient's own character still answered for its body,
+   * and the directory, the playback and the "where" line derive their answers
+   * elsewhere. `hitTest` takes the same regions and so did not need a camera to
+   * fail.
    *
    * THE POINT IS ON THE FURNITURE AND NOT ON THE BODY, which is what makes this
    * about the seat rather than the character: a bed is two tiles wide and the
@@ -6413,6 +6474,91 @@ describe.each(OFFICE_VIEW_IDS)("%s view behaviour", (viewId) => {
     if (seat === null) return null;
     return `${seat.seatId}@${String(seat.chairTile.col)},${String(seat.chairTile.row)}`;
   }
+
+  /**
+   * The desk the book has assigned this agent: its id, and its place ON ITS OWN
+   * STOREY rather than in the world.
+   *
+   * Relative because a host's ground legitimately moves when another host
+   * arrives - the Floor stacks storeys and Campus re-bands sideways - and a desk
+   * that travelled with its own floor has not moved at all. What must never
+   * change is which desk it is and where it sits on that floor.
+   */
+  function deskOf(scene: OfficeScene, agentId: string): string | null {
+    const seat = bookOf(scene).assignedSeat(agentId);
+    if (seat === null) return null;
+    // The TYPE says an index is always a floor, and a seat's own index is one the
+    // layout it came from answers.
+    const floor = layoutOf(scene).floors[seat.floorIndex];
+    const col = seat.chairTile.col - floor.bounds.col;
+    const row = seat.chairTile.row - floor.bounds.row;
+    return `${seat.seatId}@${String(col)},${String(row)}`;
+  }
+
+  /**
+   * The bounds of the ground this agent's own desk stands on, as a string.
+   *
+   * Found through the SEAT and not by host, as X2's does: Mission control's hall
+   * belongs to every host at once, so asking it for one host's floor asks a
+   * question the view has no answer to.
+   */
+  function deskBandOf(scene: OfficeScene, agentId: string): string {
+    const seat = bookOf(scene).assignedSeat(agentId);
+    const floor =
+      seat === null ? undefined : layoutOf(scene).floors[seat.floorIndex];
+    return JSON.stringify(floor?.bounds ?? null);
+  }
+
+  it("keeps a held desk's id when a lexically earlier host arrives", () => {
+    const visible = new Set(HOST_B_WARD.map((person) => person.id));
+    const idle = new Map<string, OfficeAgentStatus>(
+      HOST_B_WARD.map((person) => [person.id, "idle"]),
+    );
+    const deskInput = (
+      statusById: ReadonlyMap<string, OfficeAgentStatus>,
+      agents: ReadonlyArray<OfficeAgentInput>,
+      ids: ReadonlySet<string>,
+    ): OfficeSceneInput =>
+      sceneInput({
+        agents,
+        visibleAgentIds: ids,
+        statusById,
+        reducedMotion: true,
+        feedSettled: true,
+      });
+    const scene = newScene();
+    scene.sync(deskInput(idle, HOST_B_WARD, visible));
+    const before = new Map<string, string | null>();
+    for (const person of HOST_B_WARD) {
+      before.set(person.id, deskOf(scene, person.id));
+    }
+    expect(
+      [...before].filter((entry) => entry[1] === null).map((entry) => entry[0]),
+      "somebody on host-b has no desk to hold",
+    ).toEqual([]);
+    const bandBefore = deskBandOf(scene, "beta");
+
+    const withHostA = [...HOST_B_WARD, HOST_A_ARRIVAL];
+    const alsoA = new Map(idle);
+    alsoA.set(HOST_A_ARRIVAL.id, "idle");
+    scene.sync(
+      deskInput(alsoA, withHostA, new Set(withHostA.map((one) => one.id))),
+    );
+
+    const problems: string[] = [];
+    for (const [id, held] of before) {
+      const after = deskOf(scene, id);
+      if (after !== held) {
+        problems.push(
+          `${id}'s desk became ${String(after)} from ${String(held)}`,
+        );
+      }
+    }
+    expect(
+      problems,
+      `host-b's ground moved: ${String(deskBandOf(scene, "beta") !== bandBefore)}`,
+    ).toEqual([]);
+  });
 
   /**
    * READ X'S X2: A CIVIC ROOM'S ID IS WHAT THE ROOM IS, NEVER WHERE IT CAME IN
@@ -7982,6 +8128,172 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
     return `kerb=${String(kerb?.col)},${String(kerb?.row)} entry=${String(entry?.col)},${String(entry?.row)}`;
   }
 
+  /** The point this storey's infirmary kerb projects to, or `null`. */
+  function wardKerbPoint(
+    scene: OfficeScene,
+    hostId: string,
+  ): OfficePoint | null {
+    const { floor } = floorOfHost(scene, hostId);
+    const ward = floor.civic.find((room) => room.kind === "infirmary");
+    const kerb = ward?.kerbTile ?? null;
+    if (kerb === null) return null;
+    return view.painter
+      .projector(layoutOf(scene))
+      .project(kerb.col + 0.5, kerb.row + 1);
+  }
+
+  /** The point this storey's road starts at, which is where a fresh trip is. */
+  function roadEntryPoint(
+    scene: OfficeScene,
+    hostId: string,
+  ): OfficePoint | null {
+    const entry = floorOfHost(scene, hostId).floor.road?.entryTile ?? null;
+    if (entry === null) return null;
+    return view.painter
+      .projector(layoutOf(scene))
+      .project(entry.col + 0.5, entry.row + 1);
+  }
+
+  /**
+   * Whether this point is on the line THIS STOREY'S road projects to.
+   *
+   * The box over the road's own tiles, one tile proud: a departing vehicle is
+   * interpolated between tiles rather than standing on one, so a set of tile
+   * points would not contain it. What the box does answer is the question worth
+   * asking - whether the trip is driving on its own host's route or on somebody
+   * else's storey.
+   */
+  function onRoadOf(
+    scene: OfficeScene,
+    hostId: string,
+    point: OfficePoint,
+  ): boolean {
+    const road = floorOfHost(scene, hostId).floor.road;
+    if (road === null) return false;
+    const projector = view.painter.projector(layoutOf(scene));
+    const points = road.tiles.map((tile) =>
+      projector.project(tile.col + 0.5, tile.row + 1),
+    );
+    const xs = points.map((one) => one.x);
+    const ys = points.map((one) => one.y);
+    return (
+      point.x >= Math.min(...xs) - OFFICE_TILE &&
+      point.x <= Math.max(...xs) + OFFICE_TILE &&
+      point.y >= Math.min(...ys) - OFFICE_TILE &&
+      point.y <= Math.max(...ys) + OFFICE_TILE
+    );
+  }
+
+  /** Every vehicle in the frame, by kind - the whole road, in draw order. */
+  function vansOf(scene: OfficeScene): ReadonlyArray<string> {
+    return vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
+      (vehicle) => vehicle.vehicleKind,
+    );
+  }
+
+  /** Whether an ambulance stands exactly on this point. */
+  function ambulanceAt(scene: OfficeScene, point: OfficePoint): boolean {
+    return vehicleDrawables(scene.frame(1, WHOLE_WORLD)).some(
+      (vehicle) =>
+        vehicle.vehicleKind === "ambulance" && atPoint(vehicle, point),
+    );
+  }
+
+  /** Where an ambulance is, for a message that has to say what it found. */
+  function ambulancePoint(scene: OfficeScene): OfficePoint | null {
+    const vehicle = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).find(
+      (candidate) => candidate.vehicleKind === "ambulance",
+    );
+    return vehicle === undefined ? null : { x: vehicle.x, y: vehicle.y };
+  }
+
+  /**
+   * Whether this agent is IN the ward, as against walking to it.
+   *
+   * The strict half of `namesInfirmary`: a rider counts as SETTLED to the
+   * vehicle when it stops moving, and `Walking to the Sick bay` is exactly the
+   * reading that says it has not.
+   */
+  function seatedInWard(scene: OfficeScene, agentId: string): boolean {
+    return infirmaryNames(layoutOf(scene)).has(
+      scene.whereabouts(agentId) ?? "",
+    );
+  }
+
+  /** Ticks until an ambulance stands on this point, or `-1` inside the bound. */
+  function drivenToKerb(scene: OfficeScene, point: OfficePoint): number {
+    for (let step = 0; step < 200; step += 1) {
+      if (ambulanceAt(scene, point)) return step;
+      scene.tick(100);
+    }
+    return -1;
+  }
+
+  /** Which of these agents has the longest walk to this tile, by the route. */
+  function longestWalkTo(
+    scene: OfficeScene,
+    candidates: ReadonlyArray<string>,
+    target: OfficeTilePos,
+  ): { readonly agentId: string; readonly tiles: number } {
+    let agentId = candidates[0];
+    let tiles = -1;
+    for (const candidate of candidates) {
+      const desk = layoutOf(scene).desks.get(candidate);
+      if (desk === undefined) continue;
+      const path = findOfficePath(layoutOf(scene), desk.chairTile, target);
+      const length = path?.length ?? -1;
+      if (length <= tiles) continue;
+      tiles = length;
+      agentId = candidate;
+    }
+    return { agentId, tiles };
+  }
+
+  /**
+   * Ticks on to the first moment a trip that had NOT taken `walking` on would
+   * have left its kerb: the four second floor spent since the join, `settled` in
+   * the ward, and `walking` still on its way. Answers the tick count since that
+   * join, or `-1` inside the ceiling.
+   */
+  function tickToRiderWitness(args: {
+    readonly scene: OfficeScene;
+    readonly settled: string;
+    readonly walking: string;
+    readonly since: number;
+    readonly floor: number;
+    readonly ceiling: number;
+  }): number {
+    let since = args.since;
+    for (let step = 0; step < args.ceiling; step += 1) {
+      if (
+        since >= args.floor &&
+        seatedInWard(args.scene, args.settled) &&
+        !seatedInWard(args.scene, args.walking)
+      ) {
+        return since;
+      }
+      args.scene.tick(100);
+      since += 1;
+    }
+    return -1;
+  }
+
+  /** Whether an ambulance has moved off this point yet, and where it went. */
+  function drivenOffTheKerb(
+    scene: OfficeScene,
+    kerb: OfficePoint,
+  ): { readonly left: OfficePoint | null; readonly vanished: boolean } {
+    for (let step = 0; step < 200; step += 1) {
+      scene.tick(100);
+      const at = ambulancePoint(scene);
+      if (at === null) return { left: null, vanished: true };
+      if (at.x !== kerb.x || at.y !== kerb.y) {
+        return { left: at, vanished: false };
+      }
+    }
+    return { left: null, vanished: false };
+  }
+
   /**
    * READ Z'S Z1: A TRIP FOLLOWS ITS HOST'S STOREY, NOT THE NUMBER IT HAD.
    *
@@ -7998,15 +8310,45 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
    * The OLD trip's loss is older than those ids: before them the room id changed
    * with the index, so the coalesce missed and the newcomer spawned its own van
    * while the original still drove off a cliff. Both halves are one fix - resolve
-   * the floor from the room - and this case pins both, since the van it looks for
-   * after the append is the FIRST one.
+   * the floor from the room.
+   *
+   * WHAT MAKES THE VAN AFTER THE APPEND THE SAME VAN, which read AB was right
+   * that a count alone does not say. Three things the case now requires, and each
+   * one rejects a specific way of passing it:
+   *
+   *   PROGRESS.  The append happens with the trip PARKED AT ITS WARD'S KERB and a
+   *              second and a half of waiting behind it, not at the road's entry
+   *              with nothing elapsed, where a fresh dispatch is
+   *              indistinguishable from a survivor. The case asserts the kerb is
+   *              not the entry, drives there, and then finds the van at that kerb
+   *              both on the append's own frame and after a tick. Clearing the
+   *              vehicles and letting the second crash dispatch afresh puts a van
+   *              at the ENTRY on those frames.
+   *   THE RIDER. It ticks on to the first moment a trip that had NOT taken the
+   *              newcomer on would have left - its only rider seated, and the
+   *              four second courtesy it measures from its own arrival spent -
+   *              waits half a second more so that such a van would be visibly off
+   *              the kerb, and requires this one to still be standing there,
+   *              inside the twelve second ceiling. Keeping the van but omitting
+   *              the newcomer from `absorb` fails there.
+   *   THE ROUTE. Then it drives away, and where it drives is asserted against the
+   *              road of host-b's CURRENT storey. For the Floor and Campus that
+   *              route moved with the ward - the kerb goes 456,416 to 456,864 and
+   *              40,196 to 296,324 - so those two views are no longer skipped:
+   *              following a ward that itself moved is the same promise, read
+   *              against the plan in hand rather than against the one before it.
+   *
+   * The premises are REPORTED rather than gated, in the message of every
+   * assertion: Towers and Building keep their index under the carry, City freezes
+   * its band, and the Floor and Campus move the ward with it. All five views that
+   * have a road and a ward run the whole case; Mission control has neither yet.
    *
    * MOTION ON AND A SETTLED FEED, live cursor: the van has to be on the road
    * rather than seated instantly, and the append has to be a sync that re-plans
    * while it is out there.
    */
-  it("keeps a ward's ambulance when a lexically earlier host renumbers its storey", (context) => {
-    const crew = wardAgents("z1", "host-b", 3);
+  it("keeps a ward's ambulance, its progress and its new rider when a lexically earlier host renumbers its storey", (context) => {
+    const crew = wardAgents("z1", "host-b", 4);
     const crewIds = new Set(crew.map((person) => person.id));
     const scene = newVehicleScene();
     scene.sync(
@@ -8031,14 +8373,56 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       namesInfirmary(infirmaryNames(opened), scene.whereabouts("z1-a") ?? ""),
       "z1-a is not in the ward",
     ).toBe(true);
-    const sent = vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
-      (vehicle) => vehicle.vehicleKind,
-    );
-    expect(sent, "no ambulance for the first crash").toEqual(["ambulance"]);
+    expect(vansOf(scene), "no ambulance for the first crash").toEqual([
+      "ambulance",
+    ]);
     const before = floorOfHost(scene, "host-b");
+    const kerbBefore = wardKerbPoint(scene, "host-b");
+    const entryBefore = roadEntryPoint(scene, "host-b");
+    if (kerbBefore === null || entryBefore === null) {
+      throw new Error("a ward with a road owes a kerb and an entry");
+    }
+    expect(
+      `${String(kerbBefore.x)},${String(kerbBefore.y)}`,
+      "the kerb IS the road's entry here, so progress cannot be seen",
+    ).not.toBe(`${String(entryBefore.x)},${String(entryBefore.y)}`);
+
+    // DRIVEN OFF THE ENTRY AND ON TO ITS WARD'S KERB, then left standing there a
+    // while: the append has to land on a trip whose progress is visible.
+    const toKerb = drivenToKerb(scene, kerbBefore);
+    expect(
+      toKerb,
+      `the ambulance never drove to its ward's kerb (at ${JSON.stringify(ambulancePoint(scene))})`,
+    ).toBeGreaterThan(0);
+    const WAITED_TICKS = 15;
+    for (let step = 0; step < WAITED_TICKS; step += 1) scene.tick(100);
+    expect(
+      ambulanceAt(scene, kerbBefore),
+      "the ambulance left its kerb before the append",
+    ).toBe(true);
+
+    // THE SECOND CRASH IS THE ONE WITH THE LONGEST WALK, chosen by the route it
+    // would have to take rather than by name. The wait this case reads is only
+    // ABOUT the newcomer once the four second floor its join reset has expired,
+    // so a newcomer that reaches its bed inside those four seconds proves
+    // nothing - which is what Campus's nearest crew member does, in 2.5 s.
+    const wardDoor = before.floor.civic.find(
+      (room) => room.kind === "infirmary",
+    )?.doorTile;
+    if (wardDoor === undefined) throw new Error("a ward owes a door");
+    const furthest = longestWalkTo(
+      scene,
+      crew.map((person) => person.id).filter((id) => id !== "z1-a"),
+      wardDoor,
+    );
+    const newcomer = furthest.agentId;
+    expect(
+      furthest.tiles,
+      `${newcomer} cannot walk to the ward at all`,
+    ).toBeGreaterThan(0);
 
     // THE EARLIER HOST, AND A SECOND CRASH, ON ONE SYNC - which is what makes
-    // the dispatch land on the standing trip rather than on a free slot.
+    // the dispatch land on the standing trip rather than in a free slot.
     const early = agent({ id: "host-a-root", hostId: "host-a", createdAt: 9 });
     const both = [...crew, early];
     const bothIds = new Set(both.map((person) => person.id));
@@ -8046,57 +8430,95 @@ describe.each(OFFICE_VIEW_IDS)("%s view vehicles", (viewId) => {
       sceneInput({
         agents: both,
         visibleAgentIds: bothIds,
-        statusById: failures("z1-a", "z1-b"),
+        statusById: failures("z1-a", newcomer),
         feedSettled: true,
       }),
     );
     const after = floorOfHost(scene, "host-b");
-
-    // THE PREMISES: host-b moved in the ORDERING and nowhere else. Only a view
-    // that FREEZES its ground has both - measured, and this is where the other
-    // five go:
-    //
-    //   Towers, Building  the index does not move at all. A scene carries its
-    //                     previous layout, which keeps a known host's storeys
-    //                     where they were and appends the newcomer's.
-    //   Floor, Campus     the index moves and so does the ward. The Floor
-    //                     stacks storeys, so host-b's kerb goes from 28,25 to
-    //                     28,53; Campus re-bands sideways, 0,20 to 16,20. A van
-    //                     following a ward that itself moved is a different
-    //                     question from one whose ward stayed put.
-    //   City              both: a frozen band, and a new index. The case runs.
-    //
-    // City is asserted rather than skipped, because for City these premises are
-    // the promise the frozen band makes.
-    const renumbered = after.index !== before.index;
-    const groundHeld = wardKerbOf(after.floor) === wardKerbOf(before.floor);
-    if (viewId === "city") {
-      expect(renumbered, "City's storey did not move").toBe(true);
-      expect(groundHeld, "City's frozen ward moved").toBe(true);
-    } else if (!renumbered || !groundHeld) {
-      context.skip(
-        `${viewId} ${renumbered ? "moves the ward with the index" : "keeps its index under a carry"}`,
-      );
-      return;
-    }
+    const note = `${viewId}: storey ${String(before.index)} -> ${String(after.index)}, ${wardKerbOf(before.floor)} -> ${wardKerbOf(after.floor)}`;
     expect(
       namesInfirmary(
         infirmaryNames(layoutOf(scene)),
-        scene.whereabouts("z1-b") ?? "",
+        scene.whereabouts(newcomer) ?? "",
       ),
-      "z1-b is not in the ward",
+      `${newcomer} is not in the ward (${note})`,
     ).toBe(true);
 
-    // AND THE TRIP IS STILL THERE, after the re-plan and a tick, exactly one -
-    // one means the newcomer was absorbed rather than given a second van, and
-    // the tick is what `advanceVehicle` would have used to remove it.
+    // THE SAME TRIP, AT ITS WARD'S KERB ON THIS PLAN'S ROUTE - which for the
+    // Floor and Campus is a kerb that moved with the storey.
+    const kerbAfter = wardKerbPoint(scene, "host-b");
+    if (kerbAfter === null) throw new Error(`host-b lost its kerb (${note})`);
+    expect(
+      vansOf(scene),
+      `the ward's ambulance did not survive its storey being renumbered (${note})`,
+    ).toEqual(["ambulance"]);
+    expect(
+      JSON.stringify(ambulancePoint(scene)),
+      `the ambulance is not at its ward's kerb on the append's own frame (${note})`,
+    ).toBe(JSON.stringify(kerbAfter));
     scene.tick(100);
     expect(
-      vehicleDrawables(scene.frame(1, WHOLE_WORLD)).map(
-        (vehicle) => vehicle.vehicleKind,
-      ),
-      "the ward's ambulance did not survive its storey being renumbered",
+      vansOf(scene),
+      `the ward's ambulance did not survive a tick after the append (${note})`,
     ).toEqual(["ambulance"]);
+    expect(
+      JSON.stringify(ambulancePoint(scene)),
+      `the ambulance left its kerb on the first tick after the append (${note})`,
+    ).toBe(JSON.stringify(kerbAfter));
+
+    // THE RIDER IT ABSORBED, read off the two clocks the trip keeps. The FLOOR is
+    // four seconds since the last join and is what a newcomer resets; the CEILING
+    // is twelve seconds since the arrival and is what nobody can push out. So the
+    // moment this case wants is one where the floor is spent, the trip's other
+    // rider is seated, and the newcomer is NOT - because a trip that had taken
+    // only that other rider on has nothing left to wait for there.
+    const FLOOR_TICKS = 40;
+    const CEILING_TICKS = 120;
+    const CLEAR_TICKS = 5;
+    const witness = tickToRiderWitness({
+      scene,
+      settled: "z1-a",
+      walking: newcomer,
+      since: 1,
+      floor: FLOOR_TICKS,
+      ceiling: CEILING_TICKS,
+    });
+    expect(
+      witness,
+      `no moment with the floor spent, z1-a seated and ${newcomer} still walking (${note})`,
+    ).toBeGreaterThan(0);
+
+    // HALF A SECOND MORE, so a van that had left would be visibly off the kerb
+    // rather than a tile-fraction along it.
+    for (let step = 0; step < CLEAR_TICKS; step += 1) scene.tick(100);
+    const sinceKerb = WAITED_TICKS + witness + CLEAR_TICKS;
+    expect(
+      sinceKerb < CEILING_TICKS,
+      `the twelve second ceiling had already released the van, at ${String(sinceKerb)} ticks (${note})`,
+    ).toBe(true);
+    expect(
+      seatedInWard(scene, newcomer),
+      `${newcomer} reached its bed inside the half second grace, so the wait proves nothing (${note})`,
+    ).toBe(false);
+    expect(
+      JSON.stringify(ambulancePoint(scene)),
+      `the ambulance is not at its kerb ${String(CLEAR_TICKS)} ticks after a trip with no new rider would have left it (${note})`,
+    ).toBe(JSON.stringify(kerbAfter));
+
+    // AND THEN IT DRIVES AWAY ON THIS STOREY'S ROAD, which is the other half of
+    // following a ward that moved: it is not enough to be redrawn at the new
+    // kerb if the route under it still belongs to the storey it used to be.
+    const { left, vanished } = drivenOffTheKerb(scene, kerbAfter);
+    expect(
+      vanished,
+      `the ambulance vanished at its kerb instead of driving off it (${note})`,
+    ).toBe(false);
+    expect(left, `the ambulance never left the kerb (${note})`).not.toBeNull();
+    if (left === null) return;
+    expect(
+      onRoadOf(scene, "host-b", left),
+      `the ambulance drove off host-b's own route, at ${JSON.stringify(left)} (${note})`,
+    ).toBe(true);
   });
 
   it("dispatches an ambulance for a failure that got a bed", (context) => {
