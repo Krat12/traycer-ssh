@@ -143,6 +143,27 @@ export function resolveHistoryRow(
 }
 
 /**
+ * The epic of the FIRST presentable row in the scope's history list (the
+ * list is most-recent first), or null when the list is not on screen or
+ * empty: what "Open latest task" opens when the panels lesson has no task
+ * bound and there is nothing imported to open.
+ */
+export function resolveLatestHistoryEpicId(
+  scope: TourSurfaceScope,
+): string | null {
+  const container = resolveAnchor(scope, "landing-history");
+  if (container === null) return null;
+  for (const row of container.querySelectorAll<HTMLElement>(
+    "[data-epic-id]",
+  )) {
+    if (presentableElement(row) === null) continue;
+    const epicId = row.dataset.epicId;
+    if (epicId !== undefined && epicId.length > 0) return epicId;
+  }
+  return null;
+}
+
+/**
  * Notifies `onChange` when anything that can change a resolution happens:
  * nodes mounting/unmounting anywhere (a rail replacing a column, a draft
  * becoming an epic), the visibility/collapse attributes the surfaces stamp,

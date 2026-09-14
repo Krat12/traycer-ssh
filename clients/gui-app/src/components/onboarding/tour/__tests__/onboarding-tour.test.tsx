@@ -36,6 +36,10 @@ vi.mock("motion/react", async (importOriginal) => {
   return { ...actual, useReducedMotion: () => reducedMotion.value };
 });
 
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => () => undefined,
+}));
+
 vi.mock("@/lib/analytics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/analytics")>();
   return {
@@ -235,6 +239,38 @@ describe("<OnboardingTour /> with the real react-joyride", () => {
     expect(overlayPath.matches(rule?.selector ?? "")).toBe(true);
     // And the tour itself still treats an outside click as a no-op.
     expect(flow().activeTourId).toBe("add-folder");
+  });
+
+  it("an unbound panels lesson presents 'Open a task to continue.' with an Open latest task button that survives Joyride's step merge (B6)", async () => {
+    const root = surface?.querySelector<HTMLElement>(
+      '[data-testid="landing-draft-surface"]',
+    );
+    if (root === null || root === undefined) throw new Error("no root");
+    const list = document.createElement("ul");
+    list.setAttribute("data-tour", "landing-history");
+    list.getBoundingClientRect = () => new DOMRect(0, 100, 600, 400);
+    const row = document.createElement("li");
+    row.setAttribute("data-epic-id", "epic-latest");
+    row.getBoundingClientRect = () => new DOMRect(0, 100, 600, 40);
+    list.append(row);
+    root.append(list);
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("sessions");
+      flow().setContext({ draftId: DRAFT_ID });
+      flow().advance("history", "history", "next");
+    });
+    expect(flow().activeTourId).toBe("task-panels");
+    const card = await screen.findByTestId("onboarding-tour-card");
+    expect(card.getAttribute("data-tour-step")).toBe("task-panels");
+    expect(
+      document.getElementById(card.getAttribute("aria-describedby") ?? "")
+        ?.textContent,
+    ).toBe("Open a task to continue.");
+    expect(
+      screen.getByRole("button", { name: "Open latest task" }),
+    ).not.toBeNull();
+    expect(document.querySelector('[data-testid="overlay"]')).toBeNull();
   });
 
   it("under reduced motion the floater and overlay carry no transition and scrolling is instant", async () => {

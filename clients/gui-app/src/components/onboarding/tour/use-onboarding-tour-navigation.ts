@@ -37,7 +37,9 @@ import { useTabsStore } from "@/stores/tabs/store";
  * Once, and only on activation: this is entry/resume work, never an effect
  * that pulls a user back to the draft every time they navigate away. The
  * panels lesson WAITS for its epic surface instead (contract 9) - the
- * tour never creates or force-opens a task to satisfy an anchor. "Once" is
+ * tour never creates a task, and opens one only on a gesture of the
+ * user's (Next on the history lesson, the card's "Open latest task"; see
+ * the controller), never to satisfy an anchor on its own. "Once" is
  * kept module-level, keyed by the activation token: the host remounts on
  * every readiness drop, and a remount must not redirect a lesson already
  * under way (a pending terminal Start mid-flight) back to the draft.

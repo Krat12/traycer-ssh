@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useReducedMotion } from "motion/react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ACTIONS,
   EVENTS,
@@ -16,14 +17,17 @@ import {
 } from "react-joyride";
 import { useShallow } from "zustand/react/shallow";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
+import { activateTabIntent, openOrFocusEpicIntent } from "@/lib/tab-navigation";
 import {
   selectPresentedModalCount,
   useModalPresenceStore,
 } from "@/components/ui/modal-presence";
 import {
   buildTourSteps,
+  TASK_PANELS_UNBOUND_BODY,
   TOUR_LESSONS,
   tourLessonTitle,
+  type TourStepAction,
 } from "@/components/onboarding/tour/tour-steps";
 import {
   getActivationToken,
@@ -36,6 +40,7 @@ import {
   observeTourTargets,
   resolveAnchor,
   resolveHistoryRow,
+  resolveLatestHistoryEpicId,
   resolvePanelTarget,
   type TargetSnapshot,
   type TargetTracker,
@@ -501,11 +506,18 @@ function useTargetTracking(
   return { tracker, target, lessonKey };
 }
 
+/** What the unanchored card says and offers when the lesson has no task. */
+interface UnboundPresentation {
+  readonly content: string;
+  readonly action: TourStepAction | null;
+}
+
 function buildSteps(
   order: ReadonlyArray<TourId>,
   activeTourId: TourId | null,
   target: TargetSnapshot,
   lessonKey: string | null,
+  unbound: UnboundPresentation | null,
 ): Step[] {
   if (activeTourId === null) return [];
   // Anchored only on a node resolved for THIS lesson/context. Anything else
@@ -516,12 +528,60 @@ function buildSteps(
   const fresh = target.key === lessonKey;
   const node = fresh && !target.unanchored ? target.node : null;
   if (node === null) {
-    return buildTourSteps(order, activeTourId, { kind: "unanchored" });
+    return buildTourSteps(order, activeTourId, {
+      kind: "unanchored",
+      content: unbound?.content ?? null,
+      action: unbound?.action ?? null,
+    });
   }
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
   });
+}
+
+/**
+ * Opens (or focuses) an epic tab through the tab-navigation seam: what
+ * Next on the history lesson and "Open latest task" do. The two places
+ * the tour opens a task on the user's behalf, both on a gesture of theirs
+ * - never to satisfy an anchor on its own.
+ */
+function useOpenEpicTab(): (epicId: string) => void {
+  const navigate = useNavigate();
+  return useCallback(
+    (epicId: string) => {
+      activateTabIntent(
+        navigate,
+        openOrFocusEpicIntent({ epicId, focus: undefined }),
+        undefined,
+      );
+    },
+    [navigate],
+  );
+}
+
+/**
+ * The most recent task in the context draft's history list, tracked while
+ * `enabled` (the panels lesson with no task bound), for "Open latest task".
+ * A string snapshot, so the DOM observer only re-renders on a change.
+ */
+function useLatestHistoryEpicId(
+  draftId: string | null,
+  enabled: boolean,
+): string | null {
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      enabled ? observeTourTargets(listener) : () => undefined,
+    [enabled],
+  );
+  const getSnapshot = useCallback(
+    () =>
+      enabled && draftId !== null
+        ? resolveLatestHistoryEpicId({ kind: "draft", draftId })
+        : null,
+    [enabled, draftId],
+  );
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /** Focus origin, restored on pause / end only; chain-end analytics. */
@@ -610,12 +670,14 @@ function handleStepAfter(
   data: EventData,
   active: ActiveStep,
   guardedAdvance: GuardedAdvance,
+  onHistoryNext: () => void,
 ): void {
   // F1: a suspension (`run` -> false) emits step:after with the LAST
   // tracked action and status "paused". Only a running step counts.
   if (data.status !== STATUS.RUNNING) return;
   if (data.action === ACTIONS.NEXT) {
-    guardedAdvance(active.tourId, active.stepId, "next");
+    const advanced = guardedAdvance(active.tourId, active.stepId, "next");
+    if (advanced && active.tourId === "history") onHistoryNext();
   } else if (data.action === ACTIONS.CLOSE) {
     dismissedThisLaunch = true;
     trackStep(active.tourId, active.stepId, "pause");
@@ -648,6 +710,7 @@ function useEventAdapter(
   activation: number,
   tracking: TargetTracking,
   guardedAdvance: GuardedAdvance,
+  onHistoryNext: () => void,
 ): EventAdapter {
   const { tracker, target } = tracking;
   const epoch = target.epoch;
@@ -668,14 +731,36 @@ function useEventAdapter(
         // no cutout; progress untouched.
         tracker.markUnanchored();
       } else if (data.type === EVENTS.STEP_AFTER) {
-        handleStepAfter(data, active, guardedAdvance);
+        handleStepAfter(data, active, guardedAdvance, onHistoryNext);
       } else if (data.type === EVENTS.TOUR_END) {
         handleTourEnd(data, active);
       }
     },
-    [activation, epoch, active, guardedAdvance, tracker],
+    [activation, epoch, active, guardedAdvance, onHistoryNext, tracker],
   );
   return { onEvent, announcement };
+}
+
+/**
+ * Next on the history lesson with no epic on screen: the panels lesson
+ * that follows needs a task, so the imported one the card pointed at (else
+ * the first imported/unseen id) is opened. The user chose to move on from
+ * "open a task to keep going" - a gesture, not an anchor pulling them
+ * somewhere. An epic already focused (one the lesson ignored at entry) is
+ * left as the panels lesson's task instead.
+ */
+function useHistoryNext(
+  target: TargetSnapshot,
+  historyEpicIds: ReadonlyArray<string>,
+  openEpicTab: (epicId: string) => void,
+): () => void {
+  const rowEpicId = target.node?.dataset.epicId ?? null;
+  return useCallback(() => {
+    const focused = selectHostFocusedRef(useTabsStore.getState());
+    if (focused !== null && focused.kind === "epic") return;
+    const epicId = rowEpicId ?? historyEpicIds.at(0) ?? null;
+    if (epicId !== null) openEpicTab(epicId);
+  }, [rowEpicId, historyEpicIds, openEpicTab]);
 }
 
 interface PredicateArgs {
@@ -952,18 +1037,54 @@ export function useOnboardingTourController(): OnboardingTourController {
     activeTourId === null ? 0 : order.indexOf(activeTourId),
   );
   const { target, lessonKey } = tracking;
+  const openEpicTab = useOpenEpicTab();
+  // The panels lesson with no task bound: the card says so and, when the
+  // history list (or an import) names one, offers to open the latest.
+  const panelsUnbound =
+    chainActive && activeTourId === "task-panels" && lesson.tabId === null;
+  const latestListedEpicId = useLatestHistoryEpicId(
+    lesson.draftId,
+    panelsUnbound,
+  );
+  const latestEpicId = panelsUnbound
+    ? (latestListedEpicId ?? inputs.historyEpicIds.at(0) ?? null)
+    : null;
+  const unbound = useMemo<UnboundPresentation | null>(
+    () =>
+      panelsUnbound
+        ? {
+            content: TASK_PANELS_UNBOUND_BODY,
+            action:
+              latestEpicId === null
+                ? null
+                : {
+                    label: "Open latest task",
+                    run: () => {
+                      openEpicTab(latestEpicId);
+                    },
+                  },
+          }
+        : null,
+    [panelsUnbound, latestEpicId, openEpicTab],
+  );
   const steps = useMemo(
-    () => buildSteps(order, activeTourId, target, lessonKey),
-    [order, activeTourId, target, lessonKey],
+    () => buildSteps(order, activeTourId, target, lessonKey, unbound),
+    [order, activeTourId, target, lessonKey, unbound],
   );
 
   useFocusOriginAndChainEnd(run, flow);
   const guardedAdvance = useGuardedAdvance();
+  const onHistoryNext = useHistoryNext(
+    target,
+    inputs.historyEpicIds,
+    openEpicTab,
+  );
   const { onEvent, announcement } = useEventAdapter(
     active,
     activation,
     tracking,
     guardedAdvance,
+    onHistoryNext,
   );
   const predicateArgs: PredicateArgs = {
     chainActive,

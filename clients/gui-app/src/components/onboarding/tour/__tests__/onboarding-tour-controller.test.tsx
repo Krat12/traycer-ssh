@@ -8,6 +8,7 @@ import {
   consumeFocusNextCard,
   resetActivationForTests,
 } from "@/components/onboarding/tour/tour-activation";
+import { tourStepAction } from "@/components/onboarding/tour/tour-steps";
 import {
   resetTourDismissalForTests,
   wasTourDismissedThisLaunch,
@@ -85,6 +86,20 @@ vi.mock("@/lib/analytics", async (importOriginal) => {
 });
 const analyticsTrack = vi.hoisted(() => vi.fn());
 
+// The tab-navigation seam the tour opens a task through (Next on history,
+// "Open latest task"): what it is asked for is the contract.
+const seam = vi.hoisted(() => ({
+  activateTabIntent: vi.fn(),
+  navigate: vi.fn(),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => seam.navigate,
+}));
+vi.mock("@/lib/tab-navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tab-navigation")>();
+  return { ...actual, activateTabIntent: seam.activateTabIntent };
+});
+
 const DRAFT_ID = "draft-tour";
 const HOST_ID = "host-tour";
 const EPIC_TAB_ID = "tab-epic-1";
@@ -118,6 +133,7 @@ beforeEach(() => {
   joyride.props = null;
   joyride.mounts = 0;
   analyticsTrack.mockClear();
+  seam.activateTabIntent.mockReset();
   resetTourDismissalForTests();
   resetActivationForTests();
   resetModalPresenceForTests();
@@ -1079,6 +1095,96 @@ describe("lesson predicates", () => {
       epicId: EPIC_ID,
       tabId: EPIC_TAB_ID,
     });
+  });
+
+  it("history -> Next with no epic focused opens the imported task the card pointed at through the seam (B6); the panels lesson then binds the focused epic", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-history"], true),
+    );
+    const container = surface.anchors["landing-history"];
+    if (container === undefined) throw new Error("container missing");
+    const imported = sized(document.createElement("li"));
+    imported.setAttribute("data-epic-id", EPIC_ID);
+    container.append(imported);
+    act(() => {
+      useImportedUnseenStore.setState({ unseen: { [EPIC_ID]: undefined } });
+    });
+    render(<OnboardingTour />);
+    startChain("sessions");
+    await mutate(() => undefined);
+    present();
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      expect.objectContaining({ kind: "open-epic", epicId: EPIC_ID }),
+      undefined,
+    );
+    // The seam lands the epic tab: bound as the panels lesson's task.
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    act(() => {
+      focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    });
+    expect(flow().context).toMatchObject({
+      epicId: EPIC_ID,
+      tabId: EPIC_TAB_ID,
+    });
+    await mutate(() => undefined);
+    const step = props().steps.at(props().stepIndex ?? 0);
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(step.placement).toBe("right");
+    expect(step.target()).not.toBeNull();
+  });
+
+  it("history -> Next with an epic already focused opens nothing: that epic becomes the panels lesson's task", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-history"], true));
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    render(<OnboardingTour />);
+    startChain("sessions");
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(flow().context).toMatchObject({ tabId: EPIC_TAB_ID });
+  });
+
+  it("history -> Next with nothing imported: the panels card is unbound - 'Open a task to continue' - and offers the list's latest task when there is one (B6)", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-history"], true),
+    );
+    const container = surface.anchors["landing-history"];
+    if (container === undefined) throw new Error("container missing");
+    render(<OnboardingTour />);
+    startChain("sessions");
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    let step = props().steps.at(props().stepIndex ?? 0);
+    expect(step?.placement).toBe("center");
+    expect(step?.content).toBe("Open a task to continue.");
+    expect(step === undefined ? null : tourStepAction(step)).toBeNull();
+    // An (unimported) task shows up in the list: the card can open it.
+    const latest = sized(document.createElement("li"));
+    latest.setAttribute("data-epic-id", "epic-latest");
+    await mutate(() => {
+      container.append(latest);
+    });
+    step = props().steps.at(props().stepIndex ?? 0);
+    const action = step === undefined ? null : tourStepAction(step);
+    expect(action?.label).toBe("Open latest task");
+    act(() => {
+      action?.run();
+    });
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      expect.objectContaining({ kind: "open-epic", epicId: "epic-latest" }),
+      undefined,
+    );
+    expect(flow().activeTourId).toBe("task-panels");
   });
 
   it("history: an epic already focused at entry is not a user-opened transition", () => {

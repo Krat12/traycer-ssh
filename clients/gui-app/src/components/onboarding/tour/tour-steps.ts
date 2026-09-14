@@ -66,22 +66,57 @@ export const TOUR_LESSONS: Readonly<Record<TourId, TourLesson>> = {
   },
 };
 
+/**
+ * The panels lesson with no task bound yet (the sessions branch's Next on
+ * history found nothing imported to open; a prompt lesson acknowledged
+ * without sending): the card says what would anchor it.
+ */
+export const TASK_PANELS_UNBOUND_BODY = "Open a task to continue.";
+
 export function tourLessonTitle(tourId: TourId): string {
   return TOUR_COPY[tourId].title;
+}
+
+/**
+ * An extra button on the card, for the one case a lesson can offer the
+ * thing that would anchor it ("Open latest task").
+ */
+export interface TourStepAction {
+  readonly label: string;
+  readonly run: () => void;
+}
+
+/**
+ * Carried on Joyride's untyped `Step.data` as a class instance: Joyride
+ * deep-merges plain objects into each step and passes anything else by
+ * reference, and `instanceof` is the typed read back (`tourStepAction`).
+ */
+class TourStepData {
+  constructor(readonly action: TourStepAction) {}
+}
+
+export function tourStepAction(step: Step): TourStepAction | null {
+  const data: unknown = step.data;
+  return data instanceof TourStepData ? data.action : null;
 }
 
 /**
  * How the active lesson is being shown. `anchored` spotlights a resolved
  * node (Joyride scrolls it into view); `unanchored` is the same lesson as a
  * centred card with no cutout - the target is missing, timed out or
- * detached, and the user still gets Next / Skip / pause (never a trap).
+ * detached, and the user still gets Next / Skip / pause (never a trap) -
+ * with, optionally, its own copy and an action that would anchor it.
  */
 export type StepPresentation =
   | {
       readonly kind: "anchored";
       readonly target: () => HTMLElement | null;
     }
-  | { readonly kind: "unanchored" };
+  | {
+      readonly kind: "unanchored";
+      readonly content: string | null;
+      readonly action: TourStepAction | null;
+    };
 
 function documentBody(): HTMLElement {
   return document.body;
@@ -106,9 +141,22 @@ export function buildTourSteps(
       title: tourLessonTitle(tourId),
       content: lesson.body,
     };
-    if (tourId !== activeTourId || presentation.kind === "unanchored") {
+    if (tourId !== activeTourId) {
       return {
         ...base,
+        target: documentBody,
+        placement: "center",
+        hideOverlay: true,
+        skipScroll: true,
+      };
+    }
+    if (presentation.kind === "unanchored") {
+      return {
+        ...base,
+        content: presentation.content ?? lesson.body,
+        ...(presentation.action === null
+          ? {}
+          : { data: new TourStepData(presentation.action) }),
         target: documentBody,
         placement: "center",
         hideOverlay: true,

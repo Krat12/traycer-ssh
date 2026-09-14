@@ -5,6 +5,7 @@ import {
   armFocusNextCard,
   consumeFocusNextCard,
 } from "@/components/onboarding/tour/tour-activation";
+import { tourStepAction } from "@/components/onboarding/tour/tour-steps";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 
@@ -23,7 +24,9 @@ import { Kbd } from "@/components/ui/kbd";
  * Buttons: Next (or Finish on the last step), Skip, and an icon close
  * labelled "Pause tour" - never Back. Each hands its click to Joyride's own
  * handler; the app's flow store then reacts to the resulting event in the
- * controller, so nothing here advances twice.
+ * controller, so nothing here advances twice. A step may carry one extra
+ * action of its own (`tourStepAction`: "Open latest task" on an unbound
+ * panels lesson), which touches the app, never the flow.
  */
 
 export const TOUR_TOOLTIP_TITLE_ID = "onboarding-tour-title";
@@ -35,6 +38,7 @@ export function OnboardingTourTooltip(
   const { closeProps, index, isLastStep, primaryProps, size, skipProps, step } =
     props;
   const cardRef = useRef<HTMLDivElement>(null);
+  const action = tourStepAction(step);
 
   // Keyboard Next moves focus into the NEXT card (a mouse click leaves focus
   // where the pointer put it). A click with `detail === 0` is a keyboard
@@ -96,6 +100,16 @@ export function OnboardingTourTooltip(
         <span className="ml-auto inline-flex items-center gap-1 text-ui-xs text-muted-foreground">
           <Kbd>Esc</Kbd> pause
         </span>
+        {action === null ? null : (
+          <Button
+            variant="secondary"
+            size="sm"
+            data-action="step-action"
+            onClick={action.run}
+          >
+            {action.label}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
