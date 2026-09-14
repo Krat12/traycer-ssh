@@ -92,8 +92,11 @@ interface ComposerDraftStore {
    * and that claim then commits. A host document for a retired id is never
    * applied (a submitted id would resurrect the sent text as a clean draft);
    * it re-arms the delete on the document's owner instead. Persisted, so a
-   * reload between the answer and the late document keeps the fence; an id
-   * is forgotten once a host actually deleted its row.
+   * reload between the answer and the late document keeps the fence. Never
+   * pruned: even a `deleted` answer does not make an older document
+   * impossible - another view's claim apply admitted before the delete can
+   * still resume after it (its blob reads run outside the session's
+   * tombstone ordering) and would restore the submitted text.
    */
   readonly retiredDraftIds: Partial<Record<string, true>>;
   /**
@@ -187,13 +190,11 @@ interface ComposerDraftStore {
   /**
    * A host answered the pending delete for `draftId`. `hostId` null is a
    * host tombstone (authoritative); otherwise only the host the receipt
-   * currently names completes it. `deleted` also drops the retirement
-   * fence for the id.
+   * currently names completes it. The retirement fence is kept.
    */
   readonly completeSubmittedDraftDelete: (
     draftId: string,
     hostId: string | null,
-    outcome: "deleted" | "absent" | "unsupported",
   ) => void;
   readonly bindTarget: (chatId: string, epicId: string) => void;
 }
@@ -440,25 +441,21 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           };
         });
       },
-      completeSubmittedDraftDelete: (draftId, hostId, outcome) => {
+      completeSubmittedDraftDelete: (draftId, hostId) => {
         set((state) => {
           const pending = state.pendingSubmittedDraftDeletes[draftId];
           if (pending === undefined) return state;
           // Only the host the receipt currently names completes it: a late
           // answer from a host the delete was since retargeted away from
           // says nothing about the row where it lives now. A host
-          // tombstone (`hostId` null) is authoritative.
+          // tombstone (`hostId` null) is authoritative. The retirement
+          // fence (`retiredDraftIds`) stays either way.
           if (hostId !== null && pending.hostId !== hostId) return state;
           const pendingSubmittedDraftDeletes = {
             ...state.pendingSubmittedDraftDeletes,
           };
           delete pendingSubmittedDraftDeletes[draftId];
-          if (outcome !== "deleted") return { pendingSubmittedDraftDeletes };
-          // The row is gone from the host that held it: nothing can bring
-          // this id back, so its retirement fence can go too.
-          const retiredDraftIds = { ...state.retiredDraftIds };
-          delete retiredDraftIds[draftId];
-          return { pendingSubmittedDraftDeletes, retiredDraftIds };
+          return { pendingSubmittedDraftDeletes };
         });
       },
       bindTarget: (chatId, epicId) => {

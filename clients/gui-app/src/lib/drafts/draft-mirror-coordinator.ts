@@ -419,7 +419,7 @@ const sink: DraftMirrorSink = {
     settleLandingDeleteOutcome(draftId, hostId, outcome);
     useComposerDraftStore
       .getState()
-      .completeSubmittedDraftDelete(draftId, hostId, outcome);
+      .completeSubmittedDraftDelete(draftId, hostId);
   },
   applyUpsert(document) {
     return applyHostDocument(document, null);
@@ -431,7 +431,7 @@ const sink: DraftMirrorSink = {
     completeLandingDraftDelete(draftId);
     useComposerDraftStore
       .getState()
-      .completeSubmittedDraftDelete(draftId, null, "deleted");
+      .completeSubmittedDraftDelete(draftId, null);
     applyLandingHostDelete(draftId);
     applyComposerHostDelete(draftId);
     applyInterviewHostDelete(draftId);
@@ -986,7 +986,7 @@ async function retrySubmittedDraftDelete(draftId: string): Promise<void> {
   if (outcome !== "failed") {
     useComposerDraftStore
       .getState()
-      .completeSubmittedDraftDelete(draftId, hostId, outcome);
+      .completeSubmittedDraftDelete(draftId, hostId);
   }
 }
 
