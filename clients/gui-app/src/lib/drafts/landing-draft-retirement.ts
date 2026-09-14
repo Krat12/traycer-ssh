@@ -125,6 +125,23 @@ export function rearmLandingDraftDelete(
   return true;
 }
 
+/**
+ * The host a receipt's delete was routed to answered that it does not hold
+ * the row (`deleted: false`): the row was never there, or a claim moved it
+ * to another host meanwhile. The receipt goes back to owner-unresolved, so
+ * the next owner document to arrive (the new owner's directory head) names
+ * the delete's destination instead of being rejected against a receipt
+ * that still says the old host.
+ */
+export function unresolveLandingDraftRetirementOwner(draftId: string): void {
+  if (readRetirement(draftId) === undefined) return;
+  writeRetirement(draftId, {
+    hostId: null,
+    pendingDelete: false,
+    ownerResolved: false,
+  });
+}
+
 export function isLandingDraftRetirementKey(key: string | null): boolean {
   return key?.startsWith(prefix) === true;
 }

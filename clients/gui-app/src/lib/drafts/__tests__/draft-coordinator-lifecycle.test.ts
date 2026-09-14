@@ -20,6 +20,7 @@ import {
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
 import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
 import {
+  landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
 } from "@/lib/drafts/landing-draft-retirement";
@@ -641,7 +642,7 @@ describe("deleteLandingDraftThroughHost", () => {
     expect(requested).toEqual([id]);
   });
 
-  it("no session mounted: a resolved drafts.delete({ deleted: false }) also completes the receipt", async () => {
+  it("no session mounted: a resolved drafts.delete({ deleted: false }) unresolves the receipt owner, and a later owner document routes the delete there", async () => {
     const id = "direct-delete-false";
     useLandingDraftStore.setState({
       drafts: [ownAdoptedLandingRow(id, HOST_B)],
@@ -651,9 +652,23 @@ describe("deleteLandingDraftThroughHost", () => {
 
     deleteLandingDraftThroughHost(id, HOST_B, client);
 
+    // host-b never had the row (or a claim moved it away): the receipt goes
+    // back to owner-unresolved rather than completing over a row that may
+    // still exist elsewhere.
     await vi.waitFor(() => {
       expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
     });
+    expect(landingDraftIsRetired(id)).toBe(true);
+
+    // The new owner's directory head arrives next; it supplies the missing
+    // delete destination instead of installing a visible row.
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await applyIncomingDraftDocument(document, null);
+
+    expect(
+      useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
+    ).toBe(false);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
   });
 
   it("no session mounted: a rejected drafts.delete leaves the receipt pending on host-b", async () => {

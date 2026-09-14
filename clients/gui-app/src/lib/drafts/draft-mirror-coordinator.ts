@@ -101,6 +101,7 @@ import {
   pendingLandingDraftDeleteIdsForHost,
   retireLandingDraft,
   resolveLandingDraftRetirementOwner,
+  unresolveLandingDraftRetirementOwner,
 } from "./landing-draft-retirement";
 
 type SessionEntry = {
@@ -995,10 +996,17 @@ export function deleteLandingDraftThroughHost(
   if (pendingLandingDraftDeleteHostId(draftId) !== hostId) return;
   void client
     .request("drafts.delete", { draftId })
-    .then(() => {
-      // `deleted: false` means the host never had the row: nothing is left
-      // to delete there either way.
-      completeLandingDraftDelete(draftId);
+    .then((response) => {
+      if (response.deleted) {
+        completeLandingDraftDelete(draftId);
+        return;
+      }
+      // The host does not hold the row: never had it, or another device's
+      // claim moved it elsewhere while this delete was on its way. The
+      // receipt goes back to owner-unresolved so the new owner's next
+      // document routes the delete there, instead of a completed receipt
+      // hiding a row that still exists.
+      unresolveLandingDraftRetirementOwner(draftId);
     })
     .catch((error: unknown) => {
       if (isDraftsCapabilityMissing(error)) {
