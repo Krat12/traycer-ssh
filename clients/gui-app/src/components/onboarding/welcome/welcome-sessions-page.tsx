@@ -45,6 +45,14 @@ import { cn } from "@/lib/utils";
 import { useSessionImportRun } from "@/stores/session-import/session-import-run-store";
 import { useFeatureAnnouncementsStore } from "@/stores/settings/feature-announcements-store";
 
+// The list fades its bottom edge rather than slicing a row against the
+// footer's border: with the rows filling the page, a hard cut read as the end
+// of the list, not as more below (`mobile-nav-drawer` does the same). The
+// scroller carries matching bottom padding, so the gradient only ever
+// covers blank space - at full scroll the last row stays crisp.
+const LIST_FADE_CLASS =
+  "[-webkit-mask-image:linear-gradient(to_bottom,black_calc(100%-2rem),transparent)] [mask-image:linear-gradient(to_bottom,black_calc(100%-2rem),transparent)]";
+
 /**
  * Page 2 of the welcome modal: the sessions the background scan found,
  * grouped provider → folder → session with a three-state checkbox at every
@@ -243,7 +251,10 @@ export function WelcomeSessionsPage(props: {
     <>
       <div
         data-testid="welcome-sessions-page"
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 py-4"
+        className={cn(
+          "flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-6 pt-4 pb-8",
+          LIST_FADE_CLASS,
+        )}
       >
         <ScanErrorBanner state={state} tone={tone} />
         {view.sections.map((section) => (
