@@ -105,11 +105,19 @@ export function useDraftAuthorityControl(args: {
     readonly fn: () => void;
   } | null>(null);
   useLayoutEffect(() => {
-    if (args.draftId === null || args.tabHostId === null) return;
+    if (args.draftId === null || args.tabHostId === null) {
+      repairRef.current = null;
+      return;
+    }
     repairRef.current = {
       draftId: args.draftId,
       tabHostId: args.tabHostId,
       fn: args.repairOnEdit,
+    };
+    // A refusal that settles after the surface is gone (unmount, or an
+    // identity that went null) must not fork or detach a draft nobody shows.
+    return () => {
+      repairRef.current = null;
     };
   }, [args.draftId, args.repairOnEdit, args.tabHostId]);
 
