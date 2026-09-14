@@ -66,10 +66,12 @@ interface PendingClaim {
   /** Settled outcome, recorded before any repair handler runs. */
   outcome: "pending" | "owned" | "refused";
   /**
-   * Shared by every link of a chain: the edit-armed repair runs at most
-   * once per chain, on its final refused link.
+   * The edit-armed repair runs at most once per attempt: a refusal handler
+   * and a settlement's `abandon` can both reach the same final link. A
+   * link that chained defers to its successor, so a chain repairs at most
+   * once as well, on its final refused link.
    */
-  repairGuard: { done: boolean };
+  readonly repairGuard: { done: boolean };
   repairArmed: boolean;
   /**
    * A submit joined this claim. Its refusal handling is the send itself
@@ -243,12 +245,13 @@ export function useDraftAuthorityControl(args: {
           if (next === null) return null;
           // A submit that settled on this attempt is settling on the chain:
           // the re-claim inherits its suppression (a refusal there would
-          // otherwise fork the draft under the deferred send) and the chain's
-          // repair guard; `abandon` releases the suppression on the last
-          // link. Linked BEFORE this attempt resolves, so its own refusal
+          // otherwise fork the draft under the deferred send); `abandon`
+          // releases it on the last link. Inherited, never cleared: the
+          // re-claim may be an attempt a submit already joined on the
+          // current host, whose own suppression must survive this attempt's
+          // refusal. Linked BEFORE this attempt resolves, so its own refusal
           // handler sees the chain and defers to it.
-          next.repairSuppressed = entry.repairSuppressed;
-          next.repairGuard = entry.repairGuard;
+          if (entry.repairSuppressed) next.repairSuppressed = true;
           entry.chained = next;
           return next.promise;
         };
