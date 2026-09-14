@@ -17,6 +17,7 @@ import { tabRefKey } from "@/stores/tabs/layout";
 
 export type TourAnchor =
   | "landing-folder-add"
+  | "landing-workspace-summary"
   | "landing-terminal-switch"
   | "landing-send"
   | "landing-history"

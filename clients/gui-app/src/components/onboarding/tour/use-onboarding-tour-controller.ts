@@ -438,6 +438,18 @@ function resolveLessonTarget(
   }
   if (lesson.draftId === null) return none;
   const scope: TourSurfaceScope = { kind: "draft", draftId: lesson.draftId };
+  if (tourId === "add-folder") {
+    // The bare Add button only renders while the draft has no folder; with
+    // one bound, the lesson points at the workspace summary that opens the
+    // picker (the copy still reads "Add a folder"; the predicate is the
+    // same new-path check either way).
+    return {
+      node:
+        resolveAnchor(scope, "landing-folder-add") ??
+        resolveAnchor(scope, "landing-workspace-summary"),
+      scrollNode: null,
+    };
+  }
   if (tourId === "submit-prompt") {
     // While the composer is in terminal mode Send is not rendered; the mode
     // switch is the alternate presentation target of the same step.

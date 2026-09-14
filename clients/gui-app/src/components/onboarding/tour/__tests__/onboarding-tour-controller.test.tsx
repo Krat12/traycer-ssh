@@ -473,6 +473,36 @@ describe("targets and presentation", () => {
     expect(back.target()).toBe(anchor);
   });
 
+  it("add-folder anchors the workspace summary when the draft already has a folder bound (B4), and prefers the bare Add button when both are there", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-workspace-summary"], true),
+    );
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/bound")]);
+    });
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    const step = props().steps.at(0);
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(step.placement).toBe("bottom");
+    expect(step.target()).toBe(surface.anchors["landing-workspace-summary"]);
+    expect(flow().activeTourId).toBe("add-folder");
+    const addButton = sized(document.createElement("button"));
+    addButton.setAttribute("data-tour", "landing-folder-add");
+    await mutate(() => {
+      surface.root.append(addButton);
+    });
+    const preferred = props().steps.at(0);
+    if (preferred === undefined || typeof preferred.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(preferred.target()).toBe(addButton);
+  });
+
   it("submit-prompt falls back to the mode switch while terminal mode hides Send", () => {
     const surface = keep(
       mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true),
