@@ -12,6 +12,7 @@ import type {
 } from "@traycer/protocol/host";
 import {
   DraftMirrorSession,
+  type DraftDeleteOutcome,
   type DraftDirtyWrite,
   type DraftMirrorSink,
   type DraftsHostRpc,
@@ -196,6 +197,11 @@ function createSink(options: {
     readonly draftId: string;
     readonly hostRevision: number;
   }>;
+  readonly settles: ReadonlyArray<{
+    readonly hostId: string;
+    readonly draftId: string;
+    readonly outcome: DraftDeleteOutcome;
+  }>;
 } {
   const upserts: DraftDocument[] = [];
   const deletes: string[] = [];
@@ -204,15 +210,22 @@ function createSink(options: {
     readonly draftId: string;
     readonly hostRevision: number;
   }> = [];
+  const settles: Array<{
+    readonly hostId: string;
+    readonly draftId: string;
+    readonly outcome: DraftDeleteOutcome;
+  }> = [];
   return {
     upserts,
     deletes,
     scopes,
     synced,
+    settles,
     isDirty: (draftId) => options.dirty.has(draftId),
     isDeletePending: (draftId) => options.pendingDeletes?.has(draftId) ?? false,
     pendingDeleteIdsForHost: () => [...(options.pendingDeletes ?? [])],
-    completeDelete: (draftId) => {
+    settleDelete: (hostId, draftId, outcome) => {
+      settles.push({ hostId, draftId, outcome });
       options.pendingDeletes?.delete(draftId);
     },
     applyUpsert:
@@ -595,6 +608,7 @@ describe("DraftMirrorSession", () => {
 
   it("treats a missing drafts.delete capability as a completed deletion", async () => {
     const pendingDeletes = new Set(["d1"]);
+    const sink = createSink({ dirty: new Set(), writes: [], pendingDeletes });
     const session = new DraftMirrorSession({
       hostId: HOST_ID,
       rpc: createRpc({
@@ -606,12 +620,189 @@ describe("DraftMirrorSession", () => {
         delete: () => Promise.reject(unsupportedError("drafts.delete")),
       }),
       streamClient: createStreamHarness().client,
-      sink: createSink({ dirty: new Set(), writes: [], pendingDeletes }),
+      sink,
       timing: { debounceMs: 0, maxWaitMs: 0 },
       now: () => 0,
     });
     await expect(session.deleteOnHost("d1")).resolves.toBe(true);
     expect(pendingDeletes).toEqual(new Set());
+    expect(sink.settles).toEqual([
+      { hostId: HOST_ID, draftId: "d1", outcome: "unsupported" },
+    ]);
+  });
+
+  it("reports deleteOnHostOutcome as deleted when the host removed its row", async () => {
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.resolve({ deleted: true }),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await expect(session.deleteOnHostOutcome("d1")).resolves.toBe("deleted");
+    session.close();
+  });
+
+  it("reports deleteOnHostOutcome as absent when the host does not hold the row, while deleteOnHost still resolves true", async () => {
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.resolve({ deleted: false }),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await expect(session.deleteOnHostOutcome("d1")).resolves.toBe("absent");
+    await expect(session.deleteOnHost("d2")).resolves.toBe(true);
+    session.close();
+  });
+
+  it("reports deleteOnHostOutcome as failed when the rpc rejects", async () => {
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.reject(new Error("transport error")),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await expect(session.deleteOnHostOutcome("d1")).resolves.toBe("failed");
+    session.close();
+  });
+
+  it("reports deleteOnHostOutcome as unsupported when the drafts capability is missing", async () => {
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.reject(unsupportedError("drafts.delete")),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await expect(session.deleteOnHostOutcome("d1")).resolves.toBe(
+      "unsupported",
+    );
+    session.close();
+  });
+
+  it("settles a bootstrap-retried pending delete as absent when the host does not hold the row", async () => {
+    const pendingDeletes = new Set(["d1"]);
+    const sink = createSink({ dirty: new Set(), writes: [], pendingDeletes });
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.resolve({ deleted: false }),
+      }),
+      streamClient: createStreamHarness().client,
+      sink,
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await vi.waitFor(() => {
+      expect(sink.settles).toEqual([
+        { hostId: HOST_ID, draftId: "d1", outcome: "absent" },
+      ]);
+    });
+    expect(pendingDeletes).toEqual(new Set());
+    session.close();
+  });
+
+  it("settles a bootstrap-retried pending delete as deleted when the host removed its row", async () => {
+    const pendingDeletes = new Set(["d1"]);
+    const sink = createSink({ dirty: new Set(), writes: [], pendingDeletes });
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => Promise.resolve({ deleted: true }),
+      }),
+      streamClient: createStreamHarness().client,
+      sink,
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await vi.waitFor(() => {
+      expect(sink.settles).toEqual([
+        { hostId: HOST_ID, draftId: "d1", outcome: "deleted" },
+      ]);
+    });
+    expect(pendingDeletes).toEqual(new Set());
+    session.close();
+  });
+
+  it("leaves a bootstrap-retried pending delete unsettled when the rpc rejects", async () => {
+    const pendingDeletes = new Set(["d1"]);
+    const sink = createSink({ dirty: new Set(), writes: [], pendingDeletes });
+    let deleteAttempted = false;
+    const session = new DraftMirrorSession({
+      hostId: HOST_ID,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: (write) =>
+          Promise.resolve({
+            draft: landingDocument({ draftId: write.draftId, revision: 1 }),
+          }),
+        delete: () => {
+          deleteAttempted = true;
+          return Promise.reject(new Error("transport error"));
+        },
+      }),
+      streamClient: createStreamHarness().client,
+      sink,
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await vi.waitFor(() => {
+      expect(deleteAttempted).toBe(true);
+    });
+    expect(sink.settles).toEqual([]);
+    expect(pendingDeletes).toEqual(new Set(["d1"]));
+    session.close();
   });
 
   it("does not erase a composer draft synced to host A when host B bootstraps", async () => {
@@ -650,7 +841,11 @@ describe("DraftMirrorSession", () => {
       isDirty: (draftId) => composerDraftIsDirty(draftId),
       isDeletePending: () => false,
       pendingDeleteIdsForHost: () => [],
-      completeDelete: () => undefined,
+      settleDelete: (_hostId, _draftId, _outcome) => {
+        void _hostId;
+        void _draftId;
+        void _outcome;
+      },
       applyUpsert: (document) => {
         applyComposerHostDocument(document);
         return Promise.resolve();
@@ -790,7 +985,11 @@ describe("DraftMirrorSession", () => {
       isDirty: (draftId) => composerDraftIsDirty(draftId),
       isDeletePending: () => false,
       pendingDeleteIdsForHost: () => [],
-      completeDelete: () => undefined,
+      settleDelete: (_hostId, _draftId, _outcome) => {
+        void _hostId;
+        void _draftId;
+        void _outcome;
+      },
       applyUpsert: (document) => {
         applyComposerHostDocument(document);
         return Promise.resolve();
@@ -983,7 +1182,11 @@ describe("DraftMirrorSession", () => {
     const sink: DraftMirrorSink = {
       isDeletePending: () => false,
       pendingDeleteIdsForHost: () => [],
-      completeDelete: () => undefined,
+      settleDelete: (_hostId, _draftId, _outcome) => {
+        void _hostId;
+        void _draftId;
+        void _outcome;
+      },
       isDirty: (draftId) => landingDraftIsDirty(draftId),
       applyUpsert: () => Promise.resolve(),
       applyDelete: () => undefined,

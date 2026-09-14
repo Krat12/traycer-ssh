@@ -90,6 +90,7 @@ import {
 } from "./draft-local-edits";
 import {
   DraftMirrorSession,
+  type DraftDeleteOutcome,
   type DraftDirtyWrite,
   type DraftMirrorSink,
 } from "./draft-mirror-session";
@@ -400,8 +401,11 @@ const sink: DraftMirrorSink = {
       ...pendingSubmittedDraftDeleteIdsForHost(hostId),
     ];
   },
-  completeDelete(draftId) {
-    completeLandingDraftDelete(draftId);
+  settleDelete(hostId, draftId, outcome) {
+    // Landing: only while the receipt still names this host, and `absent`
+    // re-routes rather than completes. Composer: a retired submitted id is
+    // done once the host has answered anything but a failure.
+    settleLandingDeleteOutcome(draftId, hostId, outcome);
     useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
   },
   applyUpsert(document) {
@@ -732,11 +736,37 @@ function routeLocalEdit(draftId: string): void {
 
 function routeLocalDelete(draftId: string): void {
   heldLandingEdits.delete(draftId);
-  const session = sessionForDraft(draftId);
-  if (session === null) return;
-  void session.deleteOnHost(draftId).then((deleted) => {
-    if (deleted) completeLandingDraftDelete(draftId);
+  const hostId = hostIdForDraft(draftId);
+  if (hostId === null) return;
+  const session = sessions.get(hostId)?.session;
+  if (session === undefined) return;
+  void session.deleteOnHostOutcome(draftId).then((outcome) => {
+    settleLandingDeleteOutcome(draftId, hostId, outcome);
   });
+}
+
+/**
+ * Apply a host's `drafts.delete` answer to a landing retirement receipt -
+ * only while the receipt still names `hostId`: a claim that landed since
+ * has retargeted the receipt to the new owner (`rearmLandingDraftDelete`),
+ * and this older answer says nothing about that host's row.
+ */
+function settleLandingDeleteOutcome(
+  draftId: string,
+  hostId: string,
+  outcome: DraftDeleteOutcome,
+): void {
+  if (pendingLandingDraftDeleteHostId(draftId) !== hostId) return;
+  if (outcome === "deleted" || outcome === "unsupported") {
+    completeLandingDraftDelete(draftId);
+    return;
+  }
+  // `absent`: the host does not hold the row - never had it, or another
+  // device's claim moved it elsewhere while this delete was on its way.
+  // The receipt goes back to owner-unresolved so the new owner's next
+  // document routes the delete there, instead of a completed receipt
+  // hiding a row that still exists. `failed` leaves it pending for retry.
+  if (outcome === "absent") unresolveLandingDraftRetirementOwner(draftId);
 }
 
 function routeLocalFlush(draftId: string): void {
@@ -997,20 +1027,15 @@ export function deleteLandingDraftThroughHost(
   void client
     .request("drafts.delete", { draftId })
     .then((response) => {
-      if (response.deleted) {
-        completeLandingDraftDelete(draftId);
-        return;
-      }
-      // The host does not hold the row: never had it, or another device's
-      // claim moved it elsewhere while this delete was on its way. The
-      // receipt goes back to owner-unresolved so the new owner's next
-      // document routes the delete there, instead of a completed receipt
-      // hiding a row that still exists.
-      unresolveLandingDraftRetirementOwner(draftId);
+      settleLandingDeleteOutcome(
+        draftId,
+        hostId,
+        response.deleted ? "deleted" : "absent",
+      );
     })
     .catch((error: unknown) => {
       if (isDraftsCapabilityMissing(error)) {
-        completeLandingDraftDelete(draftId);
+        settleLandingDeleteOutcome(draftId, hostId, "unsupported");
         return;
       }
       appLogger.warn("[draft-mirror] direct drafts.delete failed", {

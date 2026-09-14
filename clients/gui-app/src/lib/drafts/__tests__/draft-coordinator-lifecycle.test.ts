@@ -22,6 +22,7 @@ import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
 import {
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
+  rearmLandingDraftDelete,
   resetLandingDraftRetirementsForTests,
 } from "@/lib/drafts/landing-draft-retirement";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
@@ -714,6 +715,123 @@ describe("deleteLandingDraftThroughHost", () => {
     await vi.waitFor(() => {
       expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
     });
+  });
+
+  it("a mounted session's drafts.delete answering absent unresolves the receipt via the store's deleteDraft; a later host-c document routes the delete there", async () => {
+    const id = "route-local-delete-absent";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    acquireDraftMirrorSession({
+      hostId: HOST_B,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.delete") {
+            const draftId = (params as { draftId: string }).draftId;
+            log.deletes.push(draftId);
+            return Promise.resolve({ deleted: false });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+    // Let the session's own bootstrap (list + retryPendingDeletes) finish
+    // before the draft exists, so it has nothing to observe and cannot
+    // race the delete this test drives below.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+
+    useLandingDraftStore.getState().deleteDraft(id);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+    expect(landingDraftIsRetired(id)).toBe(true);
+
+    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
+    await applyIncomingDraftDocument(document, null);
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+  });
+
+  it("a stale drafts.delete({ deleted: false }) answer after the receipt was re-armed onto a new host leaves that receipt untouched", async () => {
+    const id = "stale-answer-rearmed-false";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    // A holder, not a narrowed `let`: TS narrows the local to `null` after
+    // the assignment and then calls the invocation below uncallable.
+    const deleteAnswer: {
+      resolve: ((value: { deleted: boolean }) => void) | null;
+    } = { resolve: null };
+    const client = fakeDirectClient(
+      () =>
+        new Promise((resolve) => {
+          deleteAnswer.resolve = resolve;
+        }),
+    );
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+
+    expect(rearmLandingDraftDelete(id, "host-c")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+
+    deleteAnswer.resolve?.({ deleted: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+  });
+
+  it("a stale drafts.delete({ deleted: true }) answer after the receipt was re-armed onto a new host also leaves that receipt untouched", async () => {
+    const id = "stale-answer-rearmed-true";
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+    // A holder, not a narrowed `let`: TS narrows the local to `null` after
+    // the assignment and then calls the invocation below uncallable.
+    const deleteAnswer: {
+      resolve: ((value: { deleted: boolean }) => void) | null;
+    } = { resolve: null };
+    const client = fakeDirectClient(
+      () =>
+        new Promise((resolve) => {
+          deleteAnswer.resolve = resolve;
+        }),
+    );
+
+    deleteLandingDraftThroughHost(id, HOST_B, client);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+
+    expect(rearmLandingDraftDelete(id, "host-c")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+
+    deleteAnswer.resolve?.({ deleted: true });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
   });
 
   it("client is null and no session is mounted: the row is removed locally, the receipt stays pending on host-b, and nothing throws", () => {

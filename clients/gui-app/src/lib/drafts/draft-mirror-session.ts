@@ -27,7 +27,16 @@ export interface DraftMirrorSink {
   isDirty(draftId: string): boolean;
   isDeletePending(draftId: string): boolean;
   pendingDeleteIdsForHost(hostId: string): readonly string[];
-  completeDelete(draftId: string): void;
+  /**
+   * A pending delete retried by this session got an answer from `hostId`
+   * (never `failed`). The sink decides what the answer means per store: a
+   * landing retirement treats `absent` as "route elsewhere", not "done".
+   */
+  settleDelete(
+    hostId: string,
+    draftId: string,
+    outcome: Exclude<DraftDeleteOutcome, "failed">,
+  ): void;
   applyUpsert(document: DraftDocument): Promise<void>;
   applyDelete(draftId: string): void;
   collectDirtyWrites(hostId: string): Promise<readonly DraftDirtyWrite[]>;
@@ -95,6 +104,18 @@ type PendingSend = {
  * frames, debounced upsert, delete. Unreachable / `E_HOST_UNSUPPORTED` leaves
  * the sink's local persist as the source of truth.
  */
+/**
+ * How a `drafts.delete` ended: `deleted` (the host removed its row),
+ * `absent` (the host does not hold the row), `unsupported` (the host has no
+ * drafts capability; nothing to delete), `failed` (closed or transport
+ * error; retry later).
+ */
+export type DraftDeleteOutcome =
+  | "deleted"
+  | "absent"
+  | "unsupported"
+  | "failed";
+
 export class DraftMirrorSession {
   readonly hostId: string;
   private readonly rpc: DraftsHostRpc;
@@ -118,7 +139,7 @@ export class DraftMirrorSession {
    * restarts its own generation counter (a re-created row) is unaffected.
    */
   private readonly sendChain = new Map<string, PendingSend>();
-  private readonly deleteChain = new Map<string, Promise<boolean>>();
+  private readonly deleteChain = new Map<string, Promise<DraftDeleteOutcome>>();
   private readonly retiredDraftIds = new Set<string>();
 
   private snapshotSeq = 0;
@@ -225,6 +246,16 @@ export class DraftMirrorSession {
    * can still find the row.
    */
   async deleteOnHost(draftId: string): Promise<boolean> {
+    return (await this.deleteOnHostOutcome(draftId)) !== "failed";
+  }
+
+  /**
+   * `deleteOnHost` with the host's answer kept apart: `absent` (the host
+   * does not hold the row - never had it, or a claim moved it elsewhere
+   * meanwhile) is "done" for the send, but a landing retirement must not
+   * treat it as the row being gone everywhere.
+   */
+  async deleteOnHostOutcome(draftId: string): Promise<DraftDeleteOutcome> {
     this.retiredDraftIds.add(draftId);
     this.clearTimer(draftId);
     const pending = this.sendChain.get(draftId);
@@ -240,32 +271,32 @@ export class DraftMirrorSession {
     return deleting;
   }
 
-  private async runDeleteOnHost(draftId: string): Promise<boolean> {
+  private async runDeleteOnHost(draftId: string): Promise<DraftDeleteOutcome> {
     this.clearTimer(draftId);
     // An upsert may already have passed its send-time fence. Serialize the
     // tombstone behind it so the host can never observe create-after-delete.
     await this.sendChain.get(draftId)?.promise;
-    if (this.closed) return false;
-    if (this.capabilityMissing) return true;
+    if (this.closed) return "failed";
+    if (this.capabilityMissing) return "unsupported";
     try {
       const response = await this.rpc.delete(draftId);
-      if (!response.deleted) return true;
+      if (!response.deleted) return "absent";
       this.held.set(draftId, {
         kind: "tombstone",
         revision: this.revisionOfHeld(draftId) + 1,
         storeSeq: this.snapshotSeq,
       });
       this.sink.rememberSynced(draftId, 0, Number.POSITIVE_INFINITY);
-      return true;
+      return "deleted";
     } catch (error: unknown) {
       if (isDraftsCapabilityMissing(error)) {
         this.markUnsupported();
-        return true;
+        return "unsupported";
       }
       appLogger.warn("[draft-mirror] drafts.delete failed", {
         error: describeLogError(error),
       });
-      return false;
+      return "failed";
     }
   }
 
@@ -589,8 +620,9 @@ export class DraftMirrorSession {
 
   private async retryPendingDeletes(): Promise<void> {
     for (const draftId of this.sink.pendingDeleteIdsForHost(this.hostId)) {
-      if (await this.deleteOnHost(draftId)) {
-        this.sink.completeDelete(draftId);
+      const outcome = await this.deleteOnHostOutcome(draftId);
+      if (outcome !== "failed") {
+        this.sink.settleDelete(this.hostId, draftId, outcome);
       }
     }
   }
@@ -638,7 +670,7 @@ export class DraftMirrorSession {
     this.streamSession?.close();
     this.streamSession = null;
     for (const draftId of this.sink.pendingDeleteIdsForHost(this.hostId)) {
-      this.sink.completeDelete(draftId);
+      this.sink.settleDelete(this.hostId, draftId, "unsupported");
     }
   }
 
