@@ -77,8 +77,12 @@ export function WelcomeProviderTile(
       <div
         data-testid="welcome-provider-identity"
         className={cn(
-          "flex min-w-0 flex-1 items-center",
-          layout === "tile" ? "gap-3" : "gap-2.5",
+          "flex min-w-0 items-center",
+          // The tile's identity fills its row and pushes the switch to the
+          // far edge; the compact row's does NOT, so its switch sits right
+          // after the badge and reads as this row's (QA B10: a switch
+          // pinned 180 px from its name read as the neighbour's).
+          layout === "tile" ? "flex-1 gap-3" : "gap-2.5",
         )}
       >
         <HarnessIcon
@@ -137,8 +141,8 @@ export function WelcomeProviderTile(
           line whether or not the name wraps. */}
       <span
         className={cn(
-          "ml-auto inline-flex shrink-0 items-center",
-          layout === "tile" && "h-7",
+          "inline-flex shrink-0 items-center",
+          layout === "tile" && "ml-auto h-7",
         )}
       >
         <Switch
@@ -200,7 +204,7 @@ export function WelcomeProviderTile(
     <li
       data-testid="welcome-provider-row"
       data-provider-id={model.providerId}
-      className="flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5"
+      className="flex min-h-10 min-w-0 items-center gap-3 rounded-md px-2 py-1"
     >
       {identity}
       {control}

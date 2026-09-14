@@ -183,11 +183,14 @@ export function WelcomeProvidersPage(props: {
               />
               {minorTiles.length.toLocaleString()} more providers
             </button>
+            {/* Two columns at most: each row keeps its switch beside its
+                name, and a third or fourth column of them would put a
+                switch closer to the next row's name than to its own. */}
             {minorsExpanded ? (
               <ul
                 id={minorsId}
                 aria-label="More coding agents"
-                className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-x-3"
+                className="grid grid-cols-1 gap-x-6 md:grid-cols-2"
               >
                 {minorTiles.map((model) => renderTile(model, "row"))}
               </ul>
