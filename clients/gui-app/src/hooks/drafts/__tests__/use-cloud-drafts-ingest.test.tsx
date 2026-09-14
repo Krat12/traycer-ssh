@@ -57,7 +57,10 @@ const DIGEST_TWO = "b".repeat(64);
 const MAX_HEAD_READ_ATTEMPTS = 3;
 const HEAD_READ_RETRY_BASE_MS = 2_000;
 
-function summary(headSha256: string): CloudChatSummary {
+function summary(
+  headSha256: string,
+  overrides: Partial<CloudChatSummary> | null,
+): CloudChatSummary {
   return {
     identity: {
       taskId: "scp_1",
@@ -77,6 +80,7 @@ function summary(headSha256: string): CloudChatSummary {
     publishedAt: 1,
     throughRecordSeq: 1,
     isOwnedByViewer: true,
+    ...overrides,
   };
 }
 
@@ -115,7 +119,7 @@ describe("useCloudDraftsIngest", () => {
   it("re-reads the same draft when its published head changes", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -126,7 +130,7 @@ describe("useCloudDraftsIngest", () => {
 
     // Same identity, same scope, newer head. Keyed on the identity alone this
     // second publish was skipped and the replica stayed on the old bytes.
-    directoryMock.chats = [summary(DIGEST_TWO)];
+    directoryMock.chats = [summary(DIGEST_TWO, null)];
     view.rerender();
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
@@ -143,7 +147,7 @@ describe("useCloudDraftsIngest", () => {
           });
         }),
     );
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -164,7 +168,7 @@ describe("useCloudDraftsIngest", () => {
       .mockRejectedValueOnce(new Error("transient read failure"))
       .mockResolvedValueOnce({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
@@ -189,7 +193,7 @@ describe("useCloudDraftsIngest", () => {
   it("gives up after MAX_HEAD_READ_ATTEMPTS reads and makes no further attempt", async () => {
     vi.useFakeTimers();
     readMock.read.mockRejectedValue(new Error("persistent read failure"));
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
@@ -220,11 +224,19 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("calls dropForeignLandingMirrorsAbsent once with the foreign summary ids when the directory is settled", async () => {
+  it("calls dropForeignLandingMirrorsAbsent once with every directory row's ids - foreign and own-host - when the directory is settled, and only head-ingests the foreign row", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     directoryMock.settled = true;
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    const ownHostSummary = summary(DIGEST_TWO, {
+      identity: {
+        taskId: "scp_1",
+        chatId: "draft-2",
+        ownerUserId: "user-1",
+      },
+      ownerHostId: HOST_ID,
+    });
+    directoryMock.chats = [summary(DIGEST_ONE, null), ownHostSummary];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
@@ -233,15 +245,18 @@ describe("useCloudDraftsIngest", () => {
     });
     expect(dropForeignMock.drop).toHaveBeenCalledWith(
       HOST_ID,
-      new Set(["draft-1"]),
+      new Set(["draft-1", "draft-2"]),
     );
+    // Only the foreign row (owned by another host) is head-ingested; the
+    // own-host row is already live via `drafts.subscribe`.
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
   });
 
   it("does not call dropForeignLandingMirrorsAbsent while the directory is unsettled", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     directoryMock.settled = false;
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
@@ -254,7 +269,7 @@ describe("useCloudDraftsIngest", () => {
   it("re-attempts ingest for the same head after a rejected ingest, on the next effect run", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockRejectedValueOnce(new Error("ingest failed"));
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -266,7 +281,7 @@ describe("useCloudDraftsIngest", () => {
     ingestMock.ingest.mockResolvedValueOnce(undefined);
     // Same head, new array reference (an equal-by-value array with a
     // different identity) so the effect re-runs.
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
     view.rerender();
 
     await vi.waitFor(() => {
@@ -277,7 +292,7 @@ describe("useCloudDraftsIngest", () => {
   it("ingests the happy path exactly once per head across rerenders", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),
@@ -288,9 +303,9 @@ describe("useCloudDraftsIngest", () => {
 
     // Same head, new array reference each time: the key is already marked
     // ingested, so no further ingest calls should happen.
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
     view.rerender();
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
     view.rerender();
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -304,7 +319,7 @@ describe("useCloudDraftsIngest", () => {
     ingestMock.ingest
       .mockRejectedValueOnce(new Error("transient apply failure"))
       .mockResolvedValueOnce(undefined);
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
@@ -343,7 +358,7 @@ describe("useCloudDraftsIngest", () => {
           }),
       )
       .mockResolvedValue(undefined);
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(
       ({ client }) => useCloudDraftsIngest(client, HOST_ID),
@@ -370,7 +385,7 @@ describe("useCloudDraftsIngest", () => {
   it("clears a pending retry timer on unmount, so it never fires a read", async () => {
     vi.useFakeTimers();
     readMock.read.mockRejectedValue(new Error("transient read failure"));
-    directoryMock.chats = [summary(DIGEST_ONE)];
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
 
     const view = renderHook(() =>
       useCloudDraftsIngest(CLIENT as never, HOST_ID),

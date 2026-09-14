@@ -6,7 +6,10 @@ import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
-import { bindLandingDraftOwnership } from "@/stores/home/landing-draft-store";
+import {
+  bindLandingDraftOwnership,
+  deleteClaimedRetiredLandingDraft,
+} from "@/stores/home/landing-draft-store";
 import { bindComposerDraftOwnership } from "@/stores/composer/composer-draft-store";
 
 function bindOwnership(document: DraftDocument, hostId: string): void {
@@ -208,6 +211,13 @@ export function useDraftAuthorityControl(args: {
       // A failed apply (a blob read that threw) does not undo the claim the
       // cloud already granted: the host owns the row, and its next echo
       // brings the document; the settle must not hang its callers on it.
+      // A landing draft this device retired locally while the claim was in
+      // flight (an emptied replica closed from its tab) now belongs to this
+      // host on the cloud; the apply below is a no-op against the receipt,
+      // so the retirement is re-armed to delete it there.
+      if (result.draft.kind === "landing") {
+        deleteClaimedRetiredLandingDraft(result.draft.draftId, tabHostId);
+      }
       try {
         await applyIncomingDraftDocument(result.draft, stillCurrent);
       } catch (error: unknown) {

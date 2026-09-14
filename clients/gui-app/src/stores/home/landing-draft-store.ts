@@ -45,6 +45,7 @@ import {
   completeLandingDraftDelete,
   isLandingDraftRetirementKey,
   landingDraftIsRetired,
+  rearmLandingDraftDelete,
   retireLandingDraft,
 } from "@/lib/drafts/landing-draft-retirement";
 import {
@@ -1758,6 +1759,20 @@ export function bindLandingDraftOwnership(
     ),
   }));
   notifyDraftLocalEdit(draftId);
+}
+
+/**
+ * A claim this device made has landed on a draft it had already retired
+ * locally (an emptied replica closed before the claim settled). The row is
+ * now this host's on the cloud and no echo will ever show it here again, so
+ * the retirement is re-armed to delete it on the claiming host.
+ */
+export function deleteClaimedRetiredLandingDraft(
+  draftId: string,
+  hostId: string,
+): void {
+  if (!rearmLandingDraftDelete(draftId, hostId)) return;
+  notifyDraftLocalDelete(draftId);
 }
 
 export function adoptLandingDraft(draftId: string, hostId: string): void {

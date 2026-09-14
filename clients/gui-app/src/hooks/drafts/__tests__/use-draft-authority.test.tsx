@@ -13,6 +13,9 @@ const applyIncomingMock = vi.hoisted(() => ({
 const bindLandingOwnershipMock = vi.hoisted(() => ({
   bind: vi.fn<(draftId: string, hostId: string) => void>(),
 }));
+const deleteClaimedRetiredLandingDraftMock = vi.hoisted(() => ({
+  delete: vi.fn<(draftId: string, hostId: string) => void>(),
+}));
 
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   useDraftClaim: () => ({
@@ -32,6 +35,8 @@ vi.mock("@/stores/home/landing-draft-store", async (importOriginal) => {
   return {
     ...actual,
     bindLandingDraftOwnership: bindLandingOwnershipMock.bind,
+    deleteClaimedRetiredLandingDraft:
+      deleteClaimedRetiredLandingDraftMock.delete,
   };
 });
 
@@ -64,6 +69,12 @@ const STUB_DRAFT: DraftDocument = {
   },
 };
 
+const CHAT_COMPOSER_STUB_DRAFT: DraftDocument = {
+  ...STUB_DRAFT,
+  kind: "chat-composer",
+  target: { epicId: "epic-1", chatId: "chat-1", blockId: null },
+};
+
 const CLIENT = {} as never;
 
 function deferred<T>(): {
@@ -81,6 +92,7 @@ afterEach(() => {
   claimMock.claim.mockReset();
   applyIncomingMock.apply.mockReset();
   bindLandingOwnershipMock.bind.mockReset();
+  deleteClaimedRetiredLandingDraftMock.delete.mockReset();
 });
 
 describe("useDraftAuthorityControl", () => {
@@ -1286,5 +1298,90 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
     expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("a successful landing claim re-arms the claimed retirement before applying the document", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const callOrder: string[] = [];
+    deleteClaimedRetiredLandingDraftMock.delete.mockImplementation(() => {
+      callOrder.push("delete");
+    });
+    applyIncomingMock.apply.mockImplementation(() => {
+      callOrder.push("apply");
+      return Promise.resolve();
+    });
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+
+    expect(deleteClaimedRetiredLandingDraftMock.delete).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(deleteClaimedRetiredLandingDraftMock.delete).toHaveBeenCalledWith(
+      "draft-1",
+      "host-a",
+    );
+    expect(callOrder).toEqual(["delete", "apply"]);
+  });
+
+  it("contrast: a successful chat-composer claim never re-arms a landing retirement", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: CHAT_COMPOSER_STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        CHAT_COMPOSER_STUB_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(deleteClaimedRetiredLandingDraftMock.delete).not.toHaveBeenCalled();
   });
 });

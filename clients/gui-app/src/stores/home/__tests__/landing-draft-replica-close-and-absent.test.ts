@@ -4,6 +4,7 @@ import {
   applyLandingHostDocument,
   bindLandingDraftOwnership,
   collectLandingDirtyWrites,
+  deleteClaimedRetiredLandingDraft,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
   EMPTY_LANDING_DRAFT_CONTENT,
@@ -684,5 +685,57 @@ describe("landing draft store: deleteDraft never routes a replica's host delete 
     expect(landingDraftIsRetired("own-non-empty")).toBe(true);
     expect(pendingLandingDraftDeleteHostId("own-non-empty")).toBe("host-a");
     expect(deleted).toEqual(["own-non-empty"]);
+  });
+});
+
+describe("landing draft store: deleteClaimedRetiredLandingDraft", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalDeleteListener(null);
+  });
+
+  it("re-arms a receipt left by an emptied replica closed from its tab, to pendingDelete on the claiming host, and notifies local-delete", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-empty", {
+      content: EMPTY_LANDING_DRAFT_CONTENT,
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    // Closing the emptied replica from its tab retires it locally: a
+    // receipt exists, but nothing is pending yet since it had no owner.
+    useLandingDraftStore.getState().closeDraft("replica-empty");
+    expect(landingDraftIsRetired("replica-empty")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("replica-empty")).toBeNull();
+    expect(deleted).toEqual([]);
+
+    deleteClaimedRetiredLandingDraft("replica-empty", "host-a");
+
+    expect(pendingLandingDraftDeleteHostId("replica-empty")).toBe("host-a");
+    expect(deleted).toEqual(["replica-empty"]);
+  });
+
+  it("does nothing for a draft with no retirement receipt", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    expect(landingDraftIsRetired("never-retired")).toBe(false);
+
+    deleteClaimedRetiredLandingDraft("never-retired", "host-a");
+
+    expect(landingDraftIsRetired("never-retired")).toBe(false);
+    expect(deleted).toEqual([]);
   });
 });

@@ -71,11 +71,14 @@ export function useCloudDraftsIngest(
     );
     // A replica whose row the directory no longer lists was deleted on its
     // owner; drop the mirror so it leaves the list here too. Only against a
-    // fetched directory - an empty pending one lists nothing.
+    // fetched directory - an empty pending one lists nothing. The absence
+    // set is EVERY listed row, not the foreign ones: a replica this host has
+    // just claimed (from another window, or ahead of this window's
+    // hydration) is listed under this host's ownership and is not absent.
     if (directory.settled) {
       dropForeignLandingMirrorsAbsent(
         hostId,
-        new Set(foreign.map((chat) => chat.identity.chatId)),
+        new Set(directory.chats.map((chat) => chat.identity.chatId)),
       );
     }
     for (const summary of foreign) {

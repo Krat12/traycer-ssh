@@ -100,6 +100,27 @@ export function resolveLandingDraftRetirementOwner(
   });
 }
 
+/**
+ * A claim committed by THIS device for a draft whose receipt was completed
+ * locally (an emptied replica closed before the claim settled): the cloud
+ * row now belongs to `hostId` and nothing else would ever delete it, so the
+ * receipt is re-armed to delete there. Only a receipt is re-armed; a draft
+ * that was never retired is left to the claim's normal apply.
+ */
+export function rearmLandingDraftDelete(
+  draftId: string,
+  hostId: string,
+): boolean {
+  const receipt = readRetirement(draftId);
+  if (receipt === undefined || receipt.pendingDelete) return false;
+  writeRetirement(draftId, {
+    hostId,
+    pendingDelete: true,
+    ownerResolved: true,
+  });
+  return true;
+}
+
 export function isLandingDraftRetirementKey(key: string | null): boolean {
   return key?.startsWith(prefix) === true;
 }
