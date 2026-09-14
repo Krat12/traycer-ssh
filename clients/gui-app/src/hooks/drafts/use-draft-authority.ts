@@ -214,7 +214,11 @@ export function useDraftAuthorityControl(args: {
         // The claim committed: bind the row to its new owner without the
         // document so a deferred submit's delete routes to the host that
         // holds the row, not the previous owner.
-        if (stillCurrent()) bindOwnership(result.draft, tabHostId);
+        if (stillCurrent()) {
+          bindOwnership(result.draft, tabHostId);
+        } else {
+          reclaimOnCurrentHost();
+        }
         return true;
       }
       if (stillCurrent()) {

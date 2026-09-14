@@ -10,8 +10,12 @@ import {
   useLandingDraftStore,
   type LandingDraftTab,
 } from "@/stores/home/landing-draft-store";
-import { resetLandingDraftRetirementsForTests } from "@/lib/drafts/landing-draft-retirement";
 import {
+  landingDraftIsRetired,
+  resetLandingDraftRetirementsForTests,
+} from "@/lib/drafts/landing-draft-retirement";
+import {
+  setDraftLocalDeleteListener,
   setDraftLocalEditListener,
   setDraftLocalFlushListener,
 } from "@/lib/drafts/draft-local-edits";
@@ -550,5 +554,68 @@ describe("landing draft store: bindLandingDraftOwnership", () => {
     expect(after?.ownerHostId).toBe("host-a");
     expect(after?.origin).toBe("own");
     expect(notified).toEqual(["replica-1"]);
+  });
+});
+
+describe("landing draft store: closeDraft on empty content routes host delete only for own rows", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalDeleteListener(null);
+  });
+
+  it("destroys an empty replica row locally without routing a host delete", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-empty", {
+      content: EMPTY_LANDING_DRAFT_CONTENT,
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().closeDraft("replica-empty");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-empty");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("replica-empty")).toBe(true);
+    expect(deleted).toEqual([]);
+  });
+
+  it("destroys an empty own adopted row locally and routes a host delete", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-empty", {
+      content: EMPTY_LANDING_DRAFT_CONTENT,
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().closeDraft("own-empty");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-empty");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-empty")).toBe(true);
+    expect(deleted).toEqual(["own-empty"]);
   });
 });

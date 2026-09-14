@@ -1111,4 +1111,55 @@ describe("useDraftAuthorityControl", () => {
     );
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
+
+  it("apply rejects after a host move: bindLandingDraftOwnership is not called, and the latest noteEdit re-claims on the current host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockRejectedValueOnce(
+      new Error("blob read failed"),
+    );
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // Composer moves to another host before host-a's claim resolves; the
+    // draft is still unowned there too (owner is host-c).
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Host-a's claim resolves ok, but its apply rejects while host-b is
+    // current: `stillCurrent()` reads false at the catch, so the refused
+    // apply must not bind ownership for the stale host-a attempt. Instead
+    // the latest `noteEdit` (bound to the now-current host-b) re-claims.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(bindLandingOwnershipMock.bind).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
 });

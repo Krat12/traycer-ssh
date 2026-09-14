@@ -643,7 +643,11 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
         const closing = get().drafts.find((d) => d.id === id);
         if (closing === undefined) return;
         if (isEmptyLandingDraftContent(closing.content)) {
-          destroyLandingDraft(get, set, id, true);
+          // An emptied replica is destroyed locally only: its adoption still
+          // names the previous owner, and a delete routed there would remove
+          // the original the repair policy preserves (or go to the wrong
+          // host if a claim landed meanwhile).
+          destroyLandingDraft(get, set, id, closing.origin !== "replica");
           return;
         }
         if (closing.closed) {
