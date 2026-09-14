@@ -16,6 +16,9 @@ const bindLandingOwnershipMock = vi.hoisted(() => ({
 const deleteClaimedRetiredLandingDraftMock = vi.hoisted(() => ({
   delete: vi.fn<(draftId: string, hostId: string) => void>(),
 }));
+const ownerMock = vi.hoisted(() => ({
+  owner: null as string | null,
+}));
 
 vi.mock("@/hooks/drafts/use-draft-claim", () => ({
   useDraftClaim: () => ({
@@ -40,6 +43,7 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
       );
     }
   },
+  draftOwnerHostId: (): string | null => ownerMock.owner,
 }));
 vi.mock("@/stores/home/landing-draft-store", async (importOriginal) => {
   const actual =
@@ -104,6 +108,7 @@ afterEach(() => {
   applyIncomingMock.apply.mockReset();
   bindLandingOwnershipMock.bind.mockReset();
   deleteClaimedRetiredLandingDraftMock.delete.mockReset();
+  ownerMock.owner = null;
 });
 
 describe("useDraftAuthorityControl", () => {
@@ -2994,5 +2999,153 @@ describe("useDraftAuthorityControl", () => {
     expect(claimMock.claim).not.toHaveBeenCalled();
     expect(settled.value).not.toBeNull();
     expect(settled.value?.hostId).toBeNull();
+  });
+
+  it("a claim response naming a third host as owner (moved elsewhere) is not applied, and forces a fresh re-claim on the current host", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "replica",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    expect(view.result.current.unowned).toBe(true);
+
+    // Attempt 1: claimed pending on host-a.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // A third host's document applies locally while attempt 1 is still in
+    // flight - the row now names host-c, neither this attempt's host nor
+    // the owner it set out from.
+    ownerMock.owner = "host-c";
+    claimMock.claim.mockReturnValueOnce(second.promise);
+
+    // Attempt 1 resolves ok, but the row moved elsewhere while it was in
+    // flight: its document must not apply, and a fresh attempt 2 claims on
+    // the current host instead.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(2, "draft-1");
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
+
+    // The row is no longer moved elsewhere by the time attempt 2 settles.
+    ownerMock.owner = null;
+
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+    expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+      STUB_DRAFT,
+      expect.any(Function),
+    );
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("contrast: a claim response naming the pre-claim owner (a stale echo) is applied, with no forced re-claim", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "replica",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The row still names the owner this attempt set out from (host-b) - a
+    // stale echo, not a move elsewhere.
+    ownerMock.owner = "host-b";
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("contrast: a claim response naming the current host as owner (already ours) is applied, with no forced re-claim", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "replica",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The row already names the current host as owner - not a move
+    // elsewhere.
+    ownerMock.owner = "host-a";
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        STUB_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 });

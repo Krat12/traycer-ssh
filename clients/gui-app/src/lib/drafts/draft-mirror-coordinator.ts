@@ -1124,6 +1124,29 @@ export function bindClaimedDraftOwnership(
   }
 }
 
+/**
+ * The owner the local row for `document` currently names, whichever store
+ * holds it - `null` when there is no row or no owner yet. A claim's delayed
+ * response compares this with the owner it set out from: ownership that
+ * moved to a third host meanwhile is newer than the response.
+ */
+export function draftOwnerHostId(document: DraftDocument): string | null {
+  if (document.kind === "landing") {
+    return (
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === document.draftId)?.ownerHostId ??
+      null
+    );
+  }
+  if (document.kind === "chat-composer") {
+    const chatId = findComposerChatIdByDraftId(document.draftId);
+    if (chatId === null) return null;
+    return useComposerDraftStore.getState().drafts[chatId]?.ownerHostId ?? null;
+  }
+  return null;
+}
+
 /** The current ingest sequence; a directory captures it at dispatch. */
 export function cloudDraftIngestSeq(): number {
   return cloudIngestSeq;

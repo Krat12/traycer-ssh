@@ -6,6 +6,7 @@ import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import {
   applyIncomingDraftDocument,
   bindClaimedDraftOwnership,
+  draftOwnerHostId,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { useDraftClaim } from "./use-draft-claim";
@@ -257,6 +258,14 @@ export function useDraftAuthorityControl(args: {
       }
       attemptCounter.current += 1;
       const attempt = attemptCounter.current;
+      // The owner the row named when this attempt set out. A response that
+      // finds the row naming a THIRD host (neither this host nor that owner)
+      // is older than an ownership move that applied here meanwhile.
+      const ownerAtClaim = args.ownerHostId;
+      const movedElsewhere = (document: DraftDocument): boolean => {
+        const owner = draftOwnerHostId(document);
+        return owner !== null && owner !== tabHostId && owner !== ownerAtClaim;
+      };
       const promise = (async (): Promise<boolean> => {
         // `committed`: this claim moved the cloud row to a host the surface has
         // since left. The local row was never updated (superseded claims do not
@@ -272,6 +281,7 @@ export function useDraftAuthorityControl(args: {
         // moved away from it).
         const reclaimOnCurrentHost = (
           committed: boolean,
+          document: DraftDocument | null,
         ): Promise<boolean> | null => {
           if (currentDraftRef.current !== draftId) return null;
           // The surface moved hosts and no further edit started that host's
@@ -288,7 +298,11 @@ export function useDraftAuthorityControl(args: {
             latest !== undefined &&
             latest.attempt > attempt &&
             latest.tabHostId !== tabHostId;
-          if (!moved && !outranked) return null;
+          // Ownership that moved to a third host while this response was
+          // in flight: the row now reads unowned here, so the current host
+          // claims it afresh for the edit that began this attempt.
+          const elsewhere = document !== null && movedElsewhere(document);
+          if (!moved && !outranked && !elsewhere) return null;
           // Joins an attempt already in flight on the current host (a submit
           // may have joined it there, and its suppression must be the one
           // that counts) unless that attempt is an ANCESTOR of this chain:
@@ -338,16 +352,17 @@ export function useDraftAuthorityControl(args: {
           // and a settlement waits for THAT claim: a submit dispatching on the
           // refusal would retire the draft under the re-claim, which then
           // finds the surface gone and leaves the newly claimed row undeleted.
-          return (await reclaimOnCurrentHost(false)) ?? false;
+          return (await reclaimOnCurrentHost(false, null)) ?? false;
         }
         // Superseded: the surface moved to another host while this claim ran.
         // Its document names this host as owner and would route the dirty row
         // back here; the current host's claim is the one that counts.
         const stillCurrent = (): boolean =>
           currentHostRef.current === tabHostId &&
-          (latestApplied.current.get(draftId)?.attempt ?? 0) <= attempt;
+          (latestApplied.current.get(draftId)?.attempt ?? 0) <= attempt &&
+          !movedElsewhere(result.draft);
         if (!stillCurrent()) {
-          return (await reclaimOnCurrentHost(true)) ?? true;
+          return (await reclaimOnCurrentHost(true, result.draft)) ?? true;
         }
         // Re-asked by the coordinator after its blob reads, right before the
         // store mutation: the surface can move while the fetch is in flight.
@@ -377,7 +392,7 @@ export function useDraftAuthorityControl(args: {
             latestApplied.current.set(draftId, { attempt, tabHostId });
             return true;
           }
-          return (await reclaimOnCurrentHost(true)) ?? true;
+          return (await reclaimOnCurrentHost(true, result.draft)) ?? true;
         }
         if (stillCurrent()) {
           latestApplied.current.set(draftId, { attempt, tabHostId });
@@ -385,7 +400,7 @@ export function useDraftAuthorityControl(args: {
         }
         // The coordinator declined the mutation after its blob reads: the
         // surface moved during the apply, past the pre-await check.
-        return (await reclaimOnCurrentHost(true)) ?? true;
+        return (await reclaimOnCurrentHost(true, result.draft)) ?? true;
       })();
       const entry: PendingClaim = {
         promise,
@@ -409,7 +424,7 @@ export function useDraftAuthorityControl(args: {
       inflight.current.set(key, entry);
       return entry;
     },
-    [args.draftId, args.tabHostId, claimDraft],
+    [args.draftId, args.ownerHostId, args.tabHostId, claimDraft],
   );
 
   // `force` bypasses the render-derived `unowned` guard: a superseded claim
