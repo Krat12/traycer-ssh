@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DraftDocument, DraftWrite } from "@traycer/protocol/host";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
@@ -1002,6 +1002,83 @@ describe("sweepAbsentCloudDraftMirrors", () => {
     );
 
     await ingest;
+  });
+
+  it("fences a host session's own live echo the same as a cloud-head ingest: kept at an older snapshot, dropped once its session is gone and the fence catches up", async () => {
+    const id = "sweep-host-session-echo";
+    const ownLandingDocument: DraftDocument = {
+      draftId: id,
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 1,
+      lastTouchedAt: 2,
+      workspace: null,
+      ownerHostId: "host-b",
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-b" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 1,
+        publishedRevision: 1,
+        halted: null,
+      },
+      portable: {
+        content: typed("host-b's own body"),
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+
+    // Mount host-b's own mirror session: its bootstrap `drafts.list` returns
+    // this row as its own, adopted document - the "host session's live echo"
+    // path through `applyHostDocument`, not `ingestCloudDraftSummary`.
+    acquireDraftMirrorSession({
+      hostId: "host-b",
+      client: {
+        request: (method: string) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: [ownLandingDocument],
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+
+    await vi.waitFor(() => {
+      expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+        id,
+      );
+    });
+
+    // The apply reserved the fence synchronously as part of the bootstrap,
+    // exactly like an `ingestCloudDraftSummary` apply does.
+    expect(cloudDraftIngestSeq()).toBeGreaterThan(0);
+
+    // An older directory snapshot (fence 0) predates this apply's reserved
+    // sequence, so it must not drop the row it just installed.
+    sweepAbsentCloudDraftMirrors("host-a", new Set(), 0);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+      id,
+    );
+
+    // Contrast: once host-b's session is gone and the sweep's fence has
+    // caught up to the reserved sequence, the row is an own row adopted on
+    // host-b with no mirror session there and IS published - it is dropped.
+    releaseDraftMirrorSession("host-b");
+    sweepAbsentCloudDraftMirrors("host-a", new Set(), cloudDraftIngestSeq());
+    expect(
+      useLandingDraftStore.getState().drafts.map((d) => d.id),
+    ).not.toContain(id);
   });
 });
 

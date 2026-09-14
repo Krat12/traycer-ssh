@@ -681,6 +681,120 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a forced re-claim starts a genuinely new attempt instead of joining the one already pending on the current host, and the fresh attempt's document wins over the stale one", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    const third = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+    const FRESH_DRAFT: DraftDocument = { ...STUB_DRAFT, revision: 2 };
+
+    const view = renderHook(
+      (props: {
+        tabHostId: string;
+        ownerHostId: string;
+        origin: "own" | "replica";
+      }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: props.ownerHostId,
+          origin: props.origin,
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      {
+        initialProps: {
+          tabHostId: "host-a",
+          ownerHostId: "host-c",
+          origin: "own",
+        },
+      },
+    );
+
+    // Attempt 1: claimed pending on host-a.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The composer moves to host-b; attempt 2 starts there, also left
+    // pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({
+      tabHostId: "host-b",
+      ownerHostId: "host-c",
+      origin: "own",
+    });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // The composer returns to host-a. Host-a's own row already names it as
+    // owner, so the render-derived `unowned` guard reads false there.
+    view.rerender({
+      tabHostId: "host-a",
+      ownerHostId: "host-a",
+      origin: "own",
+    });
+    expect(view.result.current.unowned).toBe(false);
+
+    // Attempt 2 (host-b, superseded) commits: the local row still names
+    // host-a as owner while the cloud now says host-b, so the forced
+    // re-claim on host-a must start a THIRD claim call rather than joining
+    // attempt 1, which is still pending under the same host-a key.
+    claimMock.claim.mockReturnValueOnce(third.promise);
+    await act(async () => {
+      second.resolve({ status: "ok", draft: STUB_DRAFT });
+      await second.promise;
+    });
+
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(3, "draft-1");
+
+    // Attempt 3 (the forced fresh attempt) settles first with a fresh
+    // document while host-a is still current.
+    await act(async () => {
+      third.resolve({ status: "ok", draft: FRESH_DRAFT });
+      await third.promise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledWith(
+        FRESH_DRAFT,
+        expect.any(Function),
+      );
+    });
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+
+    // Attempt 1 (the older, joinable attempt) settles afterward with a stale
+    // document. It must not override the fresher attempt 3's already-applied
+    // document: its apply is skipped entirely, since attempt 3 (a later
+    // attempt number) already recorded itself as this draft's newest
+    // applied attempt.
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await first.promise;
+    });
+
+    expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    expect(applyIncomingMock.apply).not.toHaveBeenCalledWith(
+      STUB_DRAFT,
+      expect.any(Function),
+    );
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  // Contrast (unforced `noteEdit` joins an in-flight attempt rather than
+  // starting a new one) is already covered above by "unowned draft: first
+  // noteEdit claims once with the draftId; a second noteEdit while pending
+  // does not re-claim...".
+
   it("returning to a draft with a pending claim joins it", async () => {
     const repairOnEditA = vi.fn();
     const repairOnEditB = vi.fn();

@@ -148,11 +148,12 @@ function interviewBindingRefKey(bindingKey: string, hostId: string): string {
 /** Placement host that may lazily adopt landing drafts (decision #9). */
 let landingAdoptionHostId: string | null = null;
 /**
- * Ordering fence for the cloud-directory absence sweep: every cloud ingest
+ * Ordering fence for the cloud-directory absence sweep: every landing
+ * document apply - a cloud-head ingest or a host session's live echo -
  * takes the next sequence number when it STARTS, and a directory snapshot
- * records the sequence current when its request STARTED. A row ingested
- * after that (by another mount, through another host) is not absent from
- * that snapshot in any sense the snapshot can attest to.
+ * records the sequence current when its request was DISPATCHED. A row
+ * applied after that (by another mount, through another host) is not
+ * absent from that snapshot in any sense the snapshot can attest to.
  */
 let cloudIngestSeq = 0;
 const cloudIngestSeqByDraft = new Map<string, number>();
@@ -474,7 +475,15 @@ async function applyHostDocument(
   document: DraftDocument,
   admit: (() => boolean) | null,
 ): Promise<void> {
-  if (document.kind === "landing") knownLandingDraftIds.add(document.draftId);
+  if (document.kind === "landing") {
+    knownLandingDraftIds.add(document.draftId);
+    // The absence-sweep fence is reserved here, synchronously at the start
+    // of EVERY landing apply - a host session's live echo as much as a
+    // cloud-head ingest - and before the blob reads below: a directory
+    // request dispatched earlier must not sweep a row this apply installs.
+    cloudIngestSeq += 1;
+    cloudIngestSeqByDraft.set(document.draftId, cloudIngestSeq);
+  }
   if (rejectRetiredLandingDocument(document)) return;
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) {
     await retrySubmittedDraftDelete(document.draftId);
@@ -942,12 +951,9 @@ export async function ingestCloudDraftSummary(input: {
   // naming the tab's own host. Every tile mount re-ran this, which is why the
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
-  // The fence is reserved BEFORE the apply: its blob reads can take a while,
-  // and an older directory request settling in that window must already see
-  // this row as newer than its snapshot, or it would sweep the mirror the
-  // apply is about to refresh.
-  cloudIngestSeq += 1;
-  cloudIngestSeqByDraft.set(input.document.draftId, cloudIngestSeq);
+  // The fence is reserved by `applyHostDocument` at its (synchronous) start,
+  // before the blob reads: an older directory request settling in that
+  // window already sees this row as newer than its snapshot.
   // Re-asked right before the store mutation, after the head's blob reads: a
   // claim that landed meanwhile made THIS host the owner, and a replica head
   // from the previous owner must not stamp the row back onto it. The fence
