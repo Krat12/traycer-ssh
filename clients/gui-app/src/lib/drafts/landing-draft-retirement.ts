@@ -87,22 +87,47 @@ export function retireLandingDraft(
   });
 }
 
+/**
+ * A document for a retired draft names its owner. Returns whether the
+ * receipt now routes a delete to that owner (the caller routes it):
+ * - owner-unresolved (a local-only retirement, or one an `absent` answer
+ *   sent back): the owner becomes the delete's destination;
+ * - speculative (pending on a host whose ownership was never confirmed):
+ *   confirmed only by THAT host's document - another owner's document
+ *   says the claim never committed and must not redirect the delete onto
+ *   that owner's original;
+ * - resolved and pending on ANOTHER host: the row moved (a claim landed
+ *   elsewhere while this delete was in flight) and the document is the
+ *   only notice of it - the receipt is retargeted now, so the old host's
+ *   later `absent` answer (which no longer names the receipt's host) is
+ *   ignored instead of unresolving a destination already observed.
+ */
 export function resolveLandingDraftRetirementOwner(
   draftId: string,
   hostId: string,
-): void {
+): boolean {
   const receipt = readRetirement(draftId);
-  if (receipt === undefined || receipt.ownerResolved) return;
-  // A speculative receipt (delete pending on a host whose ownership was
-  // never confirmed) is confirmed only by THAT host's document; a document
-  // from another owner says the claim never committed and must not
-  // redirect the delete onto that owner's original.
-  if (receipt.pendingDelete && receipt.hostId !== hostId) return;
+  if (receipt === undefined) return false;
+  if (receipt.pendingDelete && receipt.hostId === hostId) {
+    // The speculated host confirmed its ownership: the delete pending
+    // there stands, now as a resolved one.
+    if (!receipt.ownerResolved) {
+      writeRetirement(draftId, {
+        hostId,
+        pendingDelete: true,
+        ownerResolved: true,
+      });
+    }
+    return true;
+  }
+  if (receipt.pendingDelete && !receipt.ownerResolved) return false;
+  if (!receipt.pendingDelete && receipt.ownerResolved) return false;
   writeRetirement(draftId, {
     hostId,
     pendingDelete: true,
     ownerResolved: true,
   });
+  return true;
 }
 
 /**

@@ -480,8 +480,9 @@ function rejectRetiredLandingDocument(document: DraftDocument): boolean {
   // Desktop may restore content before it has recovered host adoption.
   // The first owner document supplies the missing delete destination, never
   // a replacement visible row. ACKed receipts cannot be rearmed here.
-  resolveLandingDraftRetirementOwner(document.draftId, document.ownerHostId);
-  if (pendingLandingDraftDeleteHostId(document.draftId) !== null) {
+  if (
+    resolveLandingDraftRetirementOwner(document.draftId, document.ownerHostId)
+  ) {
     routeLocalDelete(document.draftId);
   }
   return true;
@@ -1018,6 +1019,20 @@ export async function ingestCloudDraftSummary(input: {
   // naming the tab's own host. Every tile mount re-ran this, which is why the
   // banner came back on every tab switch.
   if (draftKindIsHostBound(input.document.kind)) return;
+  // A retired draft's receipt is retargeted by a document naming a NEW
+  // owner (see `resolveLandingDraftRetirementOwner`) - but only a fresh
+  // one. A snapshot dispatched before this device last applied the row's
+  // ownership carries the previous owner's stale head, not a claim that
+  // moved the row; it must not pull the delete away from the host that
+  // holds it. A host session's own echo never comes through here and is
+  // always fresh.
+  if (
+    landingDraftIsRetired(input.document.draftId) &&
+    (landingOwnerAppliedSeq.get(input.document.draftId) ?? 0) >
+      input.snapshotSeq
+  ) {
+    return;
+  }
   // The fence is reserved by `applyHostDocument` at its (synchronous) start,
   // before the blob reads: an older directory request settling in that
   // window already sees this row as newer than its snapshot.

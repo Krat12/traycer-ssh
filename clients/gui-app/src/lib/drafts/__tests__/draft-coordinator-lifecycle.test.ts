@@ -982,6 +982,156 @@ describe("speculative landing draft retirement", () => {
     await applyIncomingDraftDocument(document, null);
     expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
   });
+
+  function ownAdoptedLandingRowForOrdering(id: string, hostId: string) {
+    return {
+      id,
+      content: typed("own body"),
+      selection: null,
+      lastTouchedAt: 0,
+      settings: null,
+      composerMode: "chat" as const,
+      workspace: emptyLandingDraftWorkspaceSnapshot(),
+      ...freshLandingMirrorState(),
+      adoption: { state: "adopted" as const, hostId },
+      origin: "own" as const,
+      ownerHostId: hostId,
+      closed: true,
+    };
+  }
+
+  it("a session echo naming a new owner retargets a delete pending on host-a while it is still in flight (host-a's deferred answer arrives after and is ignored)", async () => {
+    const id = "codex-ordering-retarget";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    const deleteAnswer: {
+      resolve: ((value: { deleted: boolean }) => void) | null;
+    } = { resolve: null };
+    acquireDraftMirrorSession({
+      hostId: HOST_B,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.delete") {
+            const draftId = (params as { draftId: string }).draftId;
+            log.deletes.push(draftId);
+            return new Promise((resolve) => {
+              deleteAnswer.resolve = resolve;
+            });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRowForOrdering(id, HOST_B)],
+      activeDraftId: null,
+    });
+
+    useLandingDraftStore.getState().deleteDraft(id);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+
+    // A session echo naming host-c as the new owner arrives while host-b's
+    // delete is still in flight (its `drafts.delete` answer is deferred).
+    await applyIncomingDraftDocument(
+      landingCloudDocument(id, "host-c", "cloud body host-c"),
+      null,
+    );
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+
+    deleteAnswer.resolve?.({ deleted: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // The stale host-b answer is ignored, not unresolved: the receipt still
+    // names the retargeted host.
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+  });
+
+  it("contrast: a session echo naming the SAME host leaves the pending delete there, and its deleted:false answer then unresolves it", async () => {
+    const id = "codex-ordering-same-host";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    const deleteAnswer: {
+      resolve: ((value: { deleted: boolean }) => void) | null;
+    } = { resolve: null };
+    acquireDraftMirrorSession({
+      hostId: HOST_B,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.delete") {
+            const draftId = (params as { draftId: string }).draftId;
+            log.deletes.push(draftId);
+            return new Promise((resolve) => {
+              deleteAnswer.resolve = resolve;
+            });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRowForOrdering(id, HOST_B)],
+      activeDraftId: null,
+    });
+
+    useLandingDraftStore.getState().deleteDraft(id);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+
+    // A session echo naming host-b again (the same host) arrives before the
+    // deferred answer.
+    await applyIncomingDraftDocument(
+      landingCloudDocument(id, HOST_B, "cloud body host-b"),
+      null,
+    );
+    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+
+    deleteAnswer.resolve?.({ deleted: false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // host-b's own answer of `deleted: false` unresolves the (now-resolved,
+    // still same-host) receipt.
+    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    expect(landingDraftIsRetired(id)).toBe(true);
+  });
 });
 
 function landingCloudSummary(document: DraftDocument): CloudChatSummary {
@@ -1319,6 +1469,53 @@ describe("ingestCloudDraftSummary admit fence", () => {
     expect(row?.ownerHostId).toBe("host-c");
     // Dirty rows adopt ownership without losing the uncommitted local edit.
     expect(row?.content).toEqual(typed("locally edited body"));
+  });
+
+  it("does not retarget a pending delete when the ingest's snapshot predates the apply that made this device own the row for the retired id", async () => {
+    const id = "fence-stale-snapshot-retirement";
+    // host-a becomes owner of this row via an apply (a host session's own
+    // echo), reserving `landingOwnerAppliedSeq` for it.
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-a", "host-a own body"),
+      null,
+    );
+    useLandingDraftStore.getState().deleteDraft(id);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
+
+    // A summary owned by a different host (host-b), but the snapshot that
+    // listed it (0) was dispatched BEFORE the own-apply above: stale, so the
+    // receipt must not be pulled away from host-a.
+    const document = landingCloudDocument(id, "host-b", "cloud body host-b");
+    await ingestCloudDraftSummary({
+      hostId: "host-c",
+      summary: landingCloudSummary(document),
+      document,
+      snapshotSeq: 0,
+    });
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
+  });
+
+  it("retargets the pending delete when the ingest's snapshot postdates the apply that made this device own the row for the retired id", async () => {
+    const id = "fence-newer-snapshot-retirement";
+    await applyIncomingDraftDocument(
+      landingOwnDocument(id, "host-a", "host-a own body"),
+      null,
+    );
+    useLandingDraftStore.getState().deleteDraft(id);
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
+
+    // A snapshot dispatched NOW, after the own-apply above.
+    const snapshotSeq = cloudDraftIngestSeq();
+    const document = landingCloudDocument(id, "host-b", "cloud body host-b");
+    await ingestCloudDraftSummary({
+      hostId: "host-c",
+      summary: landingCloudSummary(document),
+      document,
+      snapshotSeq,
+    });
+
+    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-b");
   });
 
   it("bindClaimedDraftOwnership migrates a replica of another host to own on the claiming host, fencing a pre-claim snapshot but admitting a newer one", async () => {

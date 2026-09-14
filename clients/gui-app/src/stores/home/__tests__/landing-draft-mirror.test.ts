@@ -1127,7 +1127,7 @@ describe("landing draft host-mirror bookkeeping", () => {
     });
   });
 
-  it("keeps a landing retirement receipt after cloud ingest and host-delete ACK", async () => {
+  it("retargets the pending delete to the new owner a cloud head names, and stays retired after the ACK", async () => {
     const id = useLandingDraftStore.getState().createDraft(null);
     adoptLandingDraft(id, "host-a");
     useLandingDraftStore.getState().deleteDraft(id);
@@ -1193,13 +1193,16 @@ describe("landing draft host-mirror bookkeeping", () => {
       document,
       snapshotSeq: 0,
     });
+    // The document names a NEW owner (host-b), and no ownership apply was
+    // ever recorded for this id, so the snapshot is not stale: the pending
+    // delete is retargeted from host-a to host-b.
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
-    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([id]);
-    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([id]);
 
     completeLandingDraftDelete(id);
     expect(landingDraftIsRetired(id)).toBe(true);
-    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([]);
     await ingestCloudDraftSummary({
       hostId: "host-a",
       summary,
@@ -1207,6 +1210,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       snapshotSeq: 0,
     });
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
+    expect(landingDraftIsRetired(id)).toBe(true);
   });
 
   it("retries a row-free landing retirement after host restart and retains its receipt", async () => {
