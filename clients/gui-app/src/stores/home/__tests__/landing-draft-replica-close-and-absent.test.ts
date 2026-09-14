@@ -5,6 +5,7 @@ import {
   bindLandingDraftOwnership,
   collectLandingDirtyWrites,
   deleteClaimedRetiredLandingDraft,
+  deleteLandingDraftOnHost,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
   EMPTY_LANDING_DRAFT_CONTENT,
@@ -939,5 +940,140 @@ describe("landing draft store: own row adopted on a host the landing placement h
       "host-a",
     );
     expect(deleted).toEqual(["own-null-placement"]);
+  });
+});
+
+describe("landing draft store: deleteLandingDraftOnHost", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setLandingPlacementHostReader(null);
+    setDraftLocalDeleteListener(null);
+  });
+
+  it("routes an own row adopted on host-b through host-b even though the placement reader names host-a", () => {
+    setLandingPlacementHostReader(() => "host-a");
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("own-adopted-host-b", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    deleteLandingDraftOnHost("own-adopted-host-b", "host-b");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-adopted-host-b");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("own-adopted-host-b")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("own-adopted-host-b")).toBe(
+      "host-b",
+    );
+    expect(deleted).toEqual(["own-adopted-host-b"]);
+  });
+
+  it("routes a replica row adopted on host-a through host-b, unlike deleteDraft which retires it locally with a null host", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-adopted-host-a", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    deleteLandingDraftOnHost("replica-adopted-host-a", "host-b");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-adopted-host-a");
+    expect(after).toBeUndefined();
+    expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
+    expect(landingDraftIsRetired("replica-adopted-host-a")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("replica-adopted-host-a")).toBe(
+      "host-b",
+    );
+    expect(deleted).toEqual(["replica-adopted-host-a"]);
+  });
+
+  it("contrast: deleteDraft on the same replica row retires it locally with a null host and does not notify", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-contrast", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    useLandingDraftStore.getState().deleteDraft("replica-contrast");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-contrast");
+    expect(after).toBeUndefined();
+    expect(landingDraftIsRetired("replica-contrast")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("replica-contrast")).toBeNull();
+    expect(deleted).toEqual([]);
+  });
+
+  it("re-arms a local-only receipt (no row) to the given host and notifies", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    const draft = baseDraft("replica-empty-onhost", {
+      content: EMPTY_LANDING_DRAFT_CONTENT,
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
+
+    // Closing the emptied replica from its tab retires it locally with no
+    // owner: a receipt exists, but nothing is pending yet.
+    useLandingDraftStore.getState().closeDraft("replica-empty-onhost");
+    expect(landingDraftIsRetired("replica-empty-onhost")).toBe(true);
+    expect(pendingLandingDraftDeleteHostId("replica-empty-onhost")).toBeNull();
+    expect(deleted).toEqual([]);
+
+    deleteLandingDraftOnHost("replica-empty-onhost", "host-b");
+
+    expect(pendingLandingDraftDeleteHostId("replica-empty-onhost")).toBe(
+      "host-b",
+    );
+    expect(deleted).toEqual(["replica-empty-onhost"]);
+  });
+
+  it("does nothing when there is no row and no retirement receipt", () => {
+    const deleted: string[] = [];
+    setDraftLocalDeleteListener((id) => deleted.push(id));
+
+    expect(landingDraftIsRetired("never-seen")).toBe(false);
+
+    deleteLandingDraftOnHost("never-seen", "host-b");
+
+    expect(landingDraftIsRetired("never-seen")).toBe(false);
+    expect(pendingLandingDraftDeleteHostId("never-seen")).toBeNull();
+    expect(deleted).toEqual([]);
   });
 });

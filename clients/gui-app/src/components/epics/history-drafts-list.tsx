@@ -23,7 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useDraftSurfaceId } from "@/providers/draft-surface-hooks";
 import {
-  bindLandingDraftOwnership,
+  deleteLandingDraftOnHost,
   useLandingDraftStore,
 } from "@/stores/home/landing-draft-store";
 
@@ -95,17 +95,17 @@ export function HistoryDraftsList(props: {
     void claim(draftId).then(
       async (result) => {
         if (result.status === "ok" || result.status === "already-owned") {
-          // The claim has committed; a failed local apply (a blob read that
-          // threw) must not leave the row here as if nothing happened.
+          // The claim has committed on `hostId`; the delete below is routed
+          // there explicitly (History runs on the app-wide host, which the
+          // landing placement need not match). A failed local apply (a blob
+          // read that threw) changes nothing about that, and a row retired
+          // locally meanwhile is re-armed to delete there, not left hidden.
           try {
             await applyIncomingDraftDocument(result.draft, null);
           } catch {
-            // The claim committed even though the local apply did not: bind
-            // the row to this host so the delete below routes its tombstone
-            // to the host that now owns the row, not the previous owner.
-            bindLandingDraftOwnership(draftId, hostId, result.draft.revision);
+            // Deleted through `hostId` regardless.
           }
-          useLandingDraftStore.getState().deleteDraft(draftId);
+          deleteLandingDraftOnHost(draftId, hostId);
           return;
         }
         if (

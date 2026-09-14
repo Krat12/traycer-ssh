@@ -1797,6 +1797,36 @@ export function deleteClaimedRetiredLandingDraft(
   notifyDraftLocalDelete(draftId);
 }
 
+/**
+ * Delete a row through a host the caller KNOWS owns it (a claim it just
+ * committed there), regardless of the landing placement: History runs on
+ * the app-wide host while the composer may be pinned elsewhere, so the
+ * placement-based authority in `destroyLandingDraft` does not apply. A row
+ * already retired locally meanwhile is re-armed to delete there instead.
+ */
+export function deleteLandingDraftOnHost(
+  draftId: string,
+  hostId: string,
+): void {
+  const { drafts, activeDraftId } = useLandingDraftStore.getState();
+  const closing = drafts.find((d) => d.id === draftId);
+  if (closing === undefined) {
+    deleteClaimedRetiredLandingDraft(draftId, hostId);
+    return;
+  }
+  retireLandingDraft(draftId, hostId);
+  rearmLandingDraftDelete(draftId, hostId);
+  pruneRecoveryDraft(draftId);
+  draftRuntimeRegistry.close(draftId);
+  // Routed while the row still exists; the receipt names the host.
+  notifyDraftLocalDelete(draftId);
+  useLandingDraftStore.setState({
+    drafts: drafts.filter((d) => d.id !== draftId),
+    activeDraftId: activeDraftId === draftId ? null : activeDraftId,
+  });
+  scheduleLandingImageReconcile();
+}
+
 export function adoptLandingDraft(draftId: string, hostId: string): void {
   useLandingDraftStore.setState((state) => ({
     drafts: state.drafts.map((draft) =>

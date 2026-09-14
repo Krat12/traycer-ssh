@@ -3460,6 +3460,17 @@ describe("<EpicsListPanel />", () => {
     await waitFor(() => {
       expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
     });
+    // The claim committed on `hostId`, and the successful local apply does
+    // not change which host the delete is routed through.
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
   });
 
   it("leaves a foreign-owned draft in place when the claim fails (not a not-found/not-published refusal)", async () => {
