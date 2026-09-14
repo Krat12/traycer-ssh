@@ -27,6 +27,7 @@ import {
   applyLandingHostDocument,
   collectLandingDirtyWrites,
   collectUnadoptedLandingDrafts,
+  dropForeignLandingMirrorsAbsent,
   dropLandingAbsentFromList,
   landingDraftIsDirty,
   landingDraftRememberSynced,
@@ -146,6 +147,15 @@ function interviewBindingRefKey(bindingKey: string, hostId: string): string {
 
 /** Placement host that may lazily adopt landing drafts (decision #9). */
 let landingAdoptionHostId: string | null = null;
+/**
+ * Ordering fence for the cloud-directory absence sweep: every successful
+ * cloud ingest takes the next sequence number, and a directory snapshot
+ * records the sequence current when its request STARTED. A row ingested
+ * after that (by another mount, through another host) is not absent from
+ * that snapshot in any sense the snapshot can attest to.
+ */
+let cloudIngestSeq = 0;
+const cloudIngestSeqByDraft = new Map<string, number>();
 /**
  * Own landing rows whose edit `routeLocalEdit` withheld because their
  * adoption host is not the current placement (an auto-follow). Only these
@@ -835,6 +845,8 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   newChatHostByEpicId.clear();
   landingAdoptionHostId = null;
   heldLandingEdits.clear();
+  cloudIngestSeq = 0;
+  cloudIngestSeqByDraft.clear();
   stashHostById.clear();
   stashSeenOnHost.clear();
   warnedUnboundComposer.clear();
@@ -919,6 +931,40 @@ export async function ingestCloudDraftSummary(input: {
       row === undefined ||
       row.origin !== "own" ||
       row.ownerHostId !== input.hostId
+    );
+  });
+  cloudIngestSeq += 1;
+  cloudIngestSeqByDraft.set(input.document.draftId, cloudIngestSeq);
+}
+
+/** The current ingest sequence; a directory captures it at fetch start. */
+export function cloudDraftIngestSeq(): number {
+  return cloudIngestSeq;
+}
+
+/**
+ * Drop local mirrors of cloud rows a settled directory no longer lists.
+ * `fenceSeq` is the ingest sequence at that directory's fetch start: a row
+ * ingested since is kept. A replica qualifies once clean. An OWN row
+ * adopted on another host qualifies only when it was published (an
+ * unpublished own row is never listed) and that host has no mirror
+ * session here (a mounted session delivers its own tombstones, and its
+ * unsynced writes may not have reached the directory yet).
+ */
+export function sweepAbsentCloudDraftMirrors(
+  hostId: string,
+  listedIds: ReadonlySet<string>,
+  fenceSeq: number,
+): void {
+  dropForeignLandingMirrorsAbsent(hostId, listedIds, (draft) => {
+    if ((cloudIngestSeqByDraft.get(draft.id) ?? 0) > fenceSeq) return false;
+    if (draft.origin === "replica") return true;
+    // A row with no recorded publication state is treated as unpublished.
+    return (
+      draft.publication !== null &&
+      draft.publication.status !== "unpublished" &&
+      draft.adoption.state === "adopted" &&
+      !sessions.has(draft.adoption.hostId)
     );
   });
 }

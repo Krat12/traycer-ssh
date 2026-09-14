@@ -8,6 +8,7 @@ import { appLogger } from "@/lib/logger";
 const directoryMock = vi.hoisted(() => ({
   chats: [] as ReadonlyArray<CloudChatSummary>,
   settled: true,
+  snapshotSeq: 0,
 }));
 const readMock = vi.hoisted(() => ({
   read: vi.fn<() => Promise<{ kind: string; record: unknown }>>(),
@@ -15,8 +16,11 @@ const readMock = vi.hoisted(() => ({
 const ingestMock = vi.hoisted(() => ({
   ingest: vi.fn<() => Promise<void>>(),
 }));
-const dropForeignMock = vi.hoisted(() => ({
-  drop: vi.fn<(hostId: string, listedIds: ReadonlySet<string>) => void>(),
+const sweepMock = vi.hoisted(() => ({
+  sweep:
+    vi.fn<
+      (hostId: string, listedIds: ReadonlySet<string>, fenceSeq: number) => void
+    >(),
 }));
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
@@ -25,6 +29,7 @@ vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
     settled: directoryMock.settled,
     scopeId: "scp_1",
     chats: directoryMock.chats,
+    snapshotIngestSeq: (): number => directoryMock.snapshotSeq,
   }),
 }));
 vi.mock("@/lib/chats/cloud-chat-read-port", () => ({
@@ -36,12 +41,11 @@ vi.mock("@/lib/drafts/cloud-draft-reader", () => ({
 }));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
   ingestCloudDraftSummary: (): Promise<void> => ingestMock.ingest(),
-}));
-vi.mock("@/stores/home/landing-draft-store", () => ({
-  dropForeignLandingMirrorsAbsent: (
+  sweepAbsentCloudDraftMirrors: (
     hostId: string,
     listedIds: ReadonlySet<string>,
-  ): void => dropForeignMock.drop(hostId, listedIds),
+    fenceSeq: number,
+  ): void => sweepMock.sweep(hostId, listedIds, fenceSeq),
 }));
 
 const { useCloudDraftsIngest } =
@@ -109,9 +113,10 @@ const CLIENT = { request: () => Promise.reject(new Error("unused")) };
 afterEach(() => {
   directoryMock.chats = [];
   directoryMock.settled = true;
+  directoryMock.snapshotSeq = 0;
   readMock.read.mockReset();
   ingestMock.ingest.mockReset();
-  dropForeignMock.drop.mockReset();
+  sweepMock.sweep.mockReset();
   vi.useRealTimers();
 });
 
@@ -224,10 +229,11 @@ describe("useCloudDraftsIngest", () => {
     expect(ingestMock.ingest).not.toHaveBeenCalled();
   });
 
-  it("calls dropForeignLandingMirrorsAbsent once with every directory row's ids - foreign and own-host - when the directory is settled, and only head-ingests the foreign row", async () => {
+  it("calls sweepAbsentCloudDraftMirrors once with every directory row's ids - foreign and own-host - and the directory's snapshot seq, when the directory is settled, and only head-ingests the foreign row", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     directoryMock.settled = true;
+    directoryMock.snapshotSeq = 7;
     const ownHostSummary = summary(DIGEST_TWO, {
       identity: {
         taskId: "scp_1",
@@ -241,18 +247,19 @@ describe("useCloudDraftsIngest", () => {
     renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
 
     await vi.waitFor(() => {
-      expect(dropForeignMock.drop).toHaveBeenCalledTimes(1);
+      expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
     });
-    expect(dropForeignMock.drop).toHaveBeenCalledWith(
+    expect(sweepMock.sweep).toHaveBeenCalledWith(
       HOST_ID,
       new Set(["draft-1", "draft-2"]),
+      7,
     );
     // Only the foreign row (owned by another host) is head-ingested; the
     // own-host row is already live via `drafts.subscribe`.
     expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
   });
 
-  it("does not call dropForeignLandingMirrorsAbsent while the directory is unsettled", async () => {
+  it("does not call sweepAbsentCloudDraftMirrors while the directory is unsettled", async () => {
     readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
     ingestMock.ingest.mockResolvedValue(undefined);
     directoryMock.settled = false;
@@ -263,7 +270,7 @@ describe("useCloudDraftsIngest", () => {
     await vi.waitFor(() => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
-    expect(dropForeignMock.drop).not.toHaveBeenCalled();
+    expect(sweepMock.sweep).not.toHaveBeenCalled();
   });
 
   it("re-attempts ingest for the same head after a rejected ingest, on the next effect run", async () => {

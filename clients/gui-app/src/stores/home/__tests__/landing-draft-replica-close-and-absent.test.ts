@@ -322,7 +322,11 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
       activeDraftId: null,
     });
 
-    dropForeignLandingMirrorsAbsent("host-a", new Set(["listed-foreign"]));
+    dropForeignLandingMirrorsAbsent(
+      "host-a",
+      new Set(["listed-foreign"]),
+      (draft) => draft.origin === "replica",
+    );
 
     const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
     expect(ids).not.toContain("clean-unlisted-foreign");
@@ -330,6 +334,69 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
     expect(ids).toContain("listed-foreign");
     expect(ids).toContain("own-row");
     expect(ids).toContain("same-host-replica");
+  });
+
+  it("keeps a clean, unlisted, foreign row when admit returns false", () => {
+    const cleanUnlistedForeign = baseDraft("clean-unlisted-foreign-rejected", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({
+      drafts: [cleanUnlistedForeign],
+      activeDraftId: null,
+    });
+
+    dropForeignLandingMirrorsAbsent("host-a", new Set(), () => false);
+
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    expect(ids).toContain("clean-unlisted-foreign-rejected");
+  });
+
+  it("never consults admit for a listed row, a dirty row, or a same-host row - each is retained before admit is reached", () => {
+    const listed = baseDraft("listed-admit-not-consulted", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    const dirty = baseDraft("dirty-admit-not-consulted", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 2,
+    });
+    const sameHost = baseDraft("same-host-admit-not-consulted", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 2,
+      syncedGeneration: 2,
+    });
+    useLandingDraftStore.setState({
+      drafts: [listed, dirty, sameHost],
+      activeDraftId: null,
+    });
+
+    const admitCalls: string[] = [];
+    dropForeignLandingMirrorsAbsent(
+      "host-a",
+      new Set(["listed-admit-not-consulted"]),
+      (draft) => {
+        admitCalls.push(draft.id);
+        return true;
+      },
+    );
+
+    expect(admitCalls).toEqual([]);
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    expect(ids).toContain("listed-admit-not-consulted");
+    expect(ids).toContain("dirty-admit-not-consulted");
+    expect(ids).toContain("same-host-admit-not-consulted");
   });
 });
 

@@ -7,11 +7,13 @@ import {
   bindComposerDraftHost,
   bindInterviewDraftHost,
   bindLandingAdoptionHost,
+  cloudDraftIngestSeq,
   collectDraftMirrorDirtyWrites,
   ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
   submitComposerDraft,
+  sweepAbsentCloudDraftMirrors,
   unbindInterviewDraftHost,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
@@ -642,6 +644,193 @@ describe("ingestCloudDraftSummary admit fence", () => {
       .getState()
       .drafts.find((draft) => draft.id === id);
     expect(row?.content).toEqual(typed("local own body on host-b"));
+  });
+});
+
+describe("sweepAbsentCloudDraftMirrors", () => {
+  it("drops a clean replica adopted on host-a that is not listed, at fenceSeq 0", () => {
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "sweep-replica",
+          content: typed("cloud body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "replica",
+          ownerHostId: "host-b",
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+
+    const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
+    expect(ids).not.toContain("sweep-replica");
+  });
+
+  it("fences a row ingested since the directory's snapshot: retained at the ingest's own seq, dropped once the fence catches up", async () => {
+    const id = "sweep-fenced";
+    const document = landingCloudDocument(id, "host-b", "cloud body");
+    await ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+    const seqAfterIngest = cloudDraftIngestSeq();
+    expect(seqAfterIngest).toBeGreaterThan(0);
+
+    sweepAbsentCloudDraftMirrors("host-a", new Set(), seqAfterIngest - 1);
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+      id,
+    );
+
+    sweepAbsentCloudDraftMirrors("host-a", new Set(), seqAfterIngest);
+    expect(
+      useLandingDraftStore.getState().drafts.map((d) => d.id),
+    ).not.toContain(id);
+  });
+
+  it("drops a clean own row adopted on host-a, published, not listed, with no mirror session on host-a", () => {
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "sweep-own-published",
+          content: typed("own body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "own",
+          ownerHostId: "host-a",
+          publication: {
+            status: "current",
+            lastPublishedAt: 1,
+            publishedRevision: 1,
+            halted: null,
+          },
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+
+    expect(
+      useLandingDraftStore.getState().drafts.map((d) => d.id),
+    ).not.toContain("sweep-own-published");
+  });
+
+  it("retains a clean own row adopted on host-a whose publication is unpublished", () => {
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "sweep-own-unpublished",
+          content: typed("own body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "own",
+          ownerHostId: "host-a",
+          publication: {
+            status: "unpublished",
+            lastPublishedAt: null,
+            publishedRevision: null,
+            halted: null,
+          },
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+      "sweep-own-unpublished",
+    );
+  });
+
+  it("retains a clean, published own row adopted on host-a when a mirror session is mounted for host-a", () => {
+    useLandingDraftStore.setState({
+      drafts: [
+        {
+          id: "sweep-own-session-mounted",
+          content: typed("own body"),
+          selection: null,
+          lastTouchedAt: 0,
+          settings: null,
+          composerMode: "chat",
+          workspace: emptyLandingDraftWorkspaceSnapshot(),
+          ...freshLandingMirrorState(),
+          adoption: { state: "adopted", hostId: "host-a" },
+          origin: "own",
+          ownerHostId: "host-a",
+          publication: {
+            status: "current",
+            lastPublishedAt: 1,
+            publishedRevision: 1,
+            halted: null,
+          },
+        },
+      ],
+      activeDraftId: null,
+    });
+
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    acquireDraftMirrorSession({
+      hostId: "host-a",
+      client: {
+        request: (method: string) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+
+    sweepAbsentCloudDraftMirrors("host-ingesting", new Set(), 0);
+
+    expect(useLandingDraftStore.getState().drafts.map((d) => d.id)).toContain(
+      "sweep-own-session-mounted",
+    );
+  });
+
+  it("cloudDraftIngestSeq starts at 0 after reset and is 1 after one successful ingest", async () => {
+    expect(cloudDraftIngestSeq()).toBe(0);
+
+    const document = landingCloudDocument("seq-check", "host-b", "cloud body");
+    await ingestCloudDraftSummary({
+      hostId: "host-a",
+      summary: landingCloudSummary(document),
+      document,
+    });
+
+    expect(cloudDraftIngestSeq()).toBe(1);
   });
 });
 

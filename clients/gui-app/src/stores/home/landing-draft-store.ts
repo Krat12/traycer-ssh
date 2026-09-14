@@ -2005,22 +2005,24 @@ export function collectUnadoptedLandingDrafts(): ReadonlyArray<LandingDraftTab> 
 }
 
 /**
- * Replicas whose cloud row is no longer listed: the owner deleted the draft
+ * Rows whose cloud entry is no longer listed: the owner deleted the draft
  * on its device, so the mirror here goes too. Only clean rows adopted on a
- * host other than the ingesting one - a dirty replica carries a local edit
- * still waiting for its claim.
+ * host other than the ingesting one - a dirty row carries a local edit
+ * still waiting for its claim or flush. `admit` decides the rest (origin,
+ * publication, ingest ordering): see `sweepAbsentCloudDraftMirrors`.
  */
 export function dropForeignLandingMirrorsAbsent(
   hostId: string,
   listedIds: ReadonlySet<string>,
+  admit: (draft: LandingDraftTab) => boolean,
 ): void {
   const drafts = useLandingDraftStore.getState().drafts;
   for (const draft of drafts) {
-    if (draft.origin !== "replica") continue;
     if (draft.adoption.state !== "adopted") continue;
     if (draft.adoption.hostId === hostId) continue;
     if (draft.generation > draft.syncedGeneration) continue;
     if (listedIds.has(draft.id)) continue;
+    if (!admit(draft)) continue;
     useLandingDraftStore.getState().dropLocalMirror(draft.id);
   }
 }

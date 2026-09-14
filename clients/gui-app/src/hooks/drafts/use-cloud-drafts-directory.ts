@@ -1,10 +1,17 @@
-import { useMemo, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { HostRpcRegistry } from "@/lib/host";
 import { useHostQuery } from "@/hooks/host/use-host-query";
 import { useCloudChatViewerId } from "@/hooks/chats/use-cloud-chat-queries";
 import {
+  cloudDraftIngestSeq,
   draftsCloudScopeId,
   subscribeDraftsCloudScope,
 } from "@/lib/drafts/draft-mirror-coordinator";
@@ -23,6 +30,13 @@ export interface CloudDraftsDirectory {
   readonly settled: boolean;
   readonly scopeId: string | null;
   readonly chats: ReadonlyArray<CloudChatSummary>;
+  /**
+   * The cloud ingest sequence current when the request that produced
+   * `chats` started. An absence in `chats` says nothing about a row
+   * ingested after that, so the sweep fences on it. Read in effects, not
+   * during render.
+   */
+  readonly snapshotIngestSeq: () => number;
 }
 
 function useDraftsCloudScopeId(hostId: string | null): string | null {
@@ -72,5 +86,23 @@ export function useCloudDraftsDirectory(
   const chats = visible
     ? (query.data?.chats ?? EMPTY_CLOUD_DRAFTS)
     : EMPTY_CLOUD_DRAFTS;
-  return { visible, settled: visible && query.isSuccess, scopeId, chats };
+  // Effect order matters: the fetch-start capture is declared before the
+  // snapshot capture, so a commit where a fetch both starts and (later)
+  // settles records the sequence from the START of that fetch.
+  const fetchStartSeq = useRef(0);
+  const snapshotSeq = useRef(0);
+  useEffect(() => {
+    if (query.isFetching) fetchStartSeq.current = cloudDraftIngestSeq();
+  }, [query.isFetching]);
+  useEffect(() => {
+    if (query.isSuccess) snapshotSeq.current = fetchStartSeq.current;
+  }, [query.dataUpdatedAt, query.isSuccess]);
+  const snapshotIngestSeq = useCallback(() => snapshotSeq.current, []);
+  return {
+    visible,
+    settled: visible && query.isSuccess,
+    scopeId,
+    chats,
+    snapshotIngestSeq,
+  };
 }

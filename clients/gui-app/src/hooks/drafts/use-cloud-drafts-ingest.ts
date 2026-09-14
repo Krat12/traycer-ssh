@@ -14,8 +14,10 @@ import {
 } from "@/lib/drafts/cloud-draft-reader";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
-import { ingestCloudDraftSummary } from "@/lib/drafts/draft-mirror-coordinator";
-import { dropForeignLandingMirrorsAbsent } from "@/stores/home/landing-draft-store";
+import {
+  ingestCloudDraftSummary,
+  sweepAbsentCloudDraftMirrors,
+} from "@/lib/drafts/draft-mirror-coordinator";
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
@@ -33,6 +35,9 @@ export function useCloudDraftsIngest(
   hostId: string | null,
 ): void {
   const directory = useCloudDraftsDirectory(client, hostId);
+  // Destructured so the effect depends on the (stable) reader, not on the
+  // directory object a method call would otherwise bind.
+  const { snapshotIngestSeq } = directory;
   const ingested = useRef(new Set<string>());
   useEffect(() => {
     ingested.current.clear();
@@ -76,9 +81,10 @@ export function useCloudDraftsIngest(
     // just claimed (from another window, or ahead of this window's
     // hydration) is listed under this host's ownership and is not absent.
     if (directory.settled) {
-      dropForeignLandingMirrorsAbsent(
+      sweepAbsentCloudDraftMirrors(
         hostId,
         new Set(directory.chats.map((chat) => chat.identity.chatId)),
+        snapshotIngestSeq(),
       );
     }
     for (const summary of foreign) {
@@ -186,5 +192,12 @@ export function useCloudDraftsIngest(
       for (const pendingKey of unsettledKeys) ingestedKeys.delete(pendingKey);
       unsettledKeys.clear();
     };
-  }, [client, directory.chats, directory.settled, directory.visible, hostId]);
+  }, [
+    client,
+    directory.chats,
+    directory.settled,
+    directory.visible,
+    hostId,
+    snapshotIngestSeq,
+  ]);
 }
