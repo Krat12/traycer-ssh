@@ -158,6 +158,14 @@ interface LandingDraftStoreState {
    */
   createDraftWithId: (id: string, settings: ChatRunSettings | null) => string;
   /**
+   * Mint `nextId` as a fresh, unadopted draft carrying `sourceId`'s content,
+   * caret, settings, mode and workspace. The repair for a draft this host
+   * could not claim: the copy adopts and publishes through the normal path
+   * as this host's own row, and the source is retired locally afterwards.
+   * False when the source is missing or `nextId` already exists.
+   */
+  forkDraft: (sourceId: string, nextId: string) => boolean;
+  /**
    * Put a start-task draft away. A non-empty draft is retained (`closed:
    * true`) and leaves the tab strip; an empty one is deleted so stray Cmd-N
    * tabs do not accumulate. If it was the active draft, clears
@@ -595,6 +603,36 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
           activeDraftId: next.id,
         }));
         return next.id;
+      },
+
+      forkDraft: (sourceId, nextId) => {
+        if (landingDraftIsRetired(nextId)) return false;
+        if (get().drafts.some((draft) => draft.id === nextId)) return false;
+        // The runtime debounces edits; the copy must carry the keystroke
+        // that is still in flight, not the last flushed document.
+        draftRuntimeRegistry.flush(sourceId);
+        const source = get().drafts.find((draft) => draft.id === sourceId);
+        if (source === undefined) return false;
+        const next: LandingDraftTab = {
+          id: nextId,
+          content: source.content,
+          selection: source.selection,
+          lastTouchedAt: Date.now(),
+          settings: copyChatRunSettings(source.settings),
+          composerMode: source.composerMode,
+          workspace: source.workspace,
+          ...freshLandingMirrorState(),
+          // A fresh row with content is dirty by definition: the mirror
+          // adopts and publishes it on the next sweep.
+          generation: 1,
+        };
+        set((state) => ({
+          drafts: [...uniqueLandingDrafts(state.drafts), next],
+          activeDraftId:
+            state.activeDraftId === sourceId ? nextId : state.activeDraftId,
+        }));
+        notifyDraftLocalEdit(nextId);
+        return true;
       },
 
       closeDraft: (id) => {

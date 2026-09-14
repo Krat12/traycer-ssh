@@ -105,7 +105,7 @@ import { useComposerHostNotice } from "@/hooks/composer/use-composer-host-notice
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
 import { usePromptStash } from "@/hooks/composer/use-prompt-stash";
 import { PromptStashControl } from "@/components/chat/composer/prompt-stash-control";
-import { DraftClaimNotice } from "@/components/drafts/draft-claim-notice";
+import { forkLandingDraftInPlace } from "@/lib/drafts/landing-draft-fork";
 import { useDraftAuthorityControl } from "@/hooks/drafts/use-draft-authority";
 import {
   landingStashIdentity,
@@ -263,19 +263,20 @@ export function LandingComposer(props: LandingComposerProps) {
     if (draftId === null) return null;
     return state.drafts.find((entry) => entry.id === draftId)?.origin ?? null;
   });
-  const landingPublication = useLandingDraftStore((state) => {
-    if (draftId === null) return null;
-    return (
-      state.drafts.find((entry) => entry.id === draftId)?.publication ?? null
-    );
-  });
+  // The repair for a claim the host refused: the content moves into a fresh
+  // draft of this host's own and the tab re-keys onto it. The composer
+  // remounts under the new id with the same content and caret.
+  const repairOnEdit = useCallback((): void => {
+    if (draftId === null) return;
+    forkLandingDraftInPlace(draftId);
+  }, [draftId]);
   const authority = useDraftAuthorityControl({
     draftId,
     ownerHostId: landingOwnerHostId,
     origin: landingOrigin,
     tabHostId: resolvedHostId,
     client: hostClient,
-    publication: landingPublication,
+    repairOnEdit,
   });
   const handleToolbarSettingsChange = useCallback(
     (settings: ChatRunSettings) => {
@@ -814,21 +815,13 @@ export function LandingComposer(props: LandingComposerProps) {
     [runtime, unboundRuntime],
   );
 
-  // A submit needs this host to own the draft (submit is "delete the draft
-  // here, create the chat"). An unowned draft claims first and the send
-  // re-enters through the ref, which reads the callback the claim's
-  // re-render produced - the closure that started the claim still believes
-  // the draft is unowned and would claim forever. A refusal creates nothing;
-  // the claim notice above the composer says why.
-  const handleSubmitRef = useRef<() => void>(() => undefined);
-  const handleSubmit = useCallback(() => {
-    if (!canSubmit) return;
-    if (authority.unowned) {
-      void authority.ensureOwned().then((owned) => {
-        if (owned) handleSubmitRef.current();
-      });
-      return;
-    }
+  // Submit is "delete the draft here, create the chat", so an unowned draft
+  // lets its claim settle first: claimed, the delete reaches every device.
+  // Refused, the send still proceeds on the row as it is - the local
+  // retirement receipt the delete writes keeps the original from being
+  // ingested back here. `dispatchSubmit` is the send without that gate, so
+  // the continuation cannot loop on a draft that stays unowned.
+  const dispatchSubmit = useCallback(() => {
     const toolbar = toolbarStore.getState();
     if (toolbar.selection.modelSlug.length === 0) return;
     const refusal = actions.submit({
@@ -853,51 +846,40 @@ export function LandingComposer(props: LandingComposerProps) {
     raiseHostNotice(
       refusal === null ? null : { kind: "refused", message: refusal.message },
     );
-  }, [
-    actions,
-    authority,
-    canSubmit,
-    draftId,
-    pickerStore,
-    raiseHostNotice,
-    toolbarStore,
-  ]);
-  useEffect(() => {
-    handleSubmitRef.current = handleSubmit;
-  }, [handleSubmit]);
+  }, [actions, draftId, pickerStore, raiseHostNotice, toolbarStore]);
+  const handleSubmit = useCallback(() => {
+    if (!canSubmit) return;
+    if (authority.unowned) {
+      void authority.settleOwnership().then(dispatchSubmit);
+      return;
+    }
+    dispatchSubmit();
+  }, [authority, canSubmit, dispatchSubmit]);
 
-  const handleStartTerminalRef = useRef<(launch: TerminalAgentLaunch) => void>(
-    () => undefined,
-  );
-  const handleStartTerminal = useCallback(
+  const dispatchStartTerminal = useCallback(
     (launch: TerminalAgentLaunch) => {
-      if (!workspaceCanStart || isSubmitting) return;
-      // Terminal mode bypasses `canSubmit` entirely, so the claim has to be
-      // restated here: an agent is created off the draft, and that needs
-      // this host to own it. Same re-entry through a ref as `handleSubmit`.
-      if (authority.unowned) {
-        void authority.ensureOwned().then((owned) => {
-          if (owned) handleStartTerminalRef.current(launch);
-        });
-        return;
-      }
       const refusal = actions.selectTerminalAgent(launch, draftId);
       raiseHostNotice(
         refusal === null ? null : { kind: "refused", message: refusal.message },
       );
     },
-    [
-      actions,
-      authority,
-      draftId,
-      isSubmitting,
-      raiseHostNotice,
-      workspaceCanStart,
-    ],
+    [actions, draftId, raiseHostNotice],
   );
-  useEffect(() => {
-    handleStartTerminalRef.current = handleStartTerminal;
-  }, [handleStartTerminal]);
+  const handleStartTerminal = useCallback(
+    (launch: TerminalAgentLaunch) => {
+      if (!workspaceCanStart || isSubmitting) return;
+      // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
+      // is restated here: an agent is created off the draft.
+      if (authority.unowned) {
+        void authority.settleOwnership().then(() => {
+          dispatchStartTerminal(launch);
+        });
+        return;
+      }
+      dispatchStartTerminal(launch);
+    },
+    [authority, dispatchStartTerminal, isSubmitting, workspaceCanStart],
+  );
 
   const handleRemoveImage = useCallback(
     (id: string) => {
@@ -945,11 +927,6 @@ export function LandingComposer(props: LandingComposerProps) {
       toolbarLayout={isMobile ? "collapsed" : "full"}
       topBanner={
         <>
-          <DraftClaimNotice
-            message={authority.claimError}
-            claiming={authority.claiming}
-            onRetry={authority.retry}
-          />
           <ComposerHostNotice
             notice={hostNotice}
             onDismiss={dismissHostNotice}

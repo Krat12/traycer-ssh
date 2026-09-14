@@ -1,48 +1,31 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
-import type { DraftPublication } from "@traycer/protocol/host";
 import type { HostRpcRegistry } from "@/lib/host";
 import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
 import { applyIncomingDraftDocument } from "@/lib/drafts/draft-mirror-coordinator";
-import { draftClaimUserMessage, useDraftClaim } from "./use-draft-claim";
-import { draftPublicationLabel } from "@/lib/drafts/draft-publication-label";
+import { useDraftClaim } from "./use-draft-claim";
 
 export interface DraftAuthorityControl {
   /**
    * Another host owns this draft (or this host's row was demoted to a
-   * replica). Never gates the editor: the first edit claims underneath.
+   * replica). Never gates the editor and never renders: the first edit
+   * claims underneath, and a refused claim repairs underneath.
    */
   readonly unowned: boolean;
-  readonly claiming: boolean;
   /**
-   * The one line shown when a claim was refused. `null` while no claim has
-   * failed, including during a claim in flight - the takeover is silent.
-   */
-  readonly claimError: string | null;
-  readonly publicationLabel: string | null;
-  /**
-   * Called from every edit handler. Claims the draft the first time an
-   * unowned draft is edited; a no-op on an owned draft, while a claim is in
-   * flight, and after a refusal (which `retry` or `ensureOwned` re-arms).
+   * Called from every edit handler. On an unowned draft, claims it for this
+   * host; a refusal runs the surface's `repairOnEdit` (a fresh draft of this
+   * host's own carrying the content). A no-op on an owned draft and while a
+   * claim is in flight. Nothing is ever shown for either outcome.
    */
   readonly noteEdit: () => void;
   /**
-   * The submit path: resolves `true` once this host owns the draft, joining
-   * a claim already in flight, and `false` on a refusal (with `claimError`
-   * set for the inline notice).
+   * The submit path: resolves once a pending or fresh claim has settled, so
+   * a send on a draft this host now owns deletes it everywhere. A refusal
+   * resolves too - the send proceeds on the row as it is, and the local
+   * retirement receipt keeps the original from returning to this device.
    */
-  readonly ensureOwned: () => Promise<boolean>;
-  readonly retry: () => void;
-}
-
-/**
- * A refusal, keyed by the draft it was for. Keyed rather than reset: a
- * refusal for one draft must not disarm or narrate on the next draft this
- * surface shows, and deriving from the key needs no effect to clear it.
- */
-interface ClaimRefusal {
-  readonly draftId: string;
-  readonly message: string | null;
+  readonly settleOwnership: () => Promise<void>;
 }
 
 export function useDraftAuthorityControl(args: {
@@ -51,24 +34,25 @@ export function useDraftAuthorityControl(args: {
   readonly origin: "own" | "replica" | null;
   readonly tabHostId: string | null;
   readonly client: HostClient<HostRpcRegistry> | null;
-  readonly publication: DraftPublication | null;
+  /**
+   * The surface's silent repair for a claim the host refused. Runs at most
+   * once per refusal; after it the draft reads as owned (a new row, or a
+   * detached identity), so nothing here needs to remember the refusal.
+   */
+  readonly repairOnEdit: () => void;
 }): DraftAuthorityControl {
-  const { mutation: claimMutation, claim: claimDraft } = useDraftClaim(
-    args.client,
-  );
+  const { claim: claimDraft } = useDraftClaim(args.client);
   const unowned =
     args.tabHostId !== null &&
     args.draftId !== null &&
     draftRequiresClaim(args.ownerHostId, args.origin, args.tabHostId);
-  // One claim per arming. A refusal disarms so a stream of keystrokes does
-  // not hammer the host with a claim it just refused; `retry` and the submit
-  // path re-arm by clearing it. A claim that lands clears it too, and an
-  // owned draft reads no refusal at all, so a later demotion starts armed.
-  const [refusal, setRefusal] = useState<ClaimRefusal | null>(null);
-  const disarmed =
-    unowned && refusal !== null && refusal.draftId === args.draftId;
-  const claimError = disarmed ? refusal.message : null;
   const inflight = useRef<Promise<boolean> | null>(null);
+  // Read through a ref by the in-flight continuation: the repair belongs to
+  // the render that observes the refusal, not the one that started the claim.
+  const repairRef = useRef(args.repairOnEdit);
+  useEffect(() => {
+    repairRef.current = args.repairOnEdit;
+  }, [args.repairOnEdit]);
 
   const runClaim = useCallback((): Promise<boolean> => {
     const pending = inflight.current;
@@ -77,13 +61,11 @@ export function useDraftAuthorityControl(args: {
     if (draftId === null) return Promise.resolve(false);
     const attempt = (async (): Promise<boolean> => {
       const result = await claimDraft(draftId);
-      if (result.status === "ok" || result.status === "already-owned") {
-        setRefusal(null);
-        await applyIncomingDraftDocument(result.draft);
-        return true;
+      if (result.status !== "ok" && result.status !== "already-owned") {
+        return false;
       }
-      setRefusal({ draftId, message: draftClaimUserMessage(result) });
-      return false;
+      await applyIncomingDraftDocument(result.draft);
+      return true;
     })().finally(() => {
       if (inflight.current === attempt) inflight.current = null;
     });
@@ -92,26 +74,16 @@ export function useDraftAuthorityControl(args: {
   }, [args.draftId, claimDraft]);
 
   const noteEdit = useCallback((): void => {
-    if (!unowned || disarmed) return;
-    void runClaim();
-  }, [disarmed, runClaim, unowned]);
-
-  const ensureOwned = useCallback((): Promise<boolean> => {
-    if (!unowned) return Promise.resolve(true);
-    return runClaim();
+    if (!unowned || inflight.current !== null) return;
+    void runClaim().then((owned) => {
+      if (!owned) repairRef.current();
+    });
   }, [runClaim, unowned]);
 
-  const retry = useCallback((): void => {
-    void ensureOwned();
-  }, [ensureOwned]);
+  const settleOwnership = useCallback(async (): Promise<void> => {
+    if (!unowned) return;
+    await runClaim();
+  }, [runClaim, unowned]);
 
-  return {
-    unowned,
-    claiming: claimMutation.isPending,
-    claimError,
-    publicationLabel: draftPublicationLabel(args.publication),
-    noteEdit,
-    ensureOwned,
-    retry,
-  };
+  return { unowned, noteEdit, settleOwnership };
 }

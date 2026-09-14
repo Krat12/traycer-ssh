@@ -146,6 +146,14 @@ interface ComposerDraftStore {
    * one and a fresh host row. The row is left CLEAN because it is empty and
    * its old id is on its way out; nothing is owed to the host.
    */
+  /**
+   * The repair for a chat draft this host could not claim back (its row was
+   * demoted to a replica): drop the draft id and ownership while KEEPING the
+   * content, marked dirty, so the next flush upserts it under a fresh id as
+   * this host's own row. Nothing is owed to the host for the old id - it
+   * still holds that row as a replica.
+   */
+  readonly detachDraftIdentity: (chatId: string) => void;
   readonly fenceAndDetachSubmittedDraft: (
     chatId: string,
     draftId: string,
@@ -322,6 +330,27 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           EMPTY_COMPOSER_SELECTION,
         );
         scheduleLandingImageReconcile();
+      },
+      detachDraftIdentity: (chatId) => {
+        set((state) => {
+          const current = ensureDraft(state.drafts, chatId);
+          if (current.draftId === null) return state;
+          return {
+            drafts: {
+              ...state.drafts,
+              [chatId]: {
+                ...current,
+                draftId: null,
+                hostRevision: 0,
+                ownerHostId: null,
+                origin: null,
+                publication: null,
+                generation: current.generation + 1,
+              },
+            },
+          };
+        });
+        notifyDraftLocalEdit(chatId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {
         set((state) => {

@@ -138,6 +138,11 @@ export interface ReplaceDraftWithEpicCommand {
   readonly epicName: string | undefined;
 }
 
+export interface ReplaceDraftWithDraftCommand {
+  readonly previousDraftId: string;
+  readonly nextDraftId: string;
+}
+
 export interface CompletePhaseMigrationCommand {
   readonly tabId: string;
   readonly phaseId: string;
@@ -1303,6 +1308,43 @@ export class TabCommandCoordinator {
       applyRemovals: () => {
         this.applyExpectedSourceMutation(() => {
           useLandingDraftStore.getState().deleteDraft(command.draftId);
+        });
+      },
+    });
+    return nextRef;
+  }
+
+  /**
+   * Re-key a draft tab in place onto a fresh copy of its draft: the strip
+   * item keeps its position, split side and focus, the copy becomes the
+   * source it renders, and the previous draft is retired locally without a
+   * host delete (its owner is another host, or a row this host could not
+   * reclaim). `null` when the previous draft has no strip item.
+   */
+  replaceDraftWithDraft(command: ReplaceDraftWithDraftCommand): TabRef | null {
+    const previous: TabRef = { kind: "draft", id: command.previousDraftId };
+    const nextRef: TabRef = { kind: "draft", id: command.nextDraftId };
+    const layout = currentLayout();
+    if (findStripItemForRef(layout, previous) === null) return null;
+    const next = replaceLayoutRef(layout, { previous, next: nextRef });
+    if (next === layout) return null;
+    this.execute({
+      layout: next,
+      reservedAdditions: [nextRef],
+      pendingRemovals: [previous],
+      projectSourceCompatibility: true,
+      applySources: () => {
+        this.applyExpectedSourceMutation(() => {
+          useLandingDraftStore
+            .getState()
+            .forkDraft(command.previousDraftId, command.nextDraftId);
+        });
+      },
+      applyRemovals: () => {
+        this.applyExpectedSourceMutation(() => {
+          useLandingDraftStore
+            .getState()
+            .applyHostDelete(command.previousDraftId);
         });
       },
     });

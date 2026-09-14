@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import type { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
@@ -20,15 +21,20 @@ export function useChatComposerDraftAuthority(args: {
   const origin = useComposerDraftStore(
     (state) => state.drafts[args.chatId]?.origin ?? null,
   );
-  const publication = useComposerDraftStore(
-    (state) => state.drafts[args.chatId]?.publication ?? null,
-  );
+  // A chat draft names a surface that exists only on the chat's host, so it
+  // is never a replica of another host's row (the ingest declines those);
+  // an unowned chat draft is this host's own row demoted after a claim
+  // elsewhere. The repair keeps the content and mints a fresh identity.
+  const { chatId } = args;
+  const repairOnEdit = useCallback((): void => {
+    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+  }, [chatId]);
   return useDraftAuthorityControl({
     draftId,
     ownerHostId,
     origin,
     tabHostId: args.tabHostId,
     client: args.client,
-    publication,
+    repairOnEdit,
   });
 }

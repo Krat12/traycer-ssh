@@ -673,7 +673,7 @@ function mountSubmit(input: MountSubmitInput): {
         imagesUnsupported: false,
         attachmentPreparationPending: false,
         draftUnowned: false,
-        ensureDraftOwned: () => Promise.resolve(true),
+        settleDraftOwnership: () => Promise.resolve(),
         onSubmitMessage: props.onSubmitMessage,
         onSideChat: null,
       }),

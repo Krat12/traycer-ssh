@@ -10,17 +10,12 @@ const applyIncomingMock = vi.hoisted(() => ({
   apply: vi.fn<(draft: DraftDocument) => Promise<void>>(),
 }));
 
-vi.mock("@/hooks/drafts/use-draft-claim", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/hooks/drafts/use-draft-claim")>();
-  return {
-    draftClaimUserMessage: actual.draftClaimUserMessage,
-    useDraftClaim: () => ({
-      mutation: { isPending: false },
-      claim: claimMock.claim,
-    }),
-  };
-});
+vi.mock("@/hooks/drafts/use-draft-claim", () => ({
+  useDraftClaim: () => ({
+    mutation: { isPending: false },
+    claim: claimMock.claim,
+  }),
+}));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
   applyIncomingDraftDocument: (draft: DraftDocument): Promise<void> =>
     applyIncomingMock.apply(draft),
@@ -74,7 +69,8 @@ afterEach(() => {
 });
 
 describe("useDraftAuthorityControl", () => {
-  it("owned draft: unowned is false, noteEdit never claims, ensureOwned resolves true without claiming", async () => {
+  it("owned draft: unowned is false, noteEdit never claims, settleOwnership resolves without claiming", async () => {
+    const repairOnEdit = vi.fn();
     const view = renderHook(() =>
       useDraftAuthorityControl({
         draftId: "draft-1",
@@ -82,7 +78,7 @@ describe("useDraftAuthorityControl", () => {
         origin: "own",
         tabHostId: "host-a",
         client: CLIENT,
-        publication: null,
+        repairOnEdit,
       }),
     );
 
@@ -93,15 +89,15 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(claimMock.claim).not.toHaveBeenCalled();
 
-    let resolved: boolean | undefined;
     await act(async () => {
-      resolved = await view.result.current.ensureOwned();
+      await view.result.current.settleOwnership();
     });
-    expect(resolved).toBe(true);
     expect(claimMock.claim).not.toHaveBeenCalled();
+    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
-  it("unowned draft: first noteEdit claims once; a second noteEdit while pending does not re-claim; a resolved ok applies the document and leaves claimError null", async () => {
+  it("unowned draft: first noteEdit claims once with the draftId; a second noteEdit while pending does not re-claim; a resolved ok applies the document and never runs repair", async () => {
+    const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     claimMock.claim.mockReturnValueOnce(first.promise);
     applyIncomingMock.apply.mockResolvedValue(undefined);
@@ -113,7 +109,7 @@ describe("useDraftAuthorityControl", () => {
         origin: "own",
         tabHostId: "host-a",
         client: CLIENT,
-        publication: null,
+        repairOnEdit,
       }),
     );
 
@@ -138,10 +134,11 @@ describe("useDraftAuthorityControl", () => {
     await waitFor(() => {
       expect(applyIncomingMock.apply).toHaveBeenCalledWith(STUB_DRAFT);
     });
-    expect(view.result.current.claimError).toBeNull();
+    expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
-  it("refusal: claimError is set, further noteEdit calls do not re-claim, retry re-arms, and ensureOwned re-claims (resolving false then true)", async () => {
+  it("refusal: repairOnEdit is called exactly once and the document is never applied", async () => {
+    const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     claimMock.claim.mockReturnValueOnce(first.promise);
 
@@ -152,7 +149,7 @@ describe("useDraftAuthorityControl", () => {
         origin: "own",
         tabHostId: "host-a",
         client: CLIENT,
-        publication: null,
+        repairOnEdit,
       }),
     );
 
@@ -167,50 +164,13 @@ describe("useDraftAuthorityControl", () => {
     });
 
     await waitFor(() => {
-      expect(view.result.current.claimError).toBe(
-        "This draft was deleted elsewhere. Edits stay on this device.",
-      );
+      expect(repairOnEdit).toHaveBeenCalledTimes(1);
     });
-
-    // Disarmed: further edits do not hammer the host with a claim it just
-    // refused.
-    act(() => {
-      view.result.current.noteEdit();
-    });
-    expect(claimMock.claim).toHaveBeenCalledTimes(1);
-
-    // retry() re-arms and calls again; this attempt refuses again.
-    const second = deferred<DraftClaimResult>();
-    claimMock.claim.mockReturnValueOnce(second.promise);
-    act(() => {
-      view.result.current.retry();
-    });
-    expect(claimMock.claim).toHaveBeenCalledTimes(2);
-
-    let ensureResult: boolean | undefined;
-    await act(async () => {
-      const ensurePromise = view.result.current.ensureOwned();
-      second.resolve({ status: "unavailable", reason: "not-found" });
-      ensureResult = await ensurePromise;
-    });
-    expect(ensureResult).toBe(false);
-
-    // ensureOwned re-arms and re-claims once more; this time it succeeds.
-    const third = deferred<DraftClaimResult>();
-    claimMock.claim.mockReturnValueOnce(third.promise);
-    applyIncomingMock.apply.mockResolvedValue(undefined);
-    let finalResult: boolean | undefined;
-    await act(async () => {
-      const finalPromise = view.result.current.ensureOwned();
-      expect(claimMock.claim).toHaveBeenCalledTimes(3);
-      third.resolve({ status: "ok", draft: STUB_DRAFT });
-      finalResult = await finalPromise;
-    });
-    expect(finalResult).toBe(true);
-    expect(view.result.current.claimError).toBeNull();
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
   });
 
-  it("ensureOwned joins a claim already started by noteEdit, calling claim once total", async () => {
+  it("settleOwnership called while a noteEdit-started claim is pending joins it (claim called once) and resolves after it settles", async () => {
+    const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     claimMock.claim.mockReturnValueOnce(first.promise);
     applyIncomingMock.apply.mockResolvedValue(undefined);
@@ -222,7 +182,7 @@ describe("useDraftAuthorityControl", () => {
         origin: "own",
         tabHostId: "host-a",
         client: CLIENT,
-        publication: null,
+        repairOnEdit,
       }),
     );
 
@@ -231,15 +191,48 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(claimMock.claim).toHaveBeenCalledTimes(1);
 
-    let ensureResult: boolean | undefined;
-    await act(async () => {
-      const ensurePromise = view.result.current.ensureOwned();
-      // Joins the in-flight claim rather than starting a second one.
-      expect(claimMock.claim).toHaveBeenCalledTimes(1);
-      first.resolve({ status: "ok", draft: STUB_DRAFT });
-      ensureResult = await ensurePromise;
+    let settled = false;
+    const settlePromise = view.result.current.settleOwnership().then(() => {
+      settled = true;
     });
-    expect(ensureResult).toBe(true);
+    // Joins the in-flight claim rather than starting a second one.
     expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    expect(settled).toBe(true);
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
+    const repairOnEdit = vi.fn();
+    claimMock.claim.mockResolvedValueOnce({
+      status: "unavailable",
+      reason: "not-found",
+    });
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    await act(async () => {
+      await view.result.current.settleOwnership();
+    });
+
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(applyIncomingMock.apply).not.toHaveBeenCalled();
   });
 });

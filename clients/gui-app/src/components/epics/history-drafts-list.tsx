@@ -26,9 +26,6 @@ import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 
 const DRAFTS_PREVIEW_LIMIT = 5;
 
-export const HISTORY_DRAFT_DELETE_REFUSED =
-  "Could not delete this draft from this device. Try again.";
-
 export function HistoryDraftsList(props: {
   readonly hostId: string | null;
   readonly onBeforeOpen: ((draftId: string) => void) | null;
@@ -58,19 +55,17 @@ export function HistoryDraftsList(props: {
   );
   const [pendingDelete, setPendingDelete] =
     useState<HistoryLandingDraft | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const closeDeleteDialog = useCallback(() => {
     setPendingDelete(null);
-    setDeleteError(null);
   }, []);
   // A delete is routed to the host that owns the row, so a draft another
   // host owns is claimed for this one first - the same silent takeover the
-  // composer does on the first edit. Deleting the local mirror alone would
-  // leave the cloud row in place to be ingested straight back.
-  const { mutation: claimMutation, claim } = useDraftClaim(
-    useHostClientForHostId(hostId),
-  );
+  // composer does on the first edit. A refused claim retires the row locally
+  // instead: it leaves this device now, and the retirement receipt keeps the
+  // ingest from bringing the other host's copy straight back. Nothing is
+  // shown for either outcome.
+  const { claim } = useDraftClaim(useHostClientForHostId(hostId));
   const confirmDelete = useCallback(() => {
     if (pendingDelete === null) return;
     const draftId = pendingDelete.id;
@@ -81,21 +76,18 @@ export function HistoryDraftsList(props: {
       draft !== undefined &&
       hostId !== null &&
       draftRequiresClaim(draft.ownerHostId, draft.origin, hostId);
+    setPendingDelete(null);
     if (!unowned) {
       useLandingDraftStore.getState().deleteDraft(draftId);
-      setPendingDelete(null);
-      setDeleteError(null);
       return;
     }
     void claim(draftId).then(async (result) => {
       if (result.status !== "ok" && result.status !== "already-owned") {
-        setDeleteError(HISTORY_DRAFT_DELETE_REFUSED);
+        useLandingDraftStore.getState().applyHostDelete(draftId);
         return;
       }
       await applyIncomingDraftDocument(result.draft);
       useLandingDraftStore.getState().deleteDraft(draftId);
-      setPendingDelete(null);
-      setDeleteError(null);
     });
   }, [claim, hostId, pendingDelete]);
 
@@ -146,8 +138,6 @@ export function HistoryDraftsList(props: {
       </section>
       <HistoryDraftsDeleteDialog
         draft={pendingDelete}
-        error={deleteError}
-        deleting={claimMutation.isPending}
         onOpenChange={(open) => {
           if (!open) closeDeleteDialog();
         }}
@@ -235,8 +225,6 @@ const HistoryDraftsRow = memo(function HistoryDraftsRow(props: {
 
 function HistoryDraftsDeleteDialog(props: {
   readonly draft: HistoryLandingDraft | null;
-  readonly error: string | null;
-  readonly deleting: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onConfirm: () => void;
 }): ReactNode {
@@ -261,15 +249,6 @@ function HistoryDraftsDeleteDialog(props: {
           <DialogDescription className="text-ui-sm leading-relaxed text-muted-foreground wrap-anywhere">
             {description}
           </DialogDescription>
-          {props.error === null ? null : (
-            <p
-              role="alert"
-              data-testid="history-drafts-delete-error"
-              className="text-ui-sm text-destructive"
-            >
-              {props.error}
-            </p>
-          )}
         </div>
         <div className="grid min-w-0 shrink-0 grid-cols-2 gap-2 border-t border-border/60 bg-foreground/3 px-5 py-3 sm:flex sm:justify-end">
           <Button
@@ -289,7 +268,6 @@ function HistoryDraftsDeleteDialog(props: {
             variant="destructive"
             size="sm"
             className="w-full sm:w-auto"
-            disabled={props.deleting}
             onClick={props.onConfirm}
             data-testid="history-drafts-delete-confirm"
           >

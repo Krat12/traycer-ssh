@@ -40,7 +40,7 @@ export interface DraftClaimControl {
   readonly mutation: DraftClaimMutationResult;
   /**
    * The claim as the silent-takeover callers need it: every outcome typed,
-   * so a refusal reaches the inline notice instead of a rejected promise.
+   * so a refusal reaches the caller's repair instead of a rejected promise.
    */
   readonly claim: (draftId: string) => Promise<DraftClaimResult>;
 }
@@ -49,9 +49,10 @@ export interface DraftClaimControl {
  * First-edit claim through the tab's connected host. `unsupported-version`
  * is a typed unavailable reason, not a generic failure.
  *
- * No `onError` toast: the claim is silent under the user's first edit, and a
- * refusal renders inline (`DraftClaimNotice`, the History delete dialog),
- * which is the one sanctioned reason to omit one.
+ * No `onError` toast, and no other surface either: the claim runs silently
+ * under the user's first edit, and a refusal is repaired silently (a fresh
+ * draft of this host's own, or a locally retired row). Nothing about draft
+ * ownership is ever shown.
  */
 export function useDraftClaim(
   client: HostClient<HostRpcRegistry> | null,
@@ -82,35 +83,4 @@ export function useDraftClaim(
     [client, mutateAsync],
   );
   return { mutation, claim };
-}
-
-/**
- * The one line the claim notice shows for an outcome that is not a takeover.
- * Every refusal answers: the silent claim under the user's edit failed, and
- * their edits are staying on this device until it succeeds, so a `null` here
- * would hide that. Never names a host.
- */
-export function draftClaimUserMessage(result: DraftClaimResult): string | null {
-  switch (result.status) {
-    case "ok":
-    case "already-owned":
-      return null;
-    case "unsupported":
-      return "Edits stay on this device until Traycer is updated here.";
-    case "failed":
-      return "Edits stay on this device for now. Could not sync this draft.";
-    case "unavailable":
-      switch (result.reason) {
-        case "unsupported-version":
-          return "This draft needs a newer Traycer to sync.";
-        case "plan-ineligible":
-          return "Syncing this draft needs a paid plan. Edits stay on this device.";
-        case "not-found":
-          return "This draft was deleted elsewhere. Edits stay on this device.";
-        case "not-published":
-          return "This draft has not been backed up yet. Edits stay on this device.";
-        case "publication-not-ready":
-          return "Backup is still starting. Edits stay on this device for now.";
-      }
-  }
 }

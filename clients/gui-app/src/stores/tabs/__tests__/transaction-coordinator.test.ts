@@ -53,6 +53,7 @@ import {
 } from "@/stores/tabs/tab-command-coordinator";
 import { useTabsStore } from "@/stores/tabs/store";
 import type { TabRef } from "@/stores/tabs/types";
+import { landingDraftIsRetired } from "@/lib/drafts/landing-draft-retirement";
 
 interface IntermediateSnapshot {
   readonly source: "tabs" | "canvas" | "drafts" | "ledger";
@@ -447,6 +448,44 @@ describe("tab command coordinator transactions", () => {
       tabRefKey(ref),
     ]);
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
+  });
+
+  it("replaceDraftWithDraft re-keys the strip item onto a fresh copy, keeping position and retiring the previous draft", () => {
+    const draftRef = openDraftSource();
+    const content = {
+      type: "doc" as const,
+      content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
+    };
+    useLandingDraftStore.getState().setDraftContent(draftRef.id, content, null);
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+
+    const nextDraftId = "forked-from-strip";
+    const nextRef = tabCommandCoordinator.replaceDraftWithDraft({
+      previousDraftId: draftRef.id,
+      nextDraftId,
+    });
+
+    expect(nextRef).toEqual({ kind: "draft", id: nextDraftId });
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toEqual([
+      tabRefKey({ kind: "draft", id: nextDraftId }),
+    ]);
+    expect(landingDraftIsRetired(draftRef.id)).toBe(true);
+    const next = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === nextDraftId);
+    expect(next).toBeDefined();
+    expect(next?.content).toEqual(content);
+  });
+
+  it("replaceDraftWithDraft returns null when the previous draft has no strip item", () => {
+    const nextRef = tabCommandCoordinator.replaceDraftWithDraft({
+      previousDraftId: "not-in-strip",
+      nextDraftId: "unused-next",
+    });
+
+    expect(nextRef).toBeNull();
   });
 
   it("closeRef keeps the closed source under pendingRemovals until removal settles", () => {

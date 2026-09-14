@@ -103,7 +103,7 @@ describe("chat-composer submit gate (path resolution)", () => {
           imagesUnsupported: false,
           attachmentPreparationPending: pending,
           draftUnowned: false,
-          ensureDraftOwned: () => Promise.resolve(true),
+          settleDraftOwnership: () => Promise.resolve(),
           onSubmitMessage,
           onSideChat: null,
         }),
@@ -351,14 +351,15 @@ describe("chat-composer submit multi-surface clear", () => {
 });
 
 /**
- * `draftUnowned` gates a live submit behind `ensureDraftOwned()`. The gate
- * must re-enter through the LATEST `submitDraft` closure (via
- * `submitDraftRef`, assigned in a `useEffect`) so that once the caller
- * re-renders with `draftUnowned: false`, the message actually goes out
- * exactly once - and only if ownership was actually granted.
+ * `draftUnowned` gates a live submit behind `settleDraftOwnership()`. The
+ * gate must re-enter through the LATEST `submitDraft` closure (via
+ * `submitDraftRef`, assigned in a `useEffect`), marking the one re-entry
+ * `ownershipSettled` so it never gates a second time - the send goes out
+ * exactly once whether or not the claim actually landed (a refused claim
+ * still proceeds on the row as it is; drafts have no error UI to gate on).
  */
 describe("unowned draft", () => {
-  it("re-enters the latest submitDraft once ensureDraftOwned resolves true after a rerender", async () => {
+  it("re-enters the latest submitDraft once settleDraftOwnership resolves after a rerender with draftUnowned: false", async () => {
     const onSubmitMessage = vi.fn(acceptSubmit);
     const editorRef = createRef<ComposerPromptEditorHandle | null>();
     editorRef.current = editorHandle({ content: DIRTY, ready: true });
@@ -380,11 +381,11 @@ describe("unowned draft", () => {
       hostId: null,
     });
 
-    let resolveOwned: ((owned: boolean) => void) | null = null;
-    const ensureDraftOwned = vi.fn(
+    let resolveSettled: (() => void) | null = null;
+    const settleDraftOwnership = vi.fn(
       () =>
-        new Promise<boolean>((resolve) => {
-          resolveOwned = resolve;
+        new Promise<void>((resolve) => {
+          resolveSettled = resolve;
         }),
     );
 
@@ -406,7 +407,7 @@ describe("unowned draft", () => {
           imagesUnsupported: false,
           attachmentPreparationPending: false,
           draftUnowned,
-          ensureDraftOwned,
+          settleDraftOwnership,
           onSubmitMessage,
           onSideChat: null,
         }),
@@ -417,26 +418,26 @@ describe("unowned draft", () => {
       result.current.submitDraft("enter");
     });
 
-    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
-    // Caller re-renders with draftUnowned: false BEFORE the claim resolves -
+    // Caller re-renders with draftUnowned: false BEFORE the claim settles -
     // the still-pending promise must re-enter through the LATEST closure.
     rerender(false);
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveOwned?.(true);
+      resolveSettled?.();
       await Promise.resolve();
     });
 
     await waitFor(() => {
       expect(onSubmitMessage).toHaveBeenCalledTimes(1);
     });
-    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
   });
 
-  it("sends nothing when ensureDraftOwned resolves false", async () => {
+  it("still sends exactly once, with no loop, when settleDraftOwnership resolves but the caller keeps draftUnowned: true", async () => {
     const onSubmitMessage = vi.fn(acceptSubmit);
     const editorRef = createRef<ComposerPromptEditorHandle | null>();
     editorRef.current = editorHandle({ content: DIRTY, ready: true });
@@ -458,7 +459,7 @@ describe("unowned draft", () => {
       hostId: null,
     });
 
-    const ensureDraftOwned = vi.fn(() => Promise.resolve(false));
+    const settleDraftOwnership = vi.fn(() => Promise.resolve());
 
     const { result } = renderHook(() =>
       useChatComposerSubmit({
@@ -476,8 +477,10 @@ describe("unowned draft", () => {
         workspaceBlocked: false,
         imagesUnsupported: false,
         attachmentPreparationPending: false,
+        // No rerender ever drops this back to false - a refused claim leaves
+        // the draft unowned forever, and the send must still go out once.
         draftUnowned: true,
-        ensureDraftOwned,
+        settleDraftOwnership,
         onSubmitMessage,
         onSideChat: null,
       }),
@@ -488,8 +491,10 @@ describe("unowned draft", () => {
       await Promise.resolve();
     });
 
-    expect(ensureDraftOwned).toHaveBeenCalledTimes(1);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -533,7 +538,7 @@ function mountSubmitHook(args: {
       imagesUnsupported: false,
       attachmentPreparationPending: false,
       draftUnowned: false,
-      ensureDraftOwned: () => Promise.resolve(true),
+      settleDraftOwnership: () => Promise.resolve(),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),

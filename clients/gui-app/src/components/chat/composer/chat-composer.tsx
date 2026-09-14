@@ -58,7 +58,6 @@ import { cn } from "@/lib/utils";
 import { useTabHostClient } from "@/hooks/host/use-tab-host-client";
 import { useTabHostId } from "@/components/epic-canvas/hooks/use-tab-host-id";
 import { hasLandingImageBytes } from "@/lib/composer/landing-image-store";
-import { ChatComposerDraftClaimNotice } from "./chat-composer-draft-authority";
 import { useChatComposerDraftAuthority } from "@/hooks/drafts/use-chat-composer-draft-authority";
 
 import type { ComposerPromptEditorHandle } from "./composer-prompt-editor";
@@ -587,7 +586,7 @@ function ChatComposerImpl(props: ChatComposerProps) {
       imagesUnsupported,
       attachmentPreparationPending: pastePending,
       draftUnowned: authority.unowned,
-      ensureDraftOwned: authority.ensureOwned,
+      settleDraftOwnership: authority.settleOwnership,
       onSubmitMessage,
       onSideChat,
     });
@@ -658,7 +657,6 @@ function ChatComposerImpl(props: ChatComposerProps) {
 
   return (
     <>
-      <ChatComposerDraftClaimNotice authority={authority} />
       <ChatComposerFallbackBanners
         topBannerKind={topBannerKind}
         fallback={providerFallback}

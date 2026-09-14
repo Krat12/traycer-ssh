@@ -92,18 +92,14 @@ interface UseChatComposerSubmitArgs {
   readonly imagesUnsupported: boolean;
   readonly attachmentPreparationPending: boolean;
   /**
-   * True while this chat's draft is a replica of another host's row that has
-   * not been claimed. The editor stays live (the first edit claims), but a
-   * send needs this host to own the row first, so `submitDraft` claims
-   * through `ensureDraftOwned` and re-enters once ownership lands.
+   * True while this chat's draft row is one this host does not own (demoted
+   * to a replica after a claim elsewhere). The editor stays live (the first
+   * edit claims), and a send lets a pending or fresh claim settle first so
+   * the row it clears is one this host owns; it proceeds either way.
    */
   readonly draftUnowned: boolean;
-  /**
-   * Claims an unowned draft for this host before the send; resolves `false`
-   * on a refusal, which the authority notice narrates inline. The send
-   * itself is untouched: it re-enters `submitDraft` once ownership lands.
-   */
-  readonly ensureDraftOwned: () => Promise<boolean>;
+  /** Resolves once the claim has settled, claimed or refused. Never throws. */
+  readonly settleDraftOwnership: () => Promise<void>;
   readonly onSubmitMessage:
     | ((input: ChatComposerSubmitInput) => boolean)
     | null;
@@ -180,7 +176,7 @@ export function useChatComposerSubmit(
     imagesUnsupported,
     attachmentPreparationPending,
     draftUnowned,
-    ensureDraftOwned,
+    settleDraftOwnership,
     onSubmitMessage,
     onSideChat,
   } = args;
@@ -245,18 +241,26 @@ export function useChatComposerSubmit(
     ],
   );
 
-  // The latest send, for the claim continuation below: the claim resolves
-  // after a re-render in which `draftUnowned` flipped, and re-entering the
-  // stale closure would claim again forever.
+  // The latest send, for the ownership continuation below: the claim settles
+  // after a re-render, and the stale closure would gate on a `draftUnowned`
+  // that may have flipped. `ownershipSettled` marks the one re-entry that
+  // must not gate again - a refused claim leaves the draft unowned, and the
+  // send proceeds on the row as it is rather than settling forever.
   const submitDraftRef = useRef<(source: ChatComposerSubmitSource) => void>(
     () => undefined,
   );
+  const ownershipSettled = useRef(false);
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
-      if (draftUnowned) {
-        void ensureDraftOwned().then((owned) => {
-          if (owned) submitDraftRef.current(source);
+      if (draftUnowned && !ownershipSettled.current) {
+        void settleDraftOwnership().then(() => {
+          ownershipSettled.current = true;
+          try {
+            submitDraftRef.current(source);
+          } finally {
+            ownershipSettled.current = false;
+          }
         });
         return;
       }
@@ -418,7 +422,7 @@ export function useChatComposerSubmit(
       clearAcceptedDraft,
       draftUnowned,
       editorRef,
-      ensureDraftOwned,
+      settleDraftOwnership,
       finalizeSend,
       onSideChat,
       pickerStore,

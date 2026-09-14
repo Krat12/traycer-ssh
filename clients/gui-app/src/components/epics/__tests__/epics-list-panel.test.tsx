@@ -50,6 +50,10 @@ import { useAuthStore } from "@/stores/auth/auth-store";
 import { useImportedUnseenStore } from "@/stores/session-import/imported-unseen-store";
 import { harnessDisplayName } from "@/components/session-import/session-import-model";
 import { DEFAULT_HISTORY_SEARCH } from "@/lib/history-search";
+import {
+  landingDraftIsRetired,
+  resetLandingDraftRetirementsForTests,
+} from "@/lib/drafts/landing-draft-retirement";
 import type { JsonContent } from "@traycer/protocol/common/registry";
 import { DraftSurfaceContext } from "@/providers/draft-surface-context";
 import { WindowsBridgeContext } from "@/providers/windows-bridge-context";
@@ -485,6 +489,7 @@ describe("<EpicsListPanel />", () => {
     // pin assertion below would pass vacuously against a disabled control.
     useAuthStore.setState({ status: "signed-in" });
     resetImportedUnseenStore();
+    resetLandingDraftRetirementsForTests();
   });
 
   it("lets a destination picker replace normal row navigation", async () => {
@@ -3440,6 +3445,24 @@ describe("<EpicsListPanel />", () => {
     await waitFor(() => {
       expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
     });
+  });
+
+  it("retires a foreign-owned draft locally when the claim is refused", async () => {
+    const draftId = seedForeignOwnedLandingDraft("refused draft");
+    draftClaimTestState.claim.mockResolvedValue({ status: "failed" });
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    await waitFor(() => {
+      expect(
+        useLandingDraftStore
+          .getState()
+          .drafts.some((draft) => draft.id === draftId),
+      ).toBe(false);
+    });
+    expect(landingDraftIsRetired(draftId)).toBe(true);
   });
 
   it("caps the draft block and expands it on request", async () => {
