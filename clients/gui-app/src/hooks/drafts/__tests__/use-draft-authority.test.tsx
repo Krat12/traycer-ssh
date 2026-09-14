@@ -1044,6 +1044,109 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("a re-claim that joins an attempt relabels every successor already chained from it, so a later successor's own re-claim cannot rejoin an ancestor under the old identity", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    const third = deferred<DraftClaimResult>();
+    const fourth = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    // ownerHostId never names any host this test visits, so `unowned` reads
+    // true on host-a, host-b and host-c throughout - only `tabHostId` moves.
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-z",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    // Attempt 1: an independent claim on host-a via noteEdit.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-1");
+
+    // The surface moves to host-b. Attempt 2: an independent claim there via
+    // settleOwnership, left pending.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // The surface moves to host-c (unowned there too). Attempt 2 refuses
+    // while host-c is current, so its own re-claim continuation chains a
+    // fresh attempt 3 there automatically - no explicit edit needed.
+    claimMock.claim.mockReturnValueOnce(third.promise);
+    view.rerender({ tabHostId: "host-c" });
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await second.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(3, "draft-1");
+
+    // The surface returns to host-b BEFORE attempt 1 (still on host-a) has
+    // settled.
+    view.rerender({ tabHostId: "host-b" });
+
+    // Attempt 1 now refuses. Its re-claim, avoiding its own chain, joins
+    // attempt 2 - still in flight because it awaits attempt 3 - so no new
+    // claim is started (still 3 total). This join must relabel attempt 2
+    // AND attempt 3 (already chained from it) with attempt 1's chain
+    // identity, not just attempt 2.
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(3);
+    // Attempt 1 is now chained through attempt 2 into attempt 3, so its own
+    // settlement is deferred - nothing has repaired yet.
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settleResolved).toBe(false);
+
+    // The surface is on host-b when attempt 3 refuses. Its re-claim must NOT
+    // join attempt 2 - after the relabel above, attempt 2 shares attempt 1's
+    // chain identity, which is now an ancestor of attempt 3's re-claim - so a
+    // fresh attempt 4 is started on host-b instead of a deadlocking rejoin.
+    claimMock.claim.mockReturnValueOnce(fourth.promise);
+    await act(async () => {
+      third.resolve({ status: "unavailable", reason: "not-found" });
+      await third.promise;
+    });
+    await waitFor(() => {
+      expect(claimMock.claim).toHaveBeenCalledTimes(4);
+    });
+    expect(claimMock.claim).toHaveBeenNthCalledWith(4, "draft-1");
+
+    // The original settle (started on attempt 2) resolves only once attempt
+    // 4 settles - the whole chain (1 -> 2 -> 3 -> 4) resolves together.
+    await act(async () => {
+      fourth.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+    expect(settleResolved).toBe(true);
+    expect(settled).not.toBeNull();
+    // Attempt 4 inherited suppression down the chain, so its refusal does
+    // not repair on its own - only an explicit abandon would release it.
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(claimMock.claim).toHaveBeenCalledTimes(4);
+  });
+
   // Contrast (unforced `noteEdit` joins an in-flight attempt rather than
   // starting a new one) is already covered above by "unowned draft: first
   // noteEdit claims once with the draftId; a second noteEdit while pending

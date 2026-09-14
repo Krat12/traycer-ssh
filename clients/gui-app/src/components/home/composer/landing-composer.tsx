@@ -330,7 +330,15 @@ export function LandingComposer(props: LandingComposerProps) {
     }),
   );
   const seenEditMark = useRef<typeof landingEditMark | null>(null);
+  // The host the watcher last saw resolved. A placement that had NO host
+  // while a claim was refused could start no successor, and the host that
+  // resolves next brings no generation bump: the dirty unowned row is
+  // re-armed on that transition.
+  const seenResolvedHost = useRef<string | null>(null);
   useEffect(() => {
+    const hostResolved =
+      seenResolvedHost.current === null && resolvedHostId !== null;
+    seenResolvedHost.current = resolvedHostId;
     const seen = seenEditMark.current;
     if (seen === null) {
       seenEditMark.current = landingEditMark;
@@ -342,6 +350,9 @@ export function LandingComposer(props: LandingComposerProps) {
         authority.noteEdit();
       }
       return;
+    }
+    if (hostResolved && landingEditMark.dirty && authority.unowned) {
+      authority.noteEdit();
     }
     if (landingEditMark.generation <= seen.generation) {
       // A host echo moves fields without a bump. Take the new snapshot so a

@@ -280,7 +280,17 @@ export function useDraftAuthorityControl(args: {
             chain: entry.chain,
           });
           if (next === null) return null;
-          next.chain = entry.chain;
+          // One identity for the WHOLE chain being joined: the joined attempt
+          // may already have chained into successors of its own, and a
+          // successor left on the old identity could later rejoin the
+          // attempt it descends from (a B -> C -> B cycle).
+          for (
+            let link: PendingClaim | null = next;
+            link !== null;
+            link = link.chained
+          ) {
+            link.chain = entry.chain;
+          }
           // A submit that settled on this attempt is settling on the chain:
           // the re-claim inherits its suppression (a refusal there would
           // otherwise fork the draft under the deferred send); `abandon`
