@@ -1717,6 +1717,11 @@ function adoptOwnershipOverLocalEdit(
   document: DraftDocument,
   existing: LandingDraftTab,
 ): void {
+  // Revisions are per owner. A row that moves to another host starts from
+  // that host's revision, else `rememberSynced`'s monotonic max would keep
+  // the previous owner's (possibly far higher) revision and the stale-read
+  // guard would reject the new owner's next echoes.
+  const ownerChanged = existing.ownerHostId !== document.ownerHostId;
   useLandingDraftStore.setState((state) => ({
     drafts: state.drafts.map((draft) =>
       draft.id === document.draftId
@@ -1726,6 +1731,7 @@ function adoptOwnershipOverLocalEdit(
             ownerHostId: document.ownerHostId,
             origin: document.origin,
             publication: document.publication,
+            hostRevision: ownerChanged ? document.revision : draft.hostRevision,
           }
         : draft,
     ),

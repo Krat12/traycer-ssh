@@ -874,21 +874,34 @@ export function LandingComposer(props: LandingComposerProps) {
   // One action per settle. A second Enter or Start while the claim is in
   // flight would attach a second continuation to the same claim, and each
   // would create its own epic - nothing else marks the composer busy during
-  // the claim.
+  // the claim. The continuation re-enters the LATEST handler through a ref
+  // so every guard (`canSubmit`, workspace, submitting) is re-read after the
+  // claim, with `ownershipSettled` marking the one re-entry that must not
+  // settle again - a refused claim leaves the draft unowned.
   const ownershipSettling = useRef(false);
+  const ownershipSettled = useRef(false);
+  const handleSubmitRef = useRef<() => void>(() => undefined);
   const handleSubmit = useCallback(() => {
     if (!canSubmit) return;
-    if (authority.unowned) {
+    if (authority.unowned && !ownershipSettled.current) {
       if (ownershipSettling.current) return;
       ownershipSettling.current = true;
       void authority.settleOwnership().finally(() => {
         ownershipSettling.current = false;
-        dispatchSubmit();
+        ownershipSettled.current = true;
+        try {
+          handleSubmitRef.current();
+        } finally {
+          ownershipSettled.current = false;
+        }
       });
       return;
     }
     dispatchSubmit();
   }, [authority, canSubmit, dispatchSubmit]);
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
 
   const dispatchStartTerminal = useCallback(
     (launch: TerminalAgentLaunch) => {
@@ -899,17 +912,25 @@ export function LandingComposer(props: LandingComposerProps) {
     },
     [actions, draftId, raiseHostNotice],
   );
+  const handleStartTerminalRef = useRef<(launch: TerminalAgentLaunch) => void>(
+    () => undefined,
+  );
   const handleStartTerminal = useCallback(
     (launch: TerminalAgentLaunch) => {
       if (!workspaceCanStart || isSubmitting) return;
       // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
       // is restated here: an agent is created off the draft.
-      if (authority.unowned) {
+      if (authority.unowned && !ownershipSettled.current) {
         if (ownershipSettling.current) return;
         ownershipSettling.current = true;
         void authority.settleOwnership().finally(() => {
           ownershipSettling.current = false;
-          dispatchStartTerminal(launch);
+          ownershipSettled.current = true;
+          try {
+            handleStartTerminalRef.current(launch);
+          } finally {
+            ownershipSettled.current = false;
+          }
         });
         return;
       }
@@ -917,6 +938,9 @@ export function LandingComposer(props: LandingComposerProps) {
     },
     [authority, dispatchStartTerminal, isSubmitting, workspaceCanStart],
   );
+  useEffect(() => {
+    handleStartTerminalRef.current = handleStartTerminal;
+  }, [handleStartTerminal]);
 
   const handleRemoveImage = useCallback(
     (id: string) => {

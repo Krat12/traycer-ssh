@@ -28,6 +28,11 @@ export interface DraftAuthorityControl {
   readonly settleOwnership: () => Promise<void>;
 }
 
+interface PendingClaim {
+  readonly promise: Promise<boolean>;
+  repairArmed: boolean;
+}
+
 export function useDraftAuthorityControl(args: {
   readonly draftId: string | null;
   readonly ownerHostId: string | null;
@@ -46,17 +51,13 @@ export function useDraftAuthorityControl(args: {
     args.tabHostId !== null &&
     args.draftId !== null &&
     draftRequiresClaim(args.ownerHostId, args.origin, args.tabHostId);
-  // Keyed by the draft it is for: this hook instance can move to another
-  // draft while a claim is pending (a chat draft's identity is re-minted by
-  // the repair), and B must not ride A's outcome.
-  // `repairArmed` records whether an edit has attached the refusal repair
-  // to this attempt: a claim the submit path started has none, and the
-  // first edit that joins it arms exactly one.
-  const inflight = useRef<{
-    readonly draftId: string;
-    readonly promise: Promise<boolean>;
-    repairArmed: boolean;
-  } | null>(null);
+  // Every pending claim, keyed by the draft it is for: this hook instance
+  // can move to another draft while a claim is pending (a chat draft's
+  // identity is re-minted by the repair) and back again, and B must not ride
+  // A's outcome nor A be claimed twice. `repairArmed` records whether an edit
+  // has attached the refusal repair to an attempt: a claim the submit path
+  // started has none, and the first edit that joins it arms exactly one.
+  const inflight = useRef(new Map<string, PendingClaim>());
   // Read through a ref by the in-flight continuation: the repair belongs to
   // the render that observes the refusal, not the one that started the claim
   // - but only for THAT draft. Keyed by draftId like `inflight`, so a claim
@@ -79,8 +80,8 @@ export function useDraftAuthorityControl(args: {
   const runClaim = useCallback((): Promise<boolean> => {
     const draftId = args.draftId;
     if (draftId === null) return Promise.resolve(false);
-    const pending = inflight.current;
-    if (pending !== null && pending.draftId === draftId) return pending.promise;
+    const pending = inflight.current.get(draftId);
+    if (pending !== undefined) return pending.promise;
     const promise = (async (): Promise<boolean> => {
       const result = await claimDraft(draftId);
       if (result.status !== "ok" && result.status !== "already-owned") {
@@ -89,11 +90,13 @@ export function useDraftAuthorityControl(args: {
       await applyIncomingDraftDocument(result.draft);
       return true;
     })();
-    const entry = { draftId, promise, repairArmed: false };
+    const entry: PendingClaim = { promise, repairArmed: false };
     void promise.finally(() => {
-      if (inflight.current === entry) inflight.current = null;
+      if (inflight.current.get(draftId) === entry) {
+        inflight.current.delete(draftId);
+      }
     });
-    inflight.current = entry;
+    inflight.current.set(draftId, entry);
     return promise;
   }, [args.draftId, claimDraft]);
 
@@ -101,24 +104,15 @@ export function useDraftAuthorityControl(args: {
     if (!unowned) return;
     // `unowned` narrows `args.draftId` to a string.
     const draftId = args.draftId;
-    const pending = inflight.current;
     // An edit joins a claim already in flight - one the submit path or an
     // earlier edit started - and arms the repair on it once. Dropping the
     // edit instead would leave it on the unowned identity if that claim is
     // refused.
-    if (pending !== null && pending.draftId === draftId) {
-      if (pending.repairArmed) return;
-      pending.repairArmed = true;
-      void pending.promise.then((owned) => {
-        if (!owned) repairFor(draftId);
-      });
-      return;
-    }
     void runClaim();
-    const started = inflight.current;
-    if (started === null || started.draftId !== draftId) return;
-    started.repairArmed = true;
-    void started.promise.then((owned) => {
+    const entry = inflight.current.get(draftId);
+    if (entry === undefined || entry.repairArmed) return;
+    entry.repairArmed = true;
+    void entry.promise.then((owned) => {
       if (!owned) repairFor(draftId);
     });
   }, [args.draftId, repairFor, runClaim, unowned]);

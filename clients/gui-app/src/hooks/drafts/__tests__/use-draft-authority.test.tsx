@@ -339,6 +339,54 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEdit).not.toHaveBeenCalled();
   });
 
+  it("returning to a draft with a pending claim joins it", async () => {
+    const repairOnEditA = vi.fn();
+    const repairOnEditB = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { draftId: string; repairOnEdit: () => void }) =>
+        useDraftAuthorityControl({
+          draftId: props.draftId,
+          ownerHostId: "host-b",
+          origin: "own",
+          tabHostId: "host-a",
+          client: CLIENT,
+          repairOnEdit: props.repairOnEdit,
+        }),
+      { initialProps: { draftId: "draft-a", repairOnEdit: repairOnEditA } },
+    );
+
+    // Claims draft-a; the claim stays pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+    expect(claimMock.claim).toHaveBeenNthCalledWith(1, "draft-a");
+
+    // Move to an unowned draft-b without editing it.
+    view.rerender({ draftId: "draft-b", repairOnEdit: repairOnEditB });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Return to draft-a: the still-pending claim is joined, not re-started.
+    view.rerender({ draftId: "draft-a", repairOnEdit: repairOnEditA });
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await first.promise;
+    });
+
+    await waitFor(() => {
+      expect(repairOnEditA).toHaveBeenCalledTimes(1);
+    });
+    expect(repairOnEditB).not.toHaveBeenCalled();
+  });
+
   it("settleOwnership on a refusal resolves and does not call repairOnEdit", async () => {
     const repairOnEdit = vi.fn();
     claimMock.claim.mockResolvedValueOnce({
