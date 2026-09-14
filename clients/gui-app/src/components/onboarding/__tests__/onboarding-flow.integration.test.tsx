@@ -722,6 +722,20 @@ describe("completion toast", () => {
     );
   });
 
+  it("has a plain Dismiss that closes the toast without opening anything", () => {
+    const api = fakeSettingsApi();
+    setSystemTabModalApi(api);
+    render(<OnboardingFlowHost />);
+    completeChainViaFinish();
+    renderShownToast();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(seam.toastDismiss).toHaveBeenCalledWith(
+      ONBOARDING_COMPLETION_TOAST_ID,
+    );
+    expect(seam.openLink).not.toHaveBeenCalled();
+    expect(api.openSettings).not.toHaveBeenCalled();
+  });
+
   it("Learn more is retained (disabled, not dismissed) when the Settings bridge vanished before the click", () => {
     const api = fakeSettingsApi();
     setSystemTabModalApi(api);

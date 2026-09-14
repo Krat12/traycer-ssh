@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useOpenLink } from "@/lib/links/open-link";
@@ -102,7 +103,9 @@ export function OnboardingCompletionToast(): ReactNode {
  * Two actions, both dispatched at most once (the ref holds inside the same
  * tick, where a second click can land while the toast is on its way out),
  * in the `ActionToastContent` layout - but a dedicated body: that one
- * hardcodes "Later", and neither of these is a later.
+ * hardcodes "Later", and neither of these is a later. A plain dismiss is
+ * still owed (the toast never times out, and sonner draws no close button
+ * on a JSX toast), so an icon close sits in the corner.
  *
  * "Learn more" re-checks that the Settings bridge is still published at
  * click time: if it vanished (a host gate re-closing), the navigation would
@@ -165,6 +168,18 @@ export function OnboardingCompletionToastContent(props: {
           Learn more
         </Button>
       </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        className="-mt-1 -mr-1 shrink-0 self-start"
+        aria-label="Dismiss"
+        onClick={() => {
+          toast.dismiss(props.toastId);
+        }}
+      >
+        <XIcon />
+      </Button>
     </div>
   );
 }
