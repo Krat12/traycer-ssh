@@ -243,15 +243,38 @@ describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placeme
     expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
   });
 
-  it("collectAllDirtyWrites skips a landing row adopted on hostId when the placement points elsewhere", () => {
-    const id = "own-skip-collect";
+  it("collectAllDirtyWrites skips only the row whose edit was withheld; a row dirtied before the placement moved still syncs", () => {
+    const withheld = "own-skip-collect";
+    const preTransition = "own-pre-transition";
+    bindLandingAdoptionHost(HOST_B);
+    useLandingDraftStore.setState({
+      drafts: [
+        ownAdoptedLandingDraft(withheld),
+        ownAdoptedLandingDraft(preTransition),
+      ],
+      activeDraftId: null,
+    });
+    notifyDraftLocalEdit(withheld);
+
+    expect(
+      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
+    ).toEqual([preTransition]);
+  });
+
+  it("a withheld row is swept again once the placement returns to its adoption host", () => {
+    const id = "own-held-then-returned";
     bindLandingAdoptionHost(HOST_B);
     useLandingDraftStore.setState({
       drafts: [ownAdoptedLandingDraft(id)],
       activeDraftId: null,
     });
-
+    notifyDraftLocalEdit(id);
     expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
+
+    bindLandingAdoptionHost(HOST_A);
+    expect(
+      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
+    ).toEqual([id]);
   });
 
   it("contrast: collectAllDirtyWrites includes the row when the placement matches its adoption host", () => {

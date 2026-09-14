@@ -145,6 +145,13 @@ function interviewBindingRefKey(bindingKey: string, hostId: string): string {
 
 /** Placement host that may lazily adopt landing drafts (decision #9). */
 let landingAdoptionHostId: string | null = null;
+/**
+ * Own landing rows whose edit `routeLocalEdit` withheld because their
+ * adoption host is not the current placement (an auto-follow). Only these
+ * are held back from the old host's dirty sweep: a row dirtied BEFORE the
+ * placement moved still finishes syncing there.
+ */
+const heldLandingEdits = new Set<string>();
 
 /** Host that last published or ingested each stash id. */
 const stashHostById = new Map<string, string>();
@@ -477,9 +484,14 @@ async function applyHostDocument(
 function collectAllDirtyWrites(hostId: string): readonly DraftDirtyWrite[] {
   const out: DraftDirtyWrite[] = [];
   for (const { draft } of collectLandingDirtyWrites(hostId)) {
-    // Held while the landing placement points elsewhere (see
-    // `routeLocalEdit`); the placement host's claim re-routes the row.
-    if (landingAdoptionHostId !== null && hostId !== landingAdoptionHostId) {
+    // An edit withheld by `routeLocalEdit` (placement moved elsewhere) is
+    // not swept onto the old host either; the placement host's claim
+    // re-routes the row.
+    if (
+      heldLandingEdits.has(draft.id) &&
+      landingAdoptionHostId !== null &&
+      hostId !== landingAdoptionHostId
+    ) {
       continue;
     }
     out.push({
@@ -660,8 +672,10 @@ function routeLocalEdit(draftId: string): void {
     landingAdoptionHostId !== null &&
     landing.adoption.hostId !== landingAdoptionHostId
   ) {
+    heldLandingEdits.add(draftId);
     return;
   }
+  heldLandingEdits.delete(draftId);
   if (landing !== undefined && landing.adoption.state === "unadopted") {
     if (landingAdoptionHostId === null) return;
     sessions.get(landingAdoptionHostId)?.session.noteDirty(draftId);
@@ -671,6 +685,7 @@ function routeLocalEdit(draftId: string): void {
 }
 
 function routeLocalDelete(draftId: string): void {
+  heldLandingEdits.delete(draftId);
   const session = sessionForDraft(draftId);
   if (session === null) return;
   void session.deleteOnHost(draftId).then((deleted) => {
@@ -819,6 +834,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   interviewBindingRefs.clear();
   newChatHostByEpicId.clear();
   landingAdoptionHostId = null;
+  heldLandingEdits.clear();
   stashHostById.clear();
   stashSeenOnHost.clear();
   warnedUnboundComposer.clear();
