@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useReducedMotion } from "motion/react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ACTIONS,
   EVENTS,
@@ -16,28 +17,32 @@ import {
 } from "react-joyride";
 import { useShallow } from "zustand/react/shallow";
 import { Analytics, AnalyticsEvent } from "@/lib/analytics";
+import { activateTabIntent, openOrFocusEpicIntent } from "@/lib/tab-navigation";
 import {
   selectPresentedModalCount,
   useModalPresenceStore,
 } from "@/components/ui/modal-presence";
 import {
   buildTourSteps,
+  TASK_PANELS_UNBOUND_BODY,
   TOUR_LESSONS,
   tourLessonTitle,
+  type TourStepAction,
 } from "@/components/onboarding/tour/tour-steps";
 import {
   getActivationToken,
   startActivationWatch,
   subscribeActivation,
 } from "@/components/onboarding/tour/tour-activation";
+import { useLiveBrowserGuestPresent } from "@/components/onboarding/tour/use-live-browser-guest-present";
 import {
   createTargetTracker,
   cssAttributeValue,
   observeTourTargets,
   resolveAnchor,
   resolveHistoryRow,
+  resolveLatestHistoryEpicId,
   resolvePanelTarget,
-  type TargetResolution,
   type TargetSnapshot,
   type TargetTracker,
   type TourSurfaceScope,
@@ -112,10 +117,15 @@ export interface OnboardingTourController {
   /** Joyride's controlled `stepIndex`. */
   readonly stepIndex: number;
   /** `key` for `<Joyride>`: a new value re-presents the active lesson. */
-  readonly epoch: number;
+  readonly rendererKey: string;
   readonly presentation: TourPresentation;
   /** A counted modal or the folder picker owns the screen (and Esc). */
   readonly modalSuspended: boolean;
+  /**
+   * A live local browser guest is on screen: the lesson stays, as the
+   * unanchored card, since no dim can cover a native view.
+   */
+  readonly spotlightSuspended: boolean;
   readonly reducedMotion: boolean;
   readonly onEvent: (data: EventData) => void;
   /** Polite live-region text for the step that just presented. */
@@ -427,39 +437,38 @@ function resolveLessonTarget(
   tourId: TourId,
   lesson: LessonContext,
   historyEpicIds: ReadonlyArray<string>,
-): TargetResolution {
-  const none: TargetResolution = { node: null, scrollNode: null };
+): HTMLElement | null {
   if (tourId === "task-panels") {
-    if (lesson.tabId === null) return none;
-    return {
-      node: resolvePanelTarget({ kind: "epic", tabId: lesson.tabId }),
-      scrollNode: null,
-    };
+    if (lesson.tabId === null) return null;
+    return resolvePanelTarget({ kind: "epic", tabId: lesson.tabId });
   }
-  if (lesson.draftId === null) return none;
+  if (lesson.draftId === null) return null;
   const scope: TourSurfaceScope = { kind: "draft", draftId: lesson.draftId };
+  if (tourId === "add-folder") {
+    // The bare Add button only renders while the draft has no folder; with
+    // one bound, the lesson points at the workspace summary that opens the
+    // picker (the copy still reads "Add a folder"; the predicate is the
+    // same new-path check either way).
+    return (
+      resolveAnchor(scope, "landing-folder-add") ??
+      resolveAnchor(scope, "landing-workspace-summary")
+    );
+  }
   if (tourId === "submit-prompt") {
     // While the composer is in terminal mode Send is not rendered; the mode
     // switch is the alternate presentation target of the same step.
-    return {
-      node:
-        resolveAnchor(scope, "landing-send") ??
-        resolveAnchor(scope, "landing-terminal-switch"),
-      scrollNode: null,
-    };
+    return (
+      resolveAnchor(scope, "landing-send") ??
+      resolveAnchor(scope, "landing-terminal-switch")
+    );
   }
   if (tourId === "history") {
-    // Unresolved until the first imported/unseen row is mounted (decision
-    // 19): unrelated rows already in the list are not the lesson's, and
-    // without a row the timeout fallback must run.
-    const row = resolveHistoryRow(scope, historyEpicIds);
-    if (row === null) return none;
-    return { node: resolveAnchor(scope, "landing-history"), scrollNode: row };
+    // The first imported/unseen ROW, once mounted (decision 19): unrelated
+    // rows already in the list are not the lesson's, and the list itself
+    // is taller than the viewport, so the card anchors to the row.
+    return resolveHistoryRow(scope, historyEpicIds);
   }
-  return {
-    node: resolveAnchor(scope, TOUR_LESSONS[tourId].anchor),
-    scrollNode: null,
-  };
+  return resolveAnchor(scope, TOUR_LESSONS[tourId].anchor);
 }
 
 interface TargetTracking {
@@ -503,27 +512,97 @@ function useTargetTracking(
   return { tracker, target, lessonKey };
 }
 
-function buildSteps(
-  order: ReadonlyArray<TourId>,
-  activeTourId: TourId | null,
-  target: TargetSnapshot,
-  lessonKey: string | null,
-): Step[] {
+/** What the unanchored card says and offers when the lesson has no task. */
+interface UnboundPresentation {
+  readonly content: string;
+  readonly action: TourStepAction | null;
+}
+
+interface StepsInput {
+  readonly order: ReadonlyArray<TourId>;
+  readonly activeTourId: TourId | null;
+  readonly target: TargetSnapshot;
+  readonly lessonKey: string | null;
+  readonly unbound: UnboundPresentation | null;
+  readonly spotlightSuspended: boolean;
+}
+
+function buildSteps(input: StepsInput): Step[] {
+  const {
+    order,
+    activeTourId,
+    target,
+    lessonKey,
+    unbound,
+    spotlightSuspended,
+  } = input;
   if (activeTourId === null) return [];
-  // A snapshot resolved for a previous lesson/context never anchors this
-  // one: until the tracker has re-resolved, the step resolves to nothing
-  // (Joyride waits) rather than to the previous lesson's node.
+  // Anchored only on a node resolved for THIS lesson/context, and only
+  // while a spotlight can be drawn. Anything else - a snapshot from the
+  // previous lesson, no node yet, a node Joyride refused, a live browser
+  // guest the dim cannot cover - is the unanchored card at once: the same
+  // lesson, centred, no dim, Next / Skip / Esc live. Never a bare dim while
+  // a target is missing (an anchor that mounts later re-presents under a
+  // new epoch).
   const fresh = target.key === lessonKey;
-  if (fresh && target.unanchored) {
-    return buildTourSteps(order, activeTourId, { kind: "unanchored" });
+  const node =
+    fresh && !target.unanchored && !spotlightSuspended ? target.node : null;
+  if (node === null) {
+    return buildTourSteps(order, activeTourId, {
+      kind: "unanchored",
+      content: unbound?.content ?? null,
+      action: unbound?.action ?? null,
+    });
   }
-  const node = fresh ? target.node : null;
-  const scrollNode = fresh ? target.scrollNode : null;
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
-    scrollTarget: scrollNode === null ? null : () => scrollNode,
+    presented: target.presented,
   });
+}
+
+/**
+ * Opens (or focuses) an epic tab through the tab-navigation seam: what
+ * Next on the history lesson and "Open latest task" do. The two places
+ * the tour opens a task on the user's behalf, both on a gesture of theirs
+ * - never to satisfy an anchor on its own.
+ */
+function useOpenEpicTab(): (epicId: string) => void {
+  const navigate = useNavigate();
+  return useCallback(
+    (epicId: string) => {
+      activateTabIntent(
+        navigate,
+        openOrFocusEpicIntent({ epicId, focus: undefined }),
+        undefined,
+      );
+    },
+    [navigate],
+  );
+}
+
+/**
+ * The most recent task in the context draft's history list, tracked while
+ * `enabled` (the panels lesson with no task bound), for "Open latest task".
+ * A string snapshot, so the DOM observer only re-renders on a change.
+ */
+function useLatestHistoryEpicId(
+  draftId: string | null,
+  enabled: boolean,
+): string | null {
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      enabled ? observeTourTargets(listener) : () => undefined,
+    [enabled],
+  );
+  const getSnapshot = useCallback(
+    () =>
+      enabled && draftId !== null
+        ? resolveLatestHistoryEpicId({ kind: "draft", draftId })
+        : null,
+    [enabled, draftId],
+  );
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /** Focus origin, restored on pause / end only; chain-end analytics. */
@@ -612,12 +691,14 @@ function handleStepAfter(
   data: EventData,
   active: ActiveStep,
   guardedAdvance: GuardedAdvance,
+  onHistoryNext: () => void,
 ): void {
   // F1: a suspension (`run` -> false) emits step:after with the LAST
   // tracked action and status "paused". Only a running step counts.
   if (data.status !== STATUS.RUNNING) return;
   if (data.action === ACTIONS.NEXT) {
-    guardedAdvance(active.tourId, active.stepId, "next");
+    const advanced = guardedAdvance(active.tourId, active.stepId, "next");
+    if (advanced && active.tourId === "history") onHistoryNext();
   } else if (data.action === ACTIONS.CLOSE) {
     dismissedThisLaunch = true;
     trackStep(active.tourId, active.stepId, "pause");
@@ -645,12 +726,16 @@ interface EventAdapter {
  * built for: a late event from a replaced renderer, a stale replay or
  * another lesson reaches no store action.
  */
-function useEventAdapter(
-  active: ActiveStep | null,
-  activation: number,
-  tracking: TargetTracking,
-  guardedAdvance: GuardedAdvance,
-): EventAdapter {
+interface EventAdapterInput {
+  readonly active: ActiveStep | null;
+  readonly activation: number;
+  readonly tracking: TargetTracking;
+  readonly guardedAdvance: GuardedAdvance;
+  readonly onHistoryNext: () => void;
+}
+
+function useEventAdapter(input: EventAdapterInput): EventAdapter {
+  const { active, activation, tracking, guardedAdvance, onHistoryNext } = input;
   const { tracker, target } = tracking;
   const epoch = target.epoch;
   const [announcement, setAnnouncement] = useState<string | null>(null);
@@ -665,22 +750,48 @@ function useEventAdapter(
           `Step ${data.index + 1} of ${data.size}: ${tourLessonTitle(active.tourId)}`,
         );
       } else if (data.type === EVENTS.TARGET_NOT_FOUND) {
-        // F4: upstream leaves a full dim with no card here. Same lesson,
-        // centred card, no cutout; progress untouched.
+        // F4: Joyride refused a node the resolver accepted, and upstream
+        // would leave a full dim with no card. Same lesson, centred card,
+        // no cutout; progress untouched.
         tracker.markUnanchored();
       } else if (data.type === EVENTS.STEP_AFTER) {
-        handleStepAfter(data, active, guardedAdvance);
+        handleStepAfter(data, active, guardedAdvance, onHistoryNext);
       } else if (data.type === EVENTS.TOUR_END) {
         handleTourEnd(data, active);
       }
     },
-    [activation, epoch, active, guardedAdvance, tracker],
+    [activation, epoch, active, guardedAdvance, onHistoryNext, tracker],
   );
   return { onEvent, announcement };
 }
 
+/**
+ * Next on the history lesson with no epic on screen: the panels lesson
+ * that follows needs a task, so the imported one the card pointed at (else
+ * the first imported/unseen id) is opened. The user chose to move on from
+ * "open a task to keep going" - a gesture, not an anchor pulling them
+ * somewhere. An epic already focused (one the lesson ignored at entry) is
+ * left as the panels lesson's task instead.
+ */
+function useHistoryNext(
+  tracking: TargetTracking,
+  historyEpicIds: ReadonlyArray<string>,
+  openEpicTab: (epicId: string) => void,
+): () => void {
+  const { target, lessonKey } = tracking;
+  const rowEpicId =
+    target.key === lessonKey ? (target.node?.dataset.epicId ?? null) : null;
+  return useCallback(() => {
+    const focused = selectHostFocusedRef(useTabsStore.getState());
+    if (focused !== null && focused.kind === "epic") return;
+    const epicId = rowEpicId ?? historyEpicIds.at(0) ?? null;
+    if (epicId !== null) openEpicTab(epicId);
+  }, [rowEpicId, historyEpicIds, openEpicTab]);
+}
+
 interface PredicateArgs {
   readonly chainActive: boolean;
+  readonly chainScope: "branch" | "single";
   readonly active: ActiveStep | null;
   readonly activation: number;
   readonly lesson: LessonContext;
@@ -725,17 +836,55 @@ function useFolderPredicate(args: PredicateArgs): void {
 }
 
 /**
- * terminal-mode: the bound draft's composer is in terminal mode (already
- * there at entry counts too). Never resets the mode.
+ * terminal-mode: the bound draft's composer is in terminal mode. Never
+ * resets the mode. In the branch chain, already there at entry counts too
+ * (the user did the thing during an earlier lesson). A Settings replay of
+ * the one lesson needs a CHANGE after activation - a composer left in
+ * Terminal would otherwise complete the replay in the tick it started,
+ * with no card ever shown - so it advances only on a switch INTO terminal
+ * mode observed since entry; Next still acknowledges.
  */
 function useTerminalModePredicate(args: PredicateArgs): void {
-  const { chainActive, active, inputs, guardedAdvance } = args;
+  const {
+    chainActive,
+    chainScope,
+    active,
+    activation,
+    lesson,
+    inputs,
+    guardedAdvance,
+  } = args;
   const { composerMode, pendingAttempt } = inputs;
+  const baselineRef = useRef<{ key: string; sawOtherMode: boolean } | null>(
+    null,
+  );
+  const key =
+    chainActive && active?.tourId === "terminal-mode"
+      ? `${activation}|${lesson.draftId ?? ""}`
+      : null;
   useEffect(() => {
-    if (!chainActive || active?.tourId !== "terminal-mode") return;
-    if (pendingAttempt || composerMode !== "terminal") return;
+    if (key === null || active === null) {
+      baselineRef.current = null;
+      return;
+    }
+    const baseline =
+      baselineRef.current?.key === key
+        ? baselineRef.current
+        : { key, sawOtherMode: false };
+    baselineRef.current = baseline;
+    // Only an OBSERVED chat mode arms the switch: `null` is a draft record
+    // not loaded yet (a saved id restored before its draft), and a record
+    // that then arrives in terminal mode is where the user left it, not a
+    // switch they made.
+    if (composerMode === null) return;
+    if (composerMode !== "terminal") {
+      baseline.sawOtherMode = true;
+      return;
+    }
+    if (pendingAttempt) return;
+    if (chainScope === "single" && !baseline.sawOtherMode) return;
     guardedAdvance(active.tourId, active.stepId, "auto");
-  }, [chainActive, active, pendingAttempt, composerMode, guardedAdvance]);
+  }, [key, chainScope, active, pendingAttempt, composerMode, guardedAdvance]);
 }
 
 /**
@@ -853,17 +1002,24 @@ function useHistoryPredicate(args: PredicateArgs): void {
   }, [key, active, setContext, guardedAdvance]);
 }
 
-function presentationOf(
-  chainActive: boolean,
-  active: ActiveStep | null,
-  modalSuspended: boolean,
-  tracking: TargetTracking,
-): TourPresentation {
+interface PresentationInput {
+  readonly chainActive: boolean;
+  readonly active: ActiveStep | null;
+  readonly modalSuspended: boolean;
+  readonly spotlightSuspended: boolean;
+  readonly tracking: TargetTracking;
+}
+
+function presentationOf(input: PresentationInput): TourPresentation {
+  const { chainActive, active, modalSuspended, spotlightSuspended, tracking } =
+    input;
   if (!chainActive || active === null) return "idle";
   if (modalSuspended) return "modal-suspended";
   const { target, lessonKey } = tracking;
   if (target.key !== lessonKey) return "resolving";
-  if (target.unanchored) return "unanchored";
+  if (spotlightSuspended || target.unanchored || target.node === null) {
+    return "unanchored";
+  }
   return target.presented ? "presenting" : "resolving";
 }
 
@@ -912,21 +1068,67 @@ export function useOnboardingTourController(): OnboardingTourController {
     activeTourId === null ? 0 : order.indexOf(activeTourId),
   );
   const { target, lessonKey } = tracking;
+  const openEpicTab = useOpenEpicTab();
+  // The panels lesson with no task bound: the card says so and, when the
+  // history list (or an import) names one, offers to open the latest.
+  const panelsUnbound =
+    chainActive && activeTourId === "task-panels" && lesson.tabId === null;
+  const latestListedEpicId = useLatestHistoryEpicId(
+    lesson.draftId,
+    panelsUnbound,
+  );
+  const latestEpicId = panelsUnbound
+    ? (latestListedEpicId ?? inputs.historyEpicIds.at(0) ?? null)
+    : null;
+  const unbound = useMemo<UnboundPresentation | null>(
+    () =>
+      panelsUnbound
+        ? {
+            content: TASK_PANELS_UNBOUND_BODY,
+            action:
+              latestEpicId === null
+                ? null
+                : {
+                    label: "Open latest task",
+                    run: () => {
+                      openEpicTab(latestEpicId);
+                    },
+                  },
+          }
+        : null,
+    [panelsUnbound, latestEpicId, openEpicTab],
+  );
+  const spotlightSuspended = useLiveBrowserGuestPresent();
   const steps = useMemo(
-    () => buildSteps(order, activeTourId, target, lessonKey),
-    [order, activeTourId, target, lessonKey],
+    () =>
+      buildSteps({
+        order,
+        activeTourId,
+        target,
+        lessonKey,
+        unbound,
+        spotlightSuspended,
+      }),
+    [order, activeTourId, target, lessonKey, unbound, spotlightSuspended],
   );
 
   useFocusOriginAndChainEnd(run, flow);
   const guardedAdvance = useGuardedAdvance();
-  const { onEvent, announcement } = useEventAdapter(
+  const onHistoryNext = useHistoryNext(
+    tracking,
+    inputs.historyEpicIds,
+    openEpicTab,
+  );
+  const { onEvent, announcement } = useEventAdapter({
     active,
     activation,
     tracking,
     guardedAdvance,
-  );
+    onHistoryNext,
+  });
   const predicateArgs: PredicateArgs = {
     chainActive,
+    chainScope: flow.chainScope,
     active,
     activation,
     lesson,
@@ -944,9 +1146,19 @@ export function useOnboardingTourController(): OnboardingTourController {
     run,
     steps,
     stepIndex,
-    epoch: target.epoch,
-    presentation: presentationOf(chainActive, active, modalSuspended, tracking),
+    // Joyride neither moves nor drops a card on its own (F5): the renderer
+    // is replaced whenever the chosen node changes AND whenever the
+    // spotlight is suspended or restored around the same node.
+    rendererKey: `${target.epoch}:${spotlightSuspended ? "suspended" : "spotlit"}`,
+    presentation: presentationOf({
+      chainActive,
+      active,
+      modalSuspended,
+      spotlightSuspended,
+      tracking,
+    }),
     modalSuspended,
+    spotlightSuspended,
     reducedMotion,
     onEvent,
     announcement,

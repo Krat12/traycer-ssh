@@ -8,6 +8,7 @@ import {
   consumeFocusNextCard,
   resetActivationForTests,
 } from "@/components/onboarding/tour/tour-activation";
+import { tourStepAction } from "@/components/onboarding/tour/tour-steps";
 import {
   resetTourDismissalForTests,
   wasTourDismissedThisLaunch,
@@ -31,6 +32,7 @@ import {
   registerPresentedModal,
   resetModalPresenceForTests,
 } from "@/components/ui/modal-presence";
+import { registerTileRect } from "@/lib/browser-view/tiles/tile-rect-registry";
 import { useAuthStore } from "@/stores/auth/auth-store";
 import { useEpicCanvasStore } from "@/stores/epics/canvas/store";
 import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
@@ -85,6 +87,20 @@ vi.mock("@/lib/analytics", async (importOriginal) => {
 });
 const analyticsTrack = vi.hoisted(() => vi.fn());
 
+// The tab-navigation seam the tour opens a task through (Next on history,
+// "Open latest task"): what it is asked for is the contract.
+const seam = vi.hoisted(() => ({
+  activateTabIntent: vi.fn(),
+  navigate: vi.fn(),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => seam.navigate,
+}));
+vi.mock("@/lib/tab-navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tab-navigation")>();
+  return { ...actual, activateTabIntent: seam.activateTabIntent };
+});
+
 const DRAFT_ID = "draft-tour";
 const HOST_ID = "host-tour";
 const EPIC_TAB_ID = "tab-epic-1";
@@ -118,6 +134,7 @@ beforeEach(() => {
   joyride.props = null;
   joyride.mounts = 0;
   analyticsTrack.mockClear();
+  seam.activateTabIntent.mockReset();
   resetTourDismissalForTests();
   resetActivationForTests();
   resetModalPresenceForTests();
@@ -142,10 +159,20 @@ beforeEach(() => {
   useImportedUnseenStore.setState({ unseen: {} });
   useRemoteFolderPickerStore.getState().settle(null);
   if (typeof Element.prototype.checkVisibility !== "function") {
+    // jsdom has none: `hidden` ancestors always fail, and inline
+    // `visibility: hidden` fails only when the resolver asks for it, the
+    // way a browser's `visibilityProperty` option does.
     Object.defineProperty(Element.prototype, "checkVisibility", {
       configurable: true,
-      value(this: Element) {
-        return !this.closest("[hidden]");
+      value(this: Element, options: CheckVisibilityOptions | undefined) {
+        if (this.closest("[hidden]") !== null) return false;
+        if (options?.visibilityProperty !== true) return true;
+        const hiddenByStyle = (node: Element | null): boolean =>
+          node !== null &&
+          ((node instanceof HTMLElement &&
+            node.style.visibility === "hidden") ||
+            hiddenByStyle(node.parentElement));
+        return !hiddenByStyle(this);
       },
     });
   }
@@ -190,7 +217,7 @@ describe("run gating and controlled props", () => {
     expect(p.options?.disableFocusTrap).toBe(true);
     expect(p.options?.overlayClickAction).toBe(false);
     expect(p.options?.zIndex).toBe(45);
-    expect(p.options?.targetWaitTimeout).toBe(8000);
+    expect(p.options?.targetWaitTimeout).toBe(1500);
     expect(p.options?.dismissKeyAction).toBe("close");
     expect(useOnboardingPresenceStore.getState().tourBusy).toBe(true);
   });
@@ -404,14 +431,64 @@ describe("targets and presentation", () => {
     expect(step.placement).toBe("bottom");
   });
 
-  it("keeps resolving (anchored step, null target) while the target is missing; target_not_found swaps in the centred fallback without touching progress", () => {
+  it("a missing target is the centred, undimmed card at once (B3) - never a bare dim - and the anchor mounting later re-anchors it", async () => {
     render(<OnboardingTour />);
     startChain("no-sessions");
-    const step = props().steps.at(0);
-    if (step === undefined || typeof step.target !== "function") {
+    const missing = props().steps.at(0);
+    expect(missing?.id).toBe("add-folder");
+    expect(missing?.placement).toBe("center");
+    expect(missing?.hideOverlay).toBe(true);
+    expect(missing?.target).toBeTypeOf("function");
+    expect(flow().activeTourId).toBe("add-folder");
+    const epochBefore = joyride.mounts;
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
+    await mutate(() => undefined);
+    const anchored = props().steps.at(0);
+    if (anchored === undefined || typeof anchored.target !== "function") {
       throw new Error("expected a function target");
     }
-    expect(step.target()).toBeNull();
+    expect(anchored.placement).toBe("bottom");
+    expect(anchored.target()).toBe(surface.anchors["landing-folder-add"]);
+    expect(joyride.mounts).toBeGreaterThan(epochBefore);
+  });
+
+  it("a visibility:hidden anchor is not a target (P2): the unanchored card shows, no overlay; once visible the anchored step keeps its overlay hidden until the card presents, then dims", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true),
+    );
+    const anchor = surface.anchors["landing-folder-add"];
+    if (anchor === undefined) throw new Error("anchor missing");
+    anchor.style.visibility = "hidden";
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    const hidden = props().steps.at(0);
+    expect(hidden?.placement).toBe("center");
+    expect(hidden?.hideOverlay).toBe(true);
+    await mutate(() => {
+      anchor.style.visibility = "";
+    });
+    const anchored = props().steps.at(0);
+    if (anchored === undefined || typeof anchored.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(anchored.target()).toBe(anchor);
+    expect(anchored.placement).toBe("bottom");
+    // Card first: no dim through Joyride's own wait / scroll transit.
+    expect(anchored.hideOverlay).toBe(true);
+    present();
+    const dimmed = props().steps.at(0);
+    expect(dimmed?.hideOverlay).toBe(false);
+    expect(dimmed?.placement).toBe("bottom");
+    expect(joyride.props?.loaderComponent).toBeNull();
+  });
+
+  it("a node Joyride refuses (target_not_found on its wait) swaps in the centred fallback without touching progress; Next still acknowledges", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-folder-add"], true));
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    expect(props().steps.at(0)?.placement).toBe("bottom");
     const epochBefore = joyride.mounts;
     emit(
       { type: "error:target_not_found", lifecycle: "ready" },
@@ -423,7 +500,6 @@ describe("targets and presentation", () => {
     expect(fallback?.id).toBe("add-folder");
     expect(joyride.mounts).toBeGreaterThan(epochBefore);
     expect(flow().activeTourId).toBe("add-folder");
-    // Next on the unanchored card still acknowledges the lesson.
     next();
     expect(flow().activeTourId).toBe("terminal-mode");
   });
@@ -454,6 +530,36 @@ describe("targets and presentation", () => {
     expect(back.target()).toBe(anchor);
   });
 
+  it("add-folder anchors the workspace summary when the draft already has a folder bound (B4), and prefers the bare Add button when both are there", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-workspace-summary"], true),
+    );
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .addDraftResolvedFolders(DRAFT_ID, [folderInfo("/bound")]);
+    });
+    render(<OnboardingTour />);
+    startChain("no-sessions");
+    const step = props().steps.at(0);
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(step.placement).toBe("bottom");
+    expect(step.target()).toBe(surface.anchors["landing-workspace-summary"]);
+    expect(flow().activeTourId).toBe("add-folder");
+    const addButton = sized(document.createElement("button"));
+    addButton.setAttribute("data-tour", "landing-folder-add");
+    await mutate(() => {
+      surface.root.append(addButton);
+    });
+    const preferred = props().steps.at(0);
+    if (preferred === undefined || typeof preferred.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(preferred.target()).toBe(addButton);
+  });
+
   it("submit-prompt falls back to the mode switch while terminal mode hides Send", () => {
     const surface = keep(
       mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true),
@@ -470,6 +576,51 @@ describe("targets and presentation", () => {
       throw new Error("expected a function target");
     }
     expect(step.target()).toBe(surface.anchors["landing-terminal-switch"]);
+  });
+
+  it("a live local browser guest on screen suspends the spotlight (B2): same lesson and copy, centred, no dim, a new renderer; the spotlight returns when it leaves", () => {
+    const surface = keep(mountEpicSurface(EPIC_TAB_ID, false));
+    focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    render(<OnboardingTour />);
+    act(() => {
+      flow().replayTour("task-panels");
+    });
+    const spotlit = props().steps.at(0);
+    if (spotlit === undefined || typeof spotlit.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(spotlit.target()).toBe(surface.anchors.column);
+    present();
+    expect(props().steps.at(0)?.hideOverlay).toBe(false);
+    const mountsBefore = joyride.mounts;
+    let unregister: () => void = () => undefined;
+    act(() => {
+      unregister = registerTileRect(
+        {
+          viewTabId: "view-1",
+          paneId: "pane-1",
+          tileInstanceId: "tile-1",
+          pageSessionId: "page-1",
+        },
+        sized(document.createElement("div")),
+      );
+    });
+    const suspended = props().steps.at(0);
+    expect(suspended?.id).toBe("task-panels");
+    expect(suspended?.placement).toBe("center");
+    expect(suspended?.hideOverlay).toBe(true);
+    expect(suspended?.content).toBe(spotlit.content);
+    expect(joyride.mounts).toBeGreaterThan(mountsBefore);
+    expect(flow().activeTourId).toBe("task-panels");
+    act(() => {
+      unregister();
+    });
+    const restored = props().steps.at(0);
+    if (restored === undefined || typeof restored.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(restored.placement).toBe("right");
+    expect(restored.target()).toBe(surface.anchors.column);
   });
 
   it("task-panels spotlights the column, else the rail, inside the context epic surface; mounting never finishes it", () => {
@@ -610,6 +761,83 @@ describe("lesson predicates", () => {
       useLandingDraftStore.getState().drafts.find((d) => d.id === DRAFT_ID)
         ?.composerMode,
     ).toBe("terminal");
+  });
+
+  it("terminal-mode: a Settings replay with the composer ALREADY in terminal does not self-complete (B7); a switch into terminal after entry does, and Next still works", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-terminal-switch"], true));
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
+    });
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().skipChain();
+      flow().replayTour("terminal-mode");
+    });
+    expect(flow().context?.draftId).toBe(DRAFT_ID);
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("terminal-mode");
+    expect(props().steps.at(0)?.placement).toBe("top");
+    // Chat and back: a switch into terminal observed since entry.
+    act(() => {
+      useLandingDraftStore.getState().setDraftComposerMode(DRAFT_ID, "chat");
+    });
+    expect(flow().chain).toBe("active");
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(DRAFT_ID, "terminal");
+    });
+    expect(flow().chain).toBe("completed");
+
+    // Next acknowledges a replay that never flips.
+    act(() => {
+      flow().replayTour("terminal-mode");
+    });
+    expect(flow().chain).toBe("active");
+    next();
+    expect(flow().chain).toBe("completed");
+
+    // The branch chain keeps "already there at entry counts".
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().setContext({ draftId: DRAFT_ID, hostId: HOST_ID });
+      flow().advance("add-folder", "add-folder", "next");
+    });
+    expect(flow().activeTourId).toBe("submit-prompt");
+  });
+
+  it("terminal-mode: a replay whose draft record loads late (null -> terminal) is not a switch (P3); a later chat -> terminal is", () => {
+    const LATE_DRAFT = "draft-late";
+    keep(mountDraftSurface(LATE_DRAFT, ["landing-terminal-switch"], true));
+    render(<OnboardingTour />);
+    act(() => {
+      flow().finishModal("no-sessions");
+      flow().skipChain();
+      flow().replayTour("terminal-mode");
+      // A saved id restored before its record exists.
+      flow().setContext({ draftId: LATE_DRAFT, hostId: HOST_ID });
+    });
+    expect(flow().chain).toBe("active");
+    act(() => {
+      useLandingDraftStore.getState().createDraftWithId(LATE_DRAFT, null);
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(LATE_DRAFT, "terminal");
+    });
+    expect(flow().chain).toBe("active");
+    expect(flow().activeTourId).toBe("terminal-mode");
+    act(() => {
+      useLandingDraftStore.getState().setDraftComposerMode(LATE_DRAFT, "chat");
+    });
+    act(() => {
+      useLandingDraftStore
+        .getState()
+        .setDraftComposerMode(LATE_DRAFT, "terminal");
+    });
+    expect(flow().chain).toBe("completed");
   });
 
   it("submit-prompt: only a prompt-accepted receipt matching draft/host/attempt advances and records the destination; optimistic navigation does not", () => {
@@ -920,7 +1148,7 @@ describe("lesson predicates", () => {
     expect(flow().activeTourId).toBe("add-folder");
   });
 
-  it("history: unrelated rows do not anchor the lesson; the first imported row mounting does, and scrolls to it", async () => {
+  it("history: unrelated rows do not anchor the lesson; the first imported ROW mounting does (B5: the row, never the viewport-tall list), to its right", async () => {
     const surface = keep(
       mountDraftSurface(DRAFT_ID, ["landing-history"], true),
     );
@@ -935,25 +1163,18 @@ describe("lesson predicates", () => {
     render(<OnboardingTour />);
     startChain("sessions");
     let step = props().steps.at(props().stepIndex ?? 0);
-    if (step === undefined || typeof step.target !== "function") {
-      throw new Error("expected a function target");
-    }
-    expect(step.target()).toBeNull();
+    expect(step?.placement).toBe("center");
     const imported = sized(document.createElement("li"));
     imported.setAttribute("data-epic-id", EPIC_ID);
     await mutate(() => {
       container.append(imported);
     });
     step = props().steps.at(props().stepIndex ?? 0);
-    if (
-      step === undefined ||
-      typeof step.target !== "function" ||
-      typeof step.scrollTarget !== "function"
-    ) {
-      throw new Error("expected function targets");
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
     }
-    expect(step.target()).toBe(container);
-    expect(step.scrollTarget()).toBe(imported);
+    expect(step.target()).toBe(imported);
+    expect(step.placement).toBe("right");
   });
 
   it("keyboard Finish does not arm the next-card focus; keyboard Next does, for the same activation only", () => {
@@ -991,6 +1212,96 @@ describe("lesson predicates", () => {
       epicId: EPIC_ID,
       tabId: EPIC_TAB_ID,
     });
+  });
+
+  it("history -> Next with no epic focused opens the imported task the card pointed at through the seam (B6); the panels lesson then binds the focused epic", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-history"], true),
+    );
+    const container = surface.anchors["landing-history"];
+    if (container === undefined) throw new Error("container missing");
+    const imported = sized(document.createElement("li"));
+    imported.setAttribute("data-epic-id", EPIC_ID);
+    container.append(imported);
+    act(() => {
+      useImportedUnseenStore.setState({ unseen: { [EPIC_ID]: undefined } });
+    });
+    render(<OnboardingTour />);
+    startChain("sessions");
+    await mutate(() => undefined);
+    present();
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).toHaveBeenCalledTimes(1);
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      expect.objectContaining({ kind: "open-epic", epicId: EPIC_ID }),
+      undefined,
+    );
+    // The seam lands the epic tab: bound as the panels lesson's task.
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    act(() => {
+      focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    });
+    expect(flow().context).toMatchObject({
+      epicId: EPIC_ID,
+      tabId: EPIC_TAB_ID,
+    });
+    await mutate(() => undefined);
+    const step = props().steps.at(props().stepIndex ?? 0);
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
+    }
+    expect(step.placement).toBe("right");
+    expect(step.target()).not.toBeNull();
+  });
+
+  it("history -> Next with an epic already focused opens nothing: that epic becomes the panels lesson's task", () => {
+    keep(mountDraftSurface(DRAFT_ID, ["landing-history"], true));
+    keep(mountEpicSurface(EPIC_TAB_ID, false));
+    focusEpicTab(EPIC_TAB_ID, EPIC_ID);
+    render(<OnboardingTour />);
+    startChain("sessions");
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    expect(flow().context).toMatchObject({ tabId: EPIC_TAB_ID });
+  });
+
+  it("history -> Next with nothing imported: the panels card is unbound - 'Open a task to continue' - and offers the list's latest task when there is one (B6)", async () => {
+    const surface = keep(
+      mountDraftSurface(DRAFT_ID, ["landing-history"], true),
+    );
+    const container = surface.anchors["landing-history"];
+    if (container === undefined) throw new Error("container missing");
+    render(<OnboardingTour />);
+    startChain("sessions");
+    next();
+    expect(flow().activeTourId).toBe("task-panels");
+    expect(seam.activateTabIntent).not.toHaveBeenCalled();
+    let step = props().steps.at(props().stepIndex ?? 0);
+    expect(step?.placement).toBe("center");
+    expect(step?.content).toBe("Open a task to continue.");
+    expect(step === undefined ? null : tourStepAction(step)).toBeNull();
+    // An (unimported) task shows up in the list: the card can open it.
+    const latest = sized(document.createElement("li"));
+    latest.setAttribute("data-epic-id", "epic-latest");
+    await mutate(() => {
+      container.append(latest);
+    });
+    step = props().steps.at(props().stepIndex ?? 0);
+    const action = step === undefined ? null : tourStepAction(step);
+    expect(action?.label).toBe("Open latest task");
+    act(() => {
+      action?.run();
+    });
+    expect(seam.activateTabIntent).toHaveBeenCalledWith(
+      seam.navigate,
+      expect.objectContaining({ kind: "open-epic", epicId: "epic-latest" }),
+      undefined,
+    );
+    expect(flow().activeTourId).toBe("task-panels");
   });
 
   it("history: an epic already focused at entry is not a user-opened transition", () => {

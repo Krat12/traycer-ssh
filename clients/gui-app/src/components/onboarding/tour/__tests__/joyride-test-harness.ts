@@ -76,7 +76,7 @@ export function emit(
       scrollOffset: 20,
       showProgress: false,
       spotlightRadius: 8,
-      targetWaitTimeout: 8000,
+      targetWaitTimeout: 1500,
       textColor: "#000",
       zIndex: 45,
       spotlightPadding: { top: 8, right: 8, bottom: 8, left: 8 },

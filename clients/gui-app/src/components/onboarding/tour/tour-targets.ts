@@ -17,6 +17,7 @@ import { tabRefKey } from "@/stores/tabs/layout";
 
 export type TourAnchor =
   | "landing-folder-add"
+  | "landing-workspace-summary"
   | "landing-terminal-switch"
   | "landing-send"
   | "landing-history"
@@ -28,16 +29,26 @@ export type TourSurfaceScope =
   | { readonly kind: "epic"; readonly tabId: string };
 
 /**
- * The plan's target filter: connected, `checkVisibility()` (display,
- * visibility, content-visibility), a nonzero box, and no inert or hidden
- * ancestor. Deliberately NOT a viewport check - an offscreen target is
- * still a target, and Joyride scrolls to it.
+ * The plan's target filter: connected, `checkVisibility()` with the
+ * `visibility` and `opacity` properties counted (display, visibility,
+ * opacity, content-visibility - at least as strict as Joyride's own walk,
+ * which rejects `visibility: hidden` that the default call lets through,
+ * and so hands Joyride nothing it would wait on), a nonzero box, and no
+ * inert or hidden ancestor. Deliberately NOT a viewport check - an
+ * offscreen target is still a target, and Joyride scrolls to it.
  */
 export function presentableElement(
   element: Element | null,
 ): HTMLElement | null {
   if (!(element instanceof HTMLElement) || !element.isConnected) return null;
-  if (!element.checkVisibility()) return null;
+  if (
+    !element.checkVisibility({
+      visibilityProperty: true,
+      opacityProperty: true,
+    })
+  ) {
+    return null;
+  }
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
   if (element.closest("[inert], [hidden]") !== null) return null;
@@ -121,8 +132,9 @@ export function resolvePanelTarget(
 
 /**
  * The first mounted history row whose epic is one of `epicIds` (in the
- * order given), for the history lesson's `scrollTarget`. The spotlight
- * itself stays on the rows container.
+ * order given): the history lesson's anchor. One row, never the list - the
+ * list runs taller than the viewport, and a card placed against it lands
+ * inside the cutout over the very rows it points at.
  */
 export function resolveHistoryRow(
   scope: TourSurfaceScope,
@@ -136,6 +148,25 @@ export function resolveHistoryRow(
     );
     const presentable = presentableElement(row);
     if (presentable !== null) return presentable;
+  }
+  return null;
+}
+
+/**
+ * The epic of the FIRST presentable row in the scope's history list (the
+ * list is most-recent first), or null when the list is not on screen or
+ * empty: what "Open latest task" opens when the panels lesson has no task
+ * bound and there is nothing imported to open.
+ */
+export function resolveLatestHistoryEpicId(
+  scope: TourSurfaceScope,
+): string | null {
+  const container = resolveAnchor(scope, "landing-history");
+  if (container === null) return null;
+  for (const row of container.querySelectorAll<HTMLElement>("[data-epic-id]")) {
+    if (presentableElement(row) === null) continue;
+    const epicId = row.dataset.epicId;
+    if (epicId !== undefined && epicId.length > 0) return epicId;
   }
   return null;
 }
@@ -173,19 +204,18 @@ export function observeTourTargets(onChange: () => void): () => void {
 
 // ── Target tracker ──────────────────────────────────────────────────────────
 
-export interface TargetResolution {
-  readonly node: HTMLElement | null;
-  readonly scrollNode: HTMLElement | null;
-}
-
 export interface TargetSnapshot {
   /** The lesson/context this snapshot was resolved for. */
   readonly key: string | null;
   readonly node: HTMLElement | null;
-  readonly scrollNode: HTMLElement | null;
-  /** The same lesson shown centred with no cutout. */
+  /** Joyride refused `node` (its target wait timed out): shown centred. */
   readonly unanchored: boolean;
-  /** The anchored card has presented at least once for this key. */
+  /**
+   * Joyride presented the anchored card for `node`. Until then the anchored
+   * step hides its overlay: the dim follows the card, so Joyride's own
+   * target wait (should it disagree with the resolver after all) is a
+   * blank moment, never a bare dim.
+   */
   readonly presented: boolean;
   /** Bumps whenever the renderer must be replaced (a `key` for Joyride). */
   readonly epoch: number;
@@ -199,10 +229,13 @@ export interface TargetTracker {
    * presented); the same key re-resolves in place. Resolves now and on
    * every DOM change until the returned stop runs.
    */
-  readonly track: (key: string, resolve: () => TargetResolution) => () => void;
+  readonly track: (
+    key: string,
+    resolve: () => HTMLElement | null,
+  ) => () => void;
   /** Joyride presented the anchored card for the current key. */
   readonly markPresented: () => void;
-  /** The target wait timed out: same lesson, centred card, no cutout. */
+  /** Joyride's target wait timed out on the node: centred card, no cutout. */
   readonly markUnanchored: () => void;
   /** No lesson is being tracked. */
   readonly reset: () => void;
@@ -211,7 +244,6 @@ export interface TargetTracker {
 const EMPTY_SNAPSHOT: TargetSnapshot = {
   key: null,
   node: null,
-  scrollNode: null,
   unanchored: false,
   presented: false,
   epoch: 0,
@@ -224,9 +256,10 @@ const EMPTY_SNAPSHOT: TargetSnapshot = {
  *
  * - the chosen node changing (including to null) re-presents under a new
  *   epoch - Joyride does not move or drop the card on its own (spike F5);
- * - a node that vanishes AFTER it presented drops to the unanchored card at
- *   once (no stale hole); one that never presented keeps resolving, and
- *   Joyride's own target wait decides (F4 handles the timeout);
+ * - no node (missing at entry, or vanished since - stale hole included) is
+ *   the unanchored card at once; the tracker keeps resolving underneath;
+ * - `unanchored` marks a node Joyride itself refused (its target wait timed
+ *   out, F4): the card stays centred until the CHOSEN node changes;
  * - a node that comes back re-anchors the same lesson; progress is never
  *   touched here.
  */
@@ -240,20 +273,17 @@ export function createTargetTracker(): TargetTracker {
     for (const listener of listeners) listener();
   };
 
-  const apply = (resolve: () => TargetResolution): void => {
-    const next = resolve();
+  const apply = (resolve: () => HTMLElement | null): void => {
+    const node = resolve();
     const current = snapshot;
-    if (next.node === current.node && next.scrollNode === current.scrollNode) {
-      return;
-    }
-    const unanchored =
-      next.node !== null ? false : current.presented || current.unanchored;
+    if (node === current.node) return;
     publish({
       ...current,
-      node: next.node,
-      scrollNode: next.scrollNode,
-      unanchored,
-      presented: next.node === null ? false : current.presented,
+      node,
+      // A refusal was about the previous node; the new one gets its try -
+      // card first, dim once it has presented.
+      unanchored: false,
+      presented: false,
       epoch: current.epoch + 1,
     });
   };
@@ -272,7 +302,6 @@ export function createTargetTracker(): TargetTracker {
         publish({
           key,
           node: null,
-          scrollNode: null,
           unanchored: false,
           presented: false,
           epoch: snapshot.epoch + 1,

@@ -23,27 +23,33 @@ import { useTabsStore } from "@/stores/tabs/store";
 
 /**
  * Entry navigation for the landing lessons, once per activation of the
- * chain: they need the landing draft surface (Home has no composer), so
- * when the chain becomes active on a landing lesson and the focused surface
- * is not a draft, the tour goes there through the tab-navigation seam -
- * the saved draft if it is still open, else a new one. The seam queues
- * until tab hydration, so a relaunch that restores a paused checkpoint
- * lands correctly too. The controller then captures the concrete draft the
- * seam selected (`context.draftId`) from the focused ref.
+ * chain: they need the landing draft surface (Home has no composer, and
+ * the imported-sessions list the history lesson points at lives there
+ * too), so when the chain becomes active on a landing lesson and the
+ * focused surface is not a draft - a Settings tab replaying a lesson, an
+ * epic restored at launch - the tour goes there through the tab-navigation
+ * seam: the saved draft if it is still open, else a new one. The seam
+ * queues until tab hydration, so a relaunch that restores a paused
+ * checkpoint lands correctly too. The controller then captures the
+ * concrete draft the seam selected (`context.draftId`) from the focused
+ * ref.
  *
  * Once, and only on activation: this is entry/resume work, never an effect
  * that pulls a user back to the draft every time they navigate away. The
- * history and panels lessons WAIT for their surfaces instead (contract 9),
- * so history is deliberately not a landing lesson here. "Once" is kept
- * module-level, keyed by the activation token: the host remounts on every
- * readiness drop, and a remount must not redirect a lesson already under
- * way (a pending terminal Start mid-flight) back to the draft.
+ * panels lesson WAITS for its epic surface instead (contract 9) - the
+ * tour never creates a task, and opens one only on a gesture of the
+ * user's (Next on the history lesson, the card's "Open latest task"; see
+ * the controller), never to satisfy an anchor on its own. "Once" is
+ * kept module-level, keyed by the activation token: the host remounts on
+ * every readiness drop, and a remount must not redirect a lesson already
+ * under way (a pending terminal Start mid-flight) back to the draft.
  */
 
 const LANDING_TOURS: ReadonlyArray<TourId> = [
   "add-folder",
   "terminal-mode",
   "submit-prompt",
+  "history",
 ];
 
 let navigatedForActivation: number | null = null;

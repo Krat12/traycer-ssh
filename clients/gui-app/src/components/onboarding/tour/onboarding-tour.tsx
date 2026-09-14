@@ -59,7 +59,7 @@ export function OnboardingTour(): React.ReactElement | null {
         {controller.announcement}
       </div>
       <Joyride
-        key={controller.epoch}
+        key={controller.rendererKey}
         run={controller.run}
         stepIndex={controller.stepIndex}
         continuous
@@ -67,12 +67,19 @@ export function OnboardingTour(): React.ReactElement | null {
         steps={controller.steps}
         onEvent={controller.onEvent}
         tooltipComponent={OnboardingTourTooltip}
+        // No spinner either: the anchored step hides its overlay until the
+        // card presents, and a lone spinner on an undimmed app would read
+        // as the app loading.
+        loaderComponent={null}
         styles={styles}
         floatingOptions={floatingOptions}
         options={{
           buttons: ["primary", "skip", "close"],
           skipBeacon: true,
           disableFocusTrap: true,
+          // No dismissal on an outside click - and no click shield either:
+          // `index.css` takes the dim's SVG path out of hit-testing, so the
+          // app under it stays clickable (decision 7 is about the tour).
           overlayClickAction: false,
           blockTargetInteraction: false,
           dismissKeyAction: controller.modalSuspended ? false : "close",

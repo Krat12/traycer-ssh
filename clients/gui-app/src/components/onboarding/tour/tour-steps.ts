@@ -18,8 +18,14 @@ export const TOUR_SPOTLIGHT_PADDING_PX = 8;
 export const TOUR_SPOTLIGHT_RADIUS_PX = 8;
 /** Overlay 45 / card 46: above the app, below every `z-50` Dialog. */
 export const TOUR_Z_INDEX = 45;
-/** How long a lesson waits for its anchor before the unanchored card. */
-export const TOUR_TARGET_WAIT_TIMEOUT_MS = 8000;
+/**
+ * How long Joyride polls for an anchor the controller handed it before
+ * `error:target_not_found`. Short on purpose: the controller only hands
+ * over a node its own presentability filter accepted, so this wait covers
+ * the rare disagreement with Joyride's visibility check - a lesson whose
+ * anchor is missing never reaches it (the unanchored card shows at once).
+ */
+export const TOUR_TARGET_WAIT_TIMEOUT_MS = 1500;
 export const TOUR_SCROLL_DURATION_MS = 300;
 
 export interface TourLesson {
@@ -52,28 +58,67 @@ export const TOUR_LESSONS: Readonly<Record<TourId, TourLesson>> = {
   },
   history: {
     body: "Your imported sessions are here. Open a task to keep going.",
-    placement: "top",
+    // The anchor is one ROW (the first imported one), not the list: the
+    // list is taller than the viewport, and a card placed against it lands
+    // inside the cutout over the rows it points at.
+    placement: "right",
     anchor: "landing-history",
   },
 };
+
+/**
+ * The panels lesson with no task bound yet (the sessions branch's Next on
+ * history found nothing imported to open; a prompt lesson acknowledged
+ * without sending): the card says what would anchor it.
+ */
+export const TASK_PANELS_UNBOUND_BODY = "Open a task to continue.";
 
 export function tourLessonTitle(tourId: TourId): string {
   return TOUR_COPY[tourId].title;
 }
 
 /**
+ * An extra button on the card, for the one case a lesson can offer the
+ * thing that would anchor it ("Open latest task").
+ */
+export interface TourStepAction {
+  readonly label: string;
+  readonly run: () => void;
+}
+
+/**
+ * Carried on Joyride's untyped `Step.data` as a class instance: Joyride
+ * deep-merges plain objects into each step and passes anything else by
+ * reference, and `instanceof` is the typed read back (`tourStepAction`).
+ */
+class TourStepData {
+  constructor(readonly action: TourStepAction) {}
+}
+
+export function tourStepAction(step: Step): TourStepAction | null {
+  const data: unknown = step.data;
+  return data instanceof TourStepData ? data.action : null;
+}
+
+/**
  * How the active lesson is being shown. `anchored` spotlights a resolved
- * node (and may scroll to a row inside it); `unanchored` is the same lesson
- * as a centred card with no cutout - the target is missing, timed out or
- * detached, and the user still gets Next / Skip / pause (never a trap).
+ * node (Joyride scrolls it into view); `unanchored` is the same lesson as a
+ * centred card with no cutout - the target is missing, timed out or
+ * detached, and the user still gets Next / Skip / pause (never a trap) -
+ * with, optionally, its own copy and an action that would anchor it.
  */
 export type StepPresentation =
   | {
       readonly kind: "anchored";
       readonly target: () => HTMLElement | null;
-      readonly scrollTarget: (() => HTMLElement | null) | null;
+      /** The card has presented: only then is the dim drawn around it. */
+      readonly presented: boolean;
     }
-  | { readonly kind: "unanchored" };
+  | {
+      readonly kind: "unanchored";
+      readonly content: string | null;
+      readonly action: TourStepAction | null;
+    };
 
 function documentBody(): HTMLElement {
   return document.body;
@@ -98,9 +143,22 @@ export function buildTourSteps(
       title: tourLessonTitle(tourId),
       content: lesson.body,
     };
-    if (tourId !== activeTourId || presentation.kind === "unanchored") {
+    if (tourId !== activeTourId) {
       return {
         ...base,
+        target: documentBody,
+        placement: "center",
+        hideOverlay: true,
+        skipScroll: true,
+      };
+    }
+    if (presentation.kind === "unanchored") {
+      return {
+        ...base,
+        content: presentation.content ?? lesson.body,
+        ...(presentation.action === null
+          ? {}
+          : { data: new TourStepData(presentation.action) }),
         target: documentBody,
         placement: "center",
         hideOverlay: true,
@@ -110,10 +168,11 @@ export function buildTourSteps(
     return {
       ...base,
       target: presentation.target,
-      ...(presentation.scrollTarget === null
-        ? {}
-        : { scrollTarget: presentation.scrollTarget }),
       placement: lesson.placement,
+      // No dim before the card: Joyride draws the overlay through its
+      // target wait and scroll transit, both card-less. The step is
+      // re-merged when `presented` flips, and the cutout opens then.
+      hideOverlay: !presentation.presented,
     };
   });
 }
