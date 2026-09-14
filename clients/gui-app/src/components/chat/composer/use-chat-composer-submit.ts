@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 import type { RefObject } from "react";
 import type {
   ChatActiveTurn,
@@ -99,7 +100,7 @@ interface UseChatComposerSubmitArgs {
    */
   readonly draftUnowned: boolean;
   /** Resolves once the claim has settled, claimed or refused. Never throws. */
-  readonly settleDraftOwnership: () => Promise<void>;
+  readonly settleDraftOwnership: () => Promise<SettledOwnership>;
   readonly onSubmitMessage:
     | ((input: ChatComposerSubmitInput) => boolean)
     | null;
@@ -157,6 +158,14 @@ export interface ChatComposerSubmitResult {
   };
 }
 
+/**
+ * Read through a call so the flag is not narrowed by the assignment that
+ * cleared it just before the re-entered handler ran.
+ */
+function wasDispatched(flag: { readonly current: boolean }): boolean {
+  return flag.current;
+}
+
 export function useChatComposerSubmit(
   args: UseChatComposerSubmitArgs,
 ): ChatComposerSubmitResult {
@@ -189,7 +198,11 @@ export function useChatComposerSubmit(
 
   // Everything an ACCEPTED submit does to the composer, shared by the send and
   // the side-chat paths so a refused one leaves the text in place on both.
+  // Whether the re-entered send actually went out after an ownership settle;
+  // a settle whose send then declined hands the refusal back to the repair.
+  const dispatched = useRef(false);
   const clearAcceptedDraft = useCallback((): void => {
+    dispatched.current = true;
     void submitComposerDraft(taskId);
     pickerStore.getState().reset();
     editorRef.current?.clear();
@@ -259,14 +272,16 @@ export function useChatComposerSubmit(
       if (draftUnowned && !ownershipSettled.current) {
         if (ownershipSettling.current) return;
         ownershipSettling.current = true;
-        void settleDraftOwnership().finally(() => {
+        void settleDraftOwnership().then((settled) => {
           ownershipSettling.current = false;
           ownershipSettled.current = true;
+          dispatched.current = false;
           try {
             submitDraftRef.current(source);
           } finally {
             ownershipSettled.current = false;
           }
+          if (!wasDispatched(dispatched)) settled.abandon();
         });
         return;
       }
@@ -441,7 +456,7 @@ export function useChatComposerSubmit(
       toolbarStore,
     ],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     submitDraftRef.current = submitDraft;
   }, [submitDraft]);
 

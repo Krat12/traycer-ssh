@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import type { DraftClaimResult } from "@/hooks/drafts/use-draft-claim";
+import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 
 const claimMock = vi.hoisted(() => ({
   claim: vi.fn<(draftId: string) => Promise<DraftClaimResult>>(),
@@ -763,6 +764,100 @@ describe("useDraftAuthorityControl", () => {
 
     await waitFor(() => {
       expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+    expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("abandon after a refused settle runs an edit-armed repair once", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    // noteEdit starts the claim and arms the repair on it.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // settleOwnership joins the same claim and suppresses the armed repair
+    // until it is explicitly abandoned.
+    let settled: SettledOwnership | null = null;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+    });
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    // Suppressed: the refusal must not repair on its own while a settle is
+    // waiting to decide whether the attempt is abandoned.
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+
+    // A second abandon() is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandon after a successful settle is a no-op", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+    applyIncomingMock.apply.mockResolvedValue(undefined);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    let settled: SettledOwnership | null = null;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+    });
+
+    await act(async () => {
+      first.resolve({ status: "ok", draft: STUB_DRAFT });
+      await settlePromise;
+    });
+
+    await waitFor(() => {
+      expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
+    });
+    expect(settled).not.toBeNull();
+
+    act(() => {
+      settled?.abandon();
     });
     expect(repairOnEdit).not.toHaveBeenCalled();
   });

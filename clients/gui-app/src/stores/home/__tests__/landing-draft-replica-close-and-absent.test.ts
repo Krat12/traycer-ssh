@@ -6,7 +6,10 @@ import {
   type LandingDraftTab,
 } from "@/stores/home/landing-draft-store";
 import { resetLandingDraftRetirementsForTests } from "@/lib/drafts/landing-draft-retirement";
-import { setDraftLocalEditListener } from "@/lib/drafts/draft-local-edits";
+import {
+  setDraftLocalEditListener,
+  setDraftLocalFlushListener,
+} from "@/lib/drafts/draft-local-edits";
 
 const NON_EMPTY_CONTENT = {
   type: "doc" as const,
@@ -48,6 +51,7 @@ describe("landing draft store: closeDraft origin behavior", () => {
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     resetLandingDraftRetirementsForTests();
     setDraftLocalEditListener(null);
+    setDraftLocalFlushListener(null);
   });
 
   it("closing a replica row sets closed:true without bumping generation or notifying local-edit/flush listeners", () => {
@@ -98,6 +102,78 @@ describe("landing draft store: closeDraft origin behavior", () => {
     expect(after?.generation).toBe(4);
     expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
     expect(notified).toEqual(["own-1"]);
+  });
+});
+
+describe("landing draft store: openDraft origin behavior", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+    setDraftLocalEditListener(null);
+    setDraftLocalFlushListener(null);
+  });
+
+  it("reopening a closed replica is local view state: generation unchanged, no listener call", () => {
+    const editNotified: string[] = [];
+    const flushNotified: string[] = [];
+    setDraftLocalEditListener((id) => editNotified.push(id));
+    setDraftLocalFlushListener((id) => flushNotified.push(id));
+
+    const draft = baseDraft("replica-1", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      generation: 3,
+      syncedGeneration: 3,
+      closed: true,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: null });
+
+    useLandingDraftStore.getState().openDraft("replica-1");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "replica-1");
+    expect(after).toBeDefined();
+    expect(after?.closed).toBe(false);
+    expect(after?.generation).toBe(3);
+    expect(useLandingDraftStore.getState().activeDraftId).toBe("replica-1");
+    expect(editNotified).toEqual([]);
+    expect(flushNotified).toEqual([]);
+  });
+
+  it("reopening a closed own row bumps generation and notifies", () => {
+    const editNotified: string[] = [];
+    const flushNotified: string[] = [];
+    setDraftLocalEditListener((id) => editNotified.push(id));
+    setDraftLocalFlushListener((id) => flushNotified.push(id));
+
+    const draft = baseDraft("own-1", {
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      ownerHostId: "host-a",
+      generation: 3,
+      syncedGeneration: 3,
+      closed: true,
+    });
+    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: null });
+
+    useLandingDraftStore.getState().openDraft("own-1");
+
+    const after = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "own-1");
+    expect(after).toBeDefined();
+    expect(after?.closed).toBe(false);
+    expect(after?.generation).toBe(4);
+    expect(useLandingDraftStore.getState().activeDraftId).toBe("own-1");
+    expect(editNotified).toEqual(["own-1"]);
+    expect(flushNotified).toEqual(["own-1"]);
   });
 });
 

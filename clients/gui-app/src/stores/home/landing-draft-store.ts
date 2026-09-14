@@ -699,16 +699,26 @@ export const useLandingDraftStore = create<LandingDraftStoreState>()(
           set({ activeDraftId: id });
           return;
         }
+        // Reopening a replica is local view state, like closing one: looking
+        // at a draft another host owns must not write to that host's row or
+        // leave a dirty replica behind. The first substantive edit claims.
+        const local = draft.origin === "replica";
         set((state) => ({
           drafts: state.drafts.map((d) =>
             d.id === id
-              ? { ...d, closed: false, generation: d.generation + 1 }
+              ? {
+                  ...d,
+                  closed: false,
+                  generation: local ? d.generation : d.generation + 1,
+                }
               : d,
           ),
           activeDraftId: id,
         }));
-        notifyDraftLocalEdit(id);
-        notifyDraftLocalFlush(id);
+        if (!local) {
+          notifyDraftLocalEdit(id);
+          notifyDraftLocalFlush(id);
+        }
       },
 
       dropLocalMirror: (id) => {

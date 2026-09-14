@@ -10,6 +10,7 @@ import type { JsonContent } from "@traycer/protocol/common/registry";
 import { createComposerPickerStore } from "../picker/composer-picker-store";
 import type { ComposerPromptEditorHandle } from "../composer-prompt-editor";
 import { useChatComposerSubmit } from "../use-chat-composer-submit";
+import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 import { useChatComposerDraft } from "../use-chat-composer-draft";
 import { createFakeComposerPromptEditorHandle } from "./composer-prompt-editor-handle-fixtures";
 import { createComposerToolbarStore } from "@/stores/composer/composer-toolbar-store";
@@ -103,7 +104,8 @@ describe("chat-composer submit gate (path resolution)", () => {
           imagesUnsupported: false,
           attachmentPreparationPending: pending,
           draftUnowned: false,
-          settleDraftOwnership: () => Promise.resolve(),
+          settleDraftOwnership: () =>
+            Promise.resolve({ abandon: () => undefined }),
           onSubmitMessage,
           onSideChat: null,
         }),
@@ -381,10 +383,10 @@ describe("unowned draft", () => {
       hostId: null,
     });
 
-    let resolveSettled: (() => void) | null = null;
+    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
     const settleDraftOwnership = vi.fn(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<SettledOwnership>((resolve) => {
           resolveSettled = resolve;
         }),
     );
@@ -427,7 +429,7 @@ describe("unowned draft", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettled?.();
+      resolveSettled?.({ abandon: vi.fn() });
       await Promise.resolve();
     });
 
@@ -459,10 +461,11 @@ describe("unowned draft", () => {
       hostId: null,
     });
 
-    let resolveSettled: (() => void) | null = null;
+    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
+    const abandon = vi.fn();
     const settleDraftOwnership = vi.fn(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<SettledOwnership>((resolve) => {
           resolveSettled = resolve;
         }),
     );
@@ -505,7 +508,7 @@ describe("unowned draft", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSettled?.();
+      resolveSettled?.({ abandon });
       await Promise.resolve();
     });
 
@@ -513,6 +516,9 @@ describe("unowned draft", () => {
       expect(onSubmitMessage).toHaveBeenCalledTimes(1);
     });
     expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+    // The re-entered send went out (dispatched), so the settle is not
+    // abandoned.
+    expect(abandon).not.toHaveBeenCalled();
   });
 
   it("still sends exactly once, with no loop, when settleDraftOwnership resolves but the caller keeps draftUnowned: true", async () => {
@@ -537,7 +543,9 @@ describe("unowned draft", () => {
       hostId: null,
     });
 
-    const settleDraftOwnership = vi.fn(() => Promise.resolve());
+    const settleDraftOwnership = vi.fn(() =>
+      Promise.resolve({ abandon: vi.fn() }),
+    );
 
     const { result } = renderHook(() =>
       useChatComposerSubmit({
@@ -573,6 +581,83 @@ describe("unowned draft", () => {
       expect(onSubmitMessage).toHaveBeenCalledTimes(1);
     });
     expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandons the settle when the re-entered send declines (sendDisabled flips before the settle resolves)", async () => {
+    const onSubmitMessage = vi.fn(acceptSubmit);
+    const editorRef = createRef<ComposerPromptEditorHandle | null>();
+    editorRef.current = editorHandle({ content: DIRTY, ready: true });
+    const pickerStore = createComposerPickerStore();
+    const toolbarStore = createComposerToolbarStore({
+      seedKey: "chat-submit-gate-unowned-decline-test",
+      values: {
+        permission: "supervised",
+        selection: {
+          harnessId: "claude",
+          modelSlug: "claude-sonnet",
+          profileId: null,
+        },
+        reasoning: "medium",
+        serviceTier: "",
+      },
+      onSettingsChange: null,
+      tuiOnly: false,
+      hostId: null,
+    });
+
+    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
+    const abandon = vi.fn();
+    const settleDraftOwnership = vi.fn(
+      () =>
+        new Promise<SettledOwnership>((resolve) => {
+          resolveSettled = resolve;
+        }),
+    );
+
+    const { result, rerender } = renderHook(
+      (props: { sendDisabled: boolean }) =>
+        useChatComposerSubmit({
+          taskId: "task-unowned-decline",
+          editorRef,
+          pickerStore,
+          toolbarStore,
+          activeTurnStatus: null,
+          steerCapable: false,
+          steerEnabled: true,
+          steerProtocolSupported: true,
+          getActiveTurnForSteer: () => null,
+          hasPendingApprovals: false,
+          sendDisabled: props.sendDisabled,
+          workspaceBlocked: false,
+          imagesUnsupported: false,
+          attachmentPreparationPending: false,
+          draftUnowned: true,
+          settleDraftOwnership,
+          onSubmitMessage,
+          onSideChat: null,
+        }),
+      { initialProps: { sendDisabled: false } },
+    );
+
+    act(() => {
+      result.current.submitDraft("enter");
+    });
+    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+
+    // The caller disables sending before the settle resolves - the
+    // re-entered send must decline on the latest closure.
+    rerender({ sendDisabled: true });
+
+    await act(async () => {
+      resolveSettled?.({ abandon });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(abandon).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmitMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -616,7 +701,7 @@ function mountSubmitHook(args: {
       imagesUnsupported: false,
       attachmentPreparationPending: false,
       draftUnowned: false,
-      settleDraftOwnership: () => Promise.resolve(),
+      settleDraftOwnership: () => Promise.resolve({ abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),

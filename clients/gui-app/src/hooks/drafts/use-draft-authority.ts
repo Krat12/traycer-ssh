@@ -25,7 +25,16 @@ export interface DraftAuthorityControl {
    * resolves too - the send proceeds on the row as it is, and the local
    * retirement receipt keeps the original from returning to this device.
    */
-  readonly settleOwnership: () => Promise<void>;
+  readonly settleOwnership: () => Promise<SettledOwnership>;
+}
+
+export interface SettledOwnership {
+  /**
+   * The caller did NOT dispatch after the settle (a guard changed, a launch
+   * was dropped). A refusal that an edit had armed a repair for is repaired
+   * now instead of staying suppressed for a send that never happened.
+   */
+  readonly abandon: () => void;
 }
 
 interface PendingClaim {
@@ -192,13 +201,23 @@ export function useDraftAuthorityControl(args: {
     });
   }, [args.draftId, args.tabHostId, repairFor, runClaim, unowned]);
 
-  const settleOwnership = useCallback(async (): Promise<void> => {
-    if (!unowned) return;
+  const settleOwnership = useCallback(async (): Promise<SettledOwnership> => {
+    const noop: SettledOwnership = { abandon: () => undefined };
+    if (!unowned) return noop;
+    const draftId = args.draftId;
+    const tabHostId = args.tabHostId;
     const entry = runClaim();
-    if (entry === null) return;
+    if (entry === null) return noop;
     entry.repairSuppressed = true;
-    await entry.promise;
-  }, [runClaim, unowned]);
+    const owned = await entry.promise;
+    return {
+      abandon: () => {
+        if (owned || !entry.repairArmed || !entry.repairSuppressed) return;
+        entry.repairSuppressed = false;
+        repairFor(draftId, tabHostId);
+      },
+    };
+  }, [args.draftId, args.tabHostId, repairFor, runClaim, unowned]);
 
   return { unowned, noteEdit, settleOwnership };
 }

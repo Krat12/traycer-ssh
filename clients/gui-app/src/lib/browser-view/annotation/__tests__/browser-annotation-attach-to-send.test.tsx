@@ -127,7 +127,7 @@ function mountSubmit(args: {
       imagesUnsupported: false,
       attachmentPreparationPending: false,
       draftUnowned: false,
-      settleDraftOwnership: () => Promise.resolve(),
+      settleDraftOwnership: () => Promise.resolve({ abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),

@@ -872,9 +872,9 @@ export function LandingComposer(props: LandingComposerProps) {
   // retirement receipt the delete writes keeps the original from being
   // ingested back here. `dispatchSubmit` is the send without that gate, so
   // the continuation cannot loop on a draft that stays unowned.
-  const dispatchSubmit = useCallback(() => {
+  const dispatchSubmit = useCallback((): boolean => {
     const toolbar = toolbarStore.getState();
-    if (toolbar.selection.modelSlug.length === 0) return;
+    if (toolbar.selection.modelSlug.length === 0) return false;
     const refusal = actions.submit({
       // `handleDocumentChange` mints the unbound draft the moment the first
       // edit becomes submittable, but `props.draftId` only catches up on the
@@ -897,6 +897,7 @@ export function LandingComposer(props: LandingComposerProps) {
     raiseHostNotice(
       refusal === null ? null : { kind: "refused", message: refusal.message },
     );
+    return refusal === null;
   }, [actions, draftId, pickerStore, raiseHostNotice, toolbarStore]);
   // One action per settle. A second Enter or Start while the claim is in
   // flight would attach a second continuation to the same claim, and each
@@ -909,25 +910,29 @@ export function LandingComposer(props: LandingComposerProps) {
   // The host the settle was made for: a bypass earned on host A must not
   // skip host B's settle if the composer re-pointed while the claim ran.
   const ownershipSettledFor = useRef<string | null>(null);
-  const handleSubmitRef = useRef<() => void>(() => undefined);
-  const handleSubmit = useCallback(() => {
-    if (!canSubmit) return;
+  // Both handlers report whether they dispatched: a settle whose re-entered
+  // handler then declined hands the refusal back to the repair.
+  const handleSubmitRef = useRef<() => boolean>(() => false);
+  const handleSubmit = useCallback((): boolean => {
+    if (!canSubmit) return false;
     if (authority.unowned && ownershipSettledFor.current !== resolvedHostId) {
-      if (ownershipSettling.current) return;
+      if (ownershipSettling.current) return false;
       ownershipSettling.current = true;
       const settledFor = resolvedHostId;
-      void authority.settleOwnership().finally(() => {
+      void authority.settleOwnership().then((settled) => {
         ownershipSettling.current = false;
         ownershipSettledFor.current = settledFor;
+        let sent = false;
         try {
-          handleSubmitRef.current();
+          sent = handleSubmitRef.current();
         } finally {
           ownershipSettledFor.current = null;
         }
+        if (!sent) settled.abandon();
       });
-      return;
+      return false;
     }
-    dispatchSubmit();
+    return dispatchSubmit();
   }, [authority, canSubmit, dispatchSubmit, resolvedHostId]);
   // Layout effects: the continuation of a claim that settles in the same
   // tick as a host re-point must see the handler built for the new host.
@@ -936,43 +941,48 @@ export function LandingComposer(props: LandingComposerProps) {
   }, [handleSubmit]);
 
   const dispatchStartTerminal = useCallback(
-    (launch: TerminalAgentLaunch) => {
+    (launch: TerminalAgentLaunch): boolean => {
       const refusal = actions.selectTerminalAgent(launch, draftId);
       raiseHostNotice(
         refusal === null ? null : { kind: "refused", message: refusal.message },
       );
+      return refusal === null;
     },
     [actions, draftId, raiseHostNotice],
   );
   const handleStartTerminalRef = useRef<
-    (launch: TerminalAgentLaunch, assembledFor: string | null) => void
-  >(() => undefined);
+    (launch: TerminalAgentLaunch, assembledFor: string | null) => boolean
+  >(() => false);
   const handleStartTerminal = useCallback(
-    (launch: TerminalAgentLaunch, assembledFor: string | null) => {
-      if (!workspaceCanStart || isSubmitting) return;
+    (launch: TerminalAgentLaunch, assembledFor: string | null): boolean => {
+      if (!workspaceCanStart || isSubmitting) return false;
       // A launch names a harness, model and profile out of the host's own
       // catalog. One assembled for a host the placement has since left is
       // dropped rather than forwarded to a host whose catalog may not hold
       // them.
-      if (assembledFor !== null && assembledFor !== resolvedHostId) return;
+      if (assembledFor !== null && assembledFor !== resolvedHostId) {
+        return false;
+      }
       // Terminal mode bypasses `canSubmit` entirely, so the ownership settle
       // is restated here: an agent is created off the draft.
       if (authority.unowned && ownershipSettledFor.current !== resolvedHostId) {
-        if (ownershipSettling.current) return;
+        if (ownershipSettling.current) return false;
         ownershipSettling.current = true;
         const settledFor = resolvedHostId;
-        void authority.settleOwnership().finally(() => {
+        void authority.settleOwnership().then((settled) => {
           ownershipSettling.current = false;
           ownershipSettledFor.current = settledFor;
+          let started = false;
           try {
-            handleStartTerminalRef.current(launch, settledFor);
+            started = handleStartTerminalRef.current(launch, settledFor);
           } finally {
             ownershipSettledFor.current = null;
           }
+          if (!started) settled.abandon();
         });
-        return;
+        return false;
       }
-      dispatchStartTerminal(launch);
+      return dispatchStartTerminal(launch);
     },
     [
       authority,
