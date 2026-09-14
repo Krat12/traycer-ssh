@@ -1774,6 +1774,20 @@ function adoptOwnershipOverLocalEdit(
   }
 }
 
+/**
+ * A replica's open/closed state is this device's view (its close and reopen
+ * never publish), so a newer head from the owner must not flip it. An own
+ * row follows the portable value.
+ */
+function incomingClosedState(
+  origin: DraftDocument["origin"],
+  portableClosed: boolean,
+  existing: LandingDraftTab | undefined,
+): boolean {
+  if (origin === "replica" && existing !== undefined) return existing.closed;
+  return portableClosed;
+}
+
 export function applyLandingHostDocument(
   document: DraftDocument,
   content: JsonContent,
@@ -1820,7 +1834,11 @@ export function applyLandingHostDocument(
     origin: document.origin,
     publication: document.publication,
     confirmedHostBlobHashes: existing?.confirmedHostBlobHashes ?? [],
-    closed: document.portable.closed,
+    closed: incomingClosedState(
+      document.origin,
+      document.portable.closed,
+      existing,
+    ),
   };
   useLandingDraftStore.setState((state) => {
     const without = state.drafts.filter((draft) => draft.id !== next.id);

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DraftDocument } from "@traycer/protocol/host";
 import {
+  applyLandingHostDocument,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
+  EMPTY_LANDING_DRAFT_CONTENT,
   useLandingDraftStore,
   type LandingDraftTab,
 } from "@/stores/home/landing-draft-store";
@@ -244,5 +247,101 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
     expect(ids).toContain("listed-foreign");
     expect(ids).toContain("own-row");
     expect(ids).toContain("same-host-replica");
+  });
+});
+
+describe("landing draft store: applyLandingHostDocument closed on the clean path", () => {
+  beforeEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  afterEach(() => {
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
+    resetLandingDraftRetirementsForTests();
+  });
+
+  it("keeps a clean replica row's closed:true on an incoming replica document, then follows an incoming own document's closed:false", () => {
+    const seeded = baseDraft("draft-1", {
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      ownerHostId: "host-b",
+      hostRevision: 3,
+      generation: 2,
+      syncedGeneration: 2,
+      closed: true,
+    });
+    useLandingDraftStore.setState({ drafts: [seeded], activeDraftId: null });
+
+    const incomingReplica: DraftDocument = {
+      draftId: "draft-1",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 5,
+      lastTouchedAt: 99,
+      workspace: null,
+      ownerHostId: "host-b",
+      origin: "replica",
+      adoption: { state: "adopted", hostId: "host-b" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 5,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+
+    applyLandingHostDocument(incomingReplica, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const afterReplica = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "draft-1");
+    expect(afterReplica).toBeDefined();
+    // Clean replica row: `closed` is kept from the existing row, not taken
+    // from the incoming document's portable value.
+    expect(afterReplica?.closed).toBe(true);
+
+    const incomingOwn: DraftDocument = {
+      draftId: "draft-1",
+      kind: "landing",
+      target: { epicId: null, chatId: null, blockId: null },
+      revision: 6,
+      lastTouchedAt: 100,
+      workspace: null,
+      ownerHostId: "host-a",
+      origin: "own",
+      adoption: { state: "adopted", hostId: "host-a" },
+      publication: {
+        status: "current",
+        lastPublishedAt: 100,
+        publishedRevision: 5,
+        halted: null,
+      },
+      portable: {
+        content: EMPTY_LANDING_DRAFT_CONTENT,
+        selection: null,
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    };
+
+    applyLandingHostDocument(incomingOwn, EMPTY_LANDING_DRAFT_CONTENT);
+
+    const afterOwn = useLandingDraftStore
+      .getState()
+      .drafts.find((d) => d.id === "draft-1");
+    expect(afterOwn).toBeDefined();
+    // Own document: `closed` follows the incoming portable value.
+    expect(afterOwn?.closed).toBe(false);
   });
 });
