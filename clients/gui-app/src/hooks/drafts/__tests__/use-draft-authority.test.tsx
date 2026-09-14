@@ -2671,4 +2671,94 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(repairOnEdit).toHaveBeenCalledTimes(1);
   });
+
+  it("settleOwnership joining an attempt that already chained into a successor suppresses both links, not just the one it joined", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    // ownerHostId never names any host this test visits, so `unowned` reads
+    // true on host-a and host-b throughout - only `tabHostId` moves.
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-z",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-b" } },
+    );
+
+    // Attempt 1: noteEdit on host-b, left pending.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // The surface moves to host-a while attempt 1 is still pending.
+    view.rerender({ tabHostId: "host-a" });
+
+    // Attempt 1 refuses while host-a is current: it is host-fenced away from
+    // its own host (host-b), so it chains (unforced, and at this point still
+    // UNsuppressed) into a fresh attempt 2 on host-a.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // The surface moves back to host-b, where attempt 1 - now carrying
+    // `chained: attempt2` - is still registered (its own async body is
+    // suspended awaiting attempt 2's promise).
+    view.rerender({ tabHostId: "host-b" });
+
+    // settleOwnership on host-b joins attempt 1 directly (no third claim
+    // call): attempt 1 already has a successor chained from it, so this
+    // must suppress attempt 1 AND attempt 2 - not just the link it joined.
+    let settled: SettledOwnership | null = null;
+    let settleResolved = false;
+    const settlePromise = view.result.current.settleOwnership().then((s) => {
+      settled = s;
+      settleResolved = true;
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    // The surface returns to host-a - attempt 2's own host - before it
+    // refuses, so its refusal resolves directly with no further chaining.
+    view.rerender({ tabHostId: "host-a" });
+
+    // Attempt 2 refuses. If only attempt 1 (the link settleOwnership joined
+    // directly) had been suppressed, attempt 2's own refusal handler would
+    // repair immediately here; the fix suppresses it too, via the successor
+    // already chained from the joined attempt.
+    await act(async () => {
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settleResolved).toBe(true);
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(settled).not.toBeNull();
+
+    // abandon() walks to the last link (attempt 2), releases its suppression
+    // and repairs it once - the surface is on host-a, attempt 2's own host,
+    // so the fence passes.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+
+    // A second abandon() is a no-op - the repair already ran once.
+    act(() => {
+      settled?.abandon();
+    });
+    expect(repairOnEdit).toHaveBeenCalledTimes(1);
+  });
 });

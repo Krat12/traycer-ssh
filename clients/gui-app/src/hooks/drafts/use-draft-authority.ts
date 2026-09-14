@@ -290,6 +290,10 @@ export function useDraftAuthorityControl(args: {
             link = link.chained
           ) {
             link.chain = entry.chain;
+            // Suppression travels with the identity: a submit that settled
+            // on this attempt must reach the LAST link of the chain it joins,
+            // or that link's refusal repairs under the deferred send.
+            if (entry.repairSuppressed) link.repairSuppressed = true;
           }
           // A submit that settled on this attempt is settling on the chain:
           // the re-claim inherits its suppression (a refusal there would
@@ -299,7 +303,6 @@ export function useDraftAuthorityControl(args: {
           // current host, whose own suppression must survive this attempt's
           // refusal. Linked BEFORE this attempt resolves, so its own refusal
           // handler sees the chain and defers to it.
-          if (entry.repairSuppressed) next.repairSuppressed = true;
           entry.chained = next;
           return next.promise;
         };
@@ -429,7 +432,15 @@ export function useDraftAuthorityControl(args: {
     if (!unowned) return noop;
     const entry = runClaim(null, false);
     if (entry === null) return noop;
-    entry.repairSuppressed = true;
+    // Every link already chained from the joined attempt is suppressed too:
+    // the deferred send is settling on the chain's LAST link (see `abandon`).
+    for (
+      let link: PendingClaim | null = entry;
+      link !== null;
+      link = link.chained
+    ) {
+      link.repairSuppressed = true;
+    }
     await entry.promise;
     return {
       abandon: () => {
