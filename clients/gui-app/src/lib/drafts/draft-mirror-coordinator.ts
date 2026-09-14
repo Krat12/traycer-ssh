@@ -1084,8 +1084,8 @@ export function sweepAbsentCloudDraftMirrors(
   hostId: string,
   listed: ReadonlyMap<string, ReadonlySet<string>>,
   fenceSeq: number,
-): void {
-  dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
+): readonly string[] {
+  return dropForeignLandingMirrorsAbsent(hostId, listed, (draft) => {
     if ((cloudIngestSeqByDraft.get(draft.id) ?? 0) > fenceSeq) return false;
     if (draft.origin === "replica") return true;
     // A row with no recorded publication state is treated as unpublished.

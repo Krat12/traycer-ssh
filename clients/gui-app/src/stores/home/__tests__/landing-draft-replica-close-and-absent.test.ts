@@ -322,12 +322,13 @@ describe("landing draft store: dropForeignLandingMirrorsAbsent", () => {
       activeDraftId: null,
     });
 
-    dropForeignLandingMirrorsAbsent(
+    const result = dropForeignLandingMirrorsAbsent(
       "host-a",
       new Map([["listed-foreign", new Set(["host-b"])]]),
       (draft) => draft.origin === "replica",
     );
 
+    expect(result).toEqual(["clean-unlisted-foreign"]);
     const ids = useLandingDraftStore.getState().drafts.map((d) => d.id);
     expect(ids).not.toContain("clean-unlisted-foreign");
     expect(ids).toContain("dirty-foreign");

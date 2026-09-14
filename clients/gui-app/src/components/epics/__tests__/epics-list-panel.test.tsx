@@ -3572,7 +3572,13 @@ describe("<EpicsListPanel />", () => {
     expect(landingDraftIsRetired(draftId)).toBe(false);
   });
 
-  it("retires a foreign-owned draft locally when the claim reports not-found", async () => {
+  it("retires an adopted foreign-owned draft through its adoption host when the claim reports not-found", async () => {
+    // `seedForeignOwnedLandingDraft` seeds a row already adopted on
+    // "host-b" - the foreign host, distinct from this panel's own
+    // `testState.hostId` ("host-test"). A not-found/not-published claim
+    // must retire it through THAT adoption host, not complete a
+    // local-only `applyHostDelete` that leaves the (unpublished) copy
+    // sitting there.
     const draftId = seedForeignOwnedLandingDraft("refused draft");
     draftClaimTestState.claim.mockResolvedValue({
       status: "unavailable",
@@ -3591,6 +3597,12 @@ describe("<EpicsListPanel />", () => {
       ).toBe(false);
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-b");
+    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
+      draftId,
+      "host-b",
+      false,
+    );
   });
 
   it("still removes the row when the claim succeeds but the local apply rejects, adopting the draft locally before the delete", async () => {

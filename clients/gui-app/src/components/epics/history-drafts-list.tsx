@@ -121,7 +121,22 @@ export function HistoryDraftsList(props: {
           result.status === "unavailable" &&
           (result.reason === "not-found" || result.reason === "not-published")
         ) {
-          useLandingDraftStore.getState().applyHostDelete(draftId);
+          // The cloud has no published row, but the host the row is adopted
+          // on may still store the (unpublished) draft: retire it through
+          // that host - pending until its session mounts - rather than
+          // completing a local-only retirement that leaves the copy there.
+          const current = useLandingDraftStore
+            .getState()
+            .drafts.find((entry) => entry.id === draftId);
+          if (current !== undefined && current.adoption.state === "adopted") {
+            deleteLandingDraftThroughHost(
+              draftId,
+              current.adoption.hostId,
+              null,
+            );
+          } else {
+            useLandingDraftStore.getState().applyHostDelete(draftId);
+          }
         }
       },
       () => undefined,

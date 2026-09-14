@@ -2019,7 +2019,8 @@ export function dropForeignLandingMirrorsAbsent(
   hostId: string,
   listed: ReadonlyMap<string, ReadonlySet<string>>,
   admit: (draft: LandingDraftTab) => boolean,
-): void {
+): readonly string[] {
+  const dropped: string[] = [];
   const drafts = useLandingDraftStore.getState().drafts;
   for (const draft of drafts) {
     if (draft.adoption.state !== "adopted") continue;
@@ -2037,7 +2038,9 @@ export function dropForeignLandingMirrorsAbsent(
     }
     if (!admit(draft)) continue;
     useLandingDraftStore.getState().dropLocalMirror(draft.id);
+    dropped.push(draft.id);
   }
+  return dropped;
 }
 
 export function dropLandingAbsentFromList(

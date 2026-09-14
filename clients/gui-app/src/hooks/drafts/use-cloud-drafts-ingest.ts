@@ -3,6 +3,7 @@ import type { HostClient } from "@traycer-clients/shared/host-client/host-client
 import type { TimerHandle } from "@traycer-clients/shared/host-transport/timer-handle";
 import { webCryptoSha256Hex } from "@traycer-clients/shared/cloud-chat/bytes";
 import type { HostRpcRegistry } from "@/lib/host";
+import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import { createHostCloudChatReadPort } from "@/lib/chats/cloud-chat-read-port";
 import {
   authorizesCloudCapability,
@@ -22,6 +23,10 @@ import {
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
+function ingestKey(summary: CloudChatSummary): string {
+  return `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
+}
+
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
 const MAX_HEAD_READ_ATTEMPTS = 3;
 const HEAD_READ_RETRY_BASE_MS = 2_000;
@@ -39,7 +44,9 @@ export function useCloudDraftsIngest(
   // Destructured so the effect depends on the (stable) reader, not on the
   // directory object a method call would otherwise bind.
   const { snapshotIngestSeq } = directory;
-  const ingested = useRef(new Set<string>());
+  // Guard key -> chat id: a key is released when the absence sweep drops
+  // that chat's mirror, so the same head listed again later is read again.
+  const ingested = useRef(new Map<string, string>());
   useEffect(() => {
     ingested.current.clear();
   }, [directory.scopeId]);
@@ -81,6 +88,18 @@ export function useCloudDraftsIngest(
     // set is EVERY listed row, not the foreign ones: a replica this host has
     // just claimed (from another window, or ahead of this window's
     // hydration) is listed under this host's ownership and is not absent.
+    // The heads this run will read, reserved BEFORE the sweep: a draft the
+    // directory now lists under a new owner (a claim moved it) still has a
+    // clean local replica naming the previous owner, which the owner-aware
+    // absence check below would otherwise drop and the ingest re-create,
+    // reconciling away an open tab in between. Its new-owner summary is a
+    // new key, so it is always among these.
+    const toRead = foreign.filter(
+      (summary) => !ingestedKeys.has(ingestKey(summary)),
+    );
+    for (const summary of toRead) {
+      reserveCloudDraftIngestFence(summary.identity.chatId);
+    }
     if (directory.settled) {
       // Every listed row, keyed by id with the owners it is listed under:
       // cloud ids are host-minted, so absence is judged per (id, owner).
@@ -90,7 +109,14 @@ export function useCloudDraftsIngest(
         owners.add(chat.ownerHostId);
         listed.set(chat.identity.chatId, owners);
       }
-      sweepAbsentCloudDraftMirrors(hostId, listed, snapshotIngestSeq());
+      const dropped = new Set(
+        sweepAbsentCloudDraftMirrors(hostId, listed, snapshotIngestSeq()),
+      );
+      if (dropped.size > 0) {
+        for (const [key, chatId] of ingestedKeys) {
+          if (dropped.has(chatId)) ingestedKeys.delete(key);
+        }
+      }
     }
     for (const summary of foreign) {
       // The owner-led identity key plus the head. Both halves are
@@ -103,9 +129,9 @@ export function useCloudDraftsIngest(
       // owner: a guard that ignored the owner would skip it and the local
       // mirror would keep the stale owner until that host republished or this
       // hook remounted.
-      const key = `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
+      const key = ingestKey(summary);
       if (ingestedKeys.has(key)) continue;
-      ingestedKeys.add(key);
+      ingestedKeys.set(key, summary.identity.chatId);
       unsettledKeys.add(key);
       const settle = (): void => {
         unsettledKeys.delete(key);

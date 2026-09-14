@@ -26,9 +26,11 @@ const sweepMock = vi.hoisted(() => ({
         hostId: string,
         listed: ReadonlyMap<string, ReadonlySet<string>>,
         fenceSeq: number,
-      ) => void
+      ) => readonly string[]
     >(),
 }));
+// No mirrors dropped unless a test overrides this.
+sweepMock.sweep.mockReturnValue([]);
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
@@ -54,7 +56,7 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     hostId: string,
     listed: ReadonlyMap<string, ReadonlySet<string>>,
     fenceSeq: number,
-  ): void => sweepMock.sweep(hostId, listed, fenceSeq),
+  ): readonly string[] => sweepMock.sweep(hostId, listed, fenceSeq),
 }));
 
 const { useCloudDraftsIngest } =
@@ -127,6 +129,8 @@ afterEach(() => {
   reserveMock.reserve.mockReset();
   ingestMock.ingest.mockReset();
   sweepMock.sweep.mockReset();
+  // No mirrors dropped unless a test says otherwise.
+  sweepMock.sweep.mockReturnValue([]);
   vi.useRealTimers();
 });
 
@@ -169,10 +173,14 @@ describe("useCloudDraftsIngest", () => {
 
     // The fence is reserved BEFORE the head read resolves - while the read
     // is still pending, the reserve has already happened but nothing has
-    // ingested yet.
+    // ingested yet. It is reserved twice: once pre-sweep for every foreign
+    // row not yet guarded, and once more inside `attemptRead`, before its
+    // own read.
     await vi.waitFor(() => {
-      expect(reserveMock.reserve).toHaveBeenCalledWith("draft-1");
+      expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
     });
+    expect(reserveMock.reserve).toHaveBeenNthCalledWith(1, "draft-1");
+    expect(reserveMock.reserve).toHaveBeenNthCalledWith(2, "draft-1");
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
 
@@ -233,9 +241,10 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
     });
     expect(readMock.read).toHaveBeenCalledTimes(2);
-    // Reserved once per attempt: the failed first read and the successful
-    // retry each reserve the fence before their own read.
-    expect(reserveMock.reserve).toHaveBeenCalledTimes(2);
+    // Reserved once pre-sweep (the row was not yet guarded on the first
+    // effect run) plus once per attempt: the failed first read and the
+    // successful retry each reserve the fence again before their own read.
+    expect(reserveMock.reserve).toHaveBeenCalledTimes(3);
   });
 
   it("gives up after MAX_HEAD_READ_ATTEMPTS reads and makes no further attempt", async () => {
@@ -458,5 +467,70 @@ describe("useCloudDraftsIngest", () => {
     await vi.advanceTimersByTimeAsync(HEAD_READ_RETRY_BASE_MS * 100);
     expect(readMock.read).toHaveBeenCalledTimes(1);
     expect(ingestMock.ingest).not.toHaveBeenCalled();
+  });
+
+  it("reserves the ingest fence for a not-yet-guarded foreign row before the settled sweep runs", async () => {
+    const order: string[] = [];
+    reserveMock.reserve.mockImplementation(() => {
+      order.push("reserve");
+    });
+    sweepMock.sweep.mockImplementation(() => {
+      order.push("sweep");
+      return [];
+    });
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(sweepMock.sweep).toHaveBeenCalledTimes(1);
+    });
+    // The pre-sweep reserve (over every foreign row not yet in the guard)
+    // happens before the settled sweep runs, on the first effect run.
+    const firstReserve = order.indexOf("reserve");
+    const firstSweep = order.indexOf("sweep");
+    expect(firstReserve).toBeGreaterThanOrEqual(0);
+    expect(firstSweep).toBeGreaterThanOrEqual(0);
+    expect(firstReserve).toBeLessThan(firstSweep);
+  });
+
+  it("releases the guard for a chat the sweep drops, so a later listing re-ingests its head", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    sweepMock.sweep.mockReturnValue([]);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+
+    // The sweep reports draft-1's mirror dropped on this run - the
+    // directory listing is unchanged (same head), only the sweep verdict
+    // differs.
+    sweepMock.sweep.mockReturnValue(["draft-1"]);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    // A further rerender with the same summary: the guard entry for
+    // draft-1 was released by the drop above, so this head - previously
+    // skipped by the guard - is read and ingested again rather than
+    // silently staying stuck on the old apply. (The drop-triggered read on
+    // the prior rerender never resolves before this one tears it down, so
+    // it counts as a `readMock.read` call but never reaches ingest - it is
+    // the fresh attempt started on THIS rerender that ingests.)
+    sweepMock.sweep.mockReturnValue([]);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+    expect(readMock.read).toHaveBeenCalledTimes(3);
   });
 });
