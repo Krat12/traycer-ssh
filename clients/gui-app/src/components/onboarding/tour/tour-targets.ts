@@ -122,8 +122,9 @@ export function resolvePanelTarget(
 
 /**
  * The first mounted history row whose epic is one of `epicIds` (in the
- * order given), for the history lesson's `scrollTarget`. The spotlight
- * itself stays on the rows container.
+ * order given): the history lesson's anchor. One row, never the list - the
+ * list runs taller than the viewport, and a card placed against it lands
+ * inside the cutout over the very rows it points at.
  */
 export function resolveHistoryRow(
   scope: TourSurfaceScope,
@@ -174,16 +175,10 @@ export function observeTourTargets(onChange: () => void): () => void {
 
 // ── Target tracker ──────────────────────────────────────────────────────────
 
-export interface TargetResolution {
-  readonly node: HTMLElement | null;
-  readonly scrollNode: HTMLElement | null;
-}
-
 export interface TargetSnapshot {
   /** The lesson/context this snapshot was resolved for. */
   readonly key: string | null;
   readonly node: HTMLElement | null;
-  readonly scrollNode: HTMLElement | null;
   /** Joyride refused `node` (its target wait timed out): shown centred. */
   readonly unanchored: boolean;
   /** The anchored card has presented at least once for this key. */
@@ -200,7 +195,10 @@ export interface TargetTracker {
    * presented); the same key re-resolves in place. Resolves now and on
    * every DOM change until the returned stop runs.
    */
-  readonly track: (key: string, resolve: () => TargetResolution) => () => void;
+  readonly track: (
+    key: string,
+    resolve: () => HTMLElement | null,
+  ) => () => void;
   /** Joyride presented the anchored card for the current key. */
   readonly markPresented: () => void;
   /** Joyride's target wait timed out on the node: centred card, no cutout. */
@@ -212,7 +210,6 @@ export interface TargetTracker {
 const EMPTY_SNAPSHOT: TargetSnapshot = {
   key: null,
   node: null,
-  scrollNode: null,
   unanchored: false,
   presented: false,
   epoch: 0,
@@ -242,19 +239,16 @@ export function createTargetTracker(): TargetTracker {
     for (const listener of listeners) listener();
   };
 
-  const apply = (resolve: () => TargetResolution): void => {
-    const next = resolve();
+  const apply = (resolve: () => HTMLElement | null): void => {
+    const node = resolve();
     const current = snapshot;
-    if (next.node === current.node && next.scrollNode === current.scrollNode) {
-      return;
-    }
+    if (node === current.node) return;
     publish({
       ...current,
-      node: next.node,
-      scrollNode: next.scrollNode,
+      node,
       // A refusal was about the previous node; the new one gets its try.
       unanchored: false,
-      presented: next.node === null ? false : current.presented,
+      presented: node === null ? false : current.presented,
       epoch: current.epoch + 1,
     });
   };
@@ -273,7 +267,6 @@ export function createTargetTracker(): TargetTracker {
         publish({
           key,
           node: null,
-          scrollNode: null,
           unanchored: false,
           presented: false,
           epoch: snapshot.epoch + 1,

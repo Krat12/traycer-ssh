@@ -969,7 +969,7 @@ describe("lesson predicates", () => {
     expect(flow().activeTourId).toBe("add-folder");
   });
 
-  it("history: unrelated rows do not anchor the lesson; the first imported row mounting does, and scrolls to it", async () => {
+  it("history: unrelated rows do not anchor the lesson; the first imported ROW mounting does (B5: the row, never the viewport-tall list), to its right", async () => {
     const surface = keep(
       mountDraftSurface(DRAFT_ID, ["landing-history"], true),
     );
@@ -991,15 +991,11 @@ describe("lesson predicates", () => {
       container.append(imported);
     });
     step = props().steps.at(props().stepIndex ?? 0);
-    if (
-      step === undefined ||
-      typeof step.target !== "function" ||
-      typeof step.scrollTarget !== "function"
-    ) {
-      throw new Error("expected function targets");
+    if (step === undefined || typeof step.target !== "function") {
+      throw new Error("expected a function target");
     }
-    expect(step.target()).toBe(container);
-    expect(step.scrollTarget()).toBe(imported);
+    expect(step.target()).toBe(imported);
+    expect(step.placement).toBe("right");
   });
 
   it("keyboard Finish does not arm the next-card focus; keyboard Next does, for the same activation only", () => {

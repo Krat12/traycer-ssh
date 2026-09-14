@@ -37,7 +37,6 @@ import {
   resolveAnchor,
   resolveHistoryRow,
   resolvePanelTarget,
-  type TargetResolution,
   type TargetSnapshot,
   type TargetTracker,
   type TourSurfaceScope,
@@ -427,51 +426,38 @@ function resolveLessonTarget(
   tourId: TourId,
   lesson: LessonContext,
   historyEpicIds: ReadonlyArray<string>,
-): TargetResolution {
-  const none: TargetResolution = { node: null, scrollNode: null };
+): HTMLElement | null {
   if (tourId === "task-panels") {
-    if (lesson.tabId === null) return none;
-    return {
-      node: resolvePanelTarget({ kind: "epic", tabId: lesson.tabId }),
-      scrollNode: null,
-    };
+    if (lesson.tabId === null) return null;
+    return resolvePanelTarget({ kind: "epic", tabId: lesson.tabId });
   }
-  if (lesson.draftId === null) return none;
+  if (lesson.draftId === null) return null;
   const scope: TourSurfaceScope = { kind: "draft", draftId: lesson.draftId };
   if (tourId === "add-folder") {
     // The bare Add button only renders while the draft has no folder; with
     // one bound, the lesson points at the workspace summary that opens the
     // picker (the copy still reads "Add a folder"; the predicate is the
     // same new-path check either way).
-    return {
-      node:
-        resolveAnchor(scope, "landing-folder-add") ??
-        resolveAnchor(scope, "landing-workspace-summary"),
-      scrollNode: null,
-    };
+    return (
+      resolveAnchor(scope, "landing-folder-add") ??
+      resolveAnchor(scope, "landing-workspace-summary")
+    );
   }
   if (tourId === "submit-prompt") {
     // While the composer is in terminal mode Send is not rendered; the mode
     // switch is the alternate presentation target of the same step.
-    return {
-      node:
-        resolveAnchor(scope, "landing-send") ??
-        resolveAnchor(scope, "landing-terminal-switch"),
-      scrollNode: null,
-    };
+    return (
+      resolveAnchor(scope, "landing-send") ??
+      resolveAnchor(scope, "landing-terminal-switch")
+    );
   }
   if (tourId === "history") {
-    // Unresolved until the first imported/unseen row is mounted (decision
-    // 19): unrelated rows already in the list are not the lesson's, and
-    // without a row the timeout fallback must run.
-    const row = resolveHistoryRow(scope, historyEpicIds);
-    if (row === null) return none;
-    return { node: resolveAnchor(scope, "landing-history"), scrollNode: row };
+    // The first imported/unseen ROW, once mounted (decision 19): unrelated
+    // rows already in the list are not the lesson's, and the list itself
+    // is taller than the viewport, so the card anchors to the row.
+    return resolveHistoryRow(scope, historyEpicIds);
   }
-  return {
-    node: resolveAnchor(scope, TOUR_LESSONS[tourId].anchor),
-    scrollNode: null,
-  };
+  return resolveAnchor(scope, TOUR_LESSONS[tourId].anchor);
 }
 
 interface TargetTracking {
@@ -532,11 +518,9 @@ function buildSteps(
   if (node === null) {
     return buildTourSteps(order, activeTourId, { kind: "unanchored" });
   }
-  const { scrollNode } = target;
   return buildTourSteps(order, activeTourId, {
     kind: "anchored",
     target: () => node,
-    scrollTarget: scrollNode === null ? null : () => scrollNode,
   });
 }
 

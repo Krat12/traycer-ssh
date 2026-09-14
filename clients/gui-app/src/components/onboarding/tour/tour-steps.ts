@@ -58,7 +58,10 @@ export const TOUR_LESSONS: Readonly<Record<TourId, TourLesson>> = {
   },
   history: {
     body: "Your imported sessions are here. Open a task to keep going.",
-    placement: "top",
+    // The anchor is one ROW (the first imported one), not the list: the
+    // list is taller than the viewport, and a card placed against it lands
+    // inside the cutout over the rows it points at.
+    placement: "right",
     anchor: "landing-history",
   },
 };
@@ -69,15 +72,14 @@ export function tourLessonTitle(tourId: TourId): string {
 
 /**
  * How the active lesson is being shown. `anchored` spotlights a resolved
- * node (and may scroll to a row inside it); `unanchored` is the same lesson
- * as a centred card with no cutout - the target is missing, timed out or
+ * node (Joyride scrolls it into view); `unanchored` is the same lesson as a
+ * centred card with no cutout - the target is missing, timed out or
  * detached, and the user still gets Next / Skip / pause (never a trap).
  */
 export type StepPresentation =
   | {
       readonly kind: "anchored";
       readonly target: () => HTMLElement | null;
-      readonly scrollTarget: (() => HTMLElement | null) | null;
     }
   | { readonly kind: "unanchored" };
 
@@ -116,9 +118,6 @@ export function buildTourSteps(
     return {
       ...base,
       target: presentation.target,
-      ...(presentation.scrollTarget === null
-        ? {}
-        : { scrollTarget: presentation.scrollTarget }),
       placement: lesson.placement,
     };
   });
