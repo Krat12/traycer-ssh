@@ -21,10 +21,30 @@ import {
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
+import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
 function ingestKey(summary: CloudChatSummary): string {
   return `${cloudDraftIdentityKey(summary)}:${summary.headSha256}`;
+}
+
+/**
+ * Whether the guard may skip a listed head. Not when the local landing row
+ * currently reads a DIFFERENT owner than the directory lists: ownership
+ * that cycled A -> B -> A without a republish lists A again under the very
+ * key A's first ingest recorded, and the row - moved to B by an ingest or a
+ * session echo since - would otherwise keep reading as B's. Such a head is
+ * re-read, whichever path last set the row's owner.
+ */
+function guardMaySkip(
+  ingestedKeys: ReadonlyMap<string, string>,
+  summary: CloudChatSummary,
+): boolean {
+  if (!ingestedKeys.has(ingestKey(summary))) return false;
+  const row = useLandingDraftStore
+    .getState()
+    .drafts.find((draft) => draft.id === summary.identity.chatId);
+  return row === undefined || row.ownerHostId === summary.ownerHostId;
 }
 
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
@@ -95,7 +115,7 @@ export function useCloudDraftsIngest(
     // reconciling away an open tab in between. Its new-owner summary is a
     // new key, so it is always among these.
     const toRead = foreign.filter(
-      (summary) => !ingestedKeys.has(ingestKey(summary)),
+      (summary) => !guardMaySkip(ingestedKeys, summary),
     );
     for (const summary of toRead) {
       reserveCloudDraftIngestFence(summary.identity.chatId);
@@ -130,7 +150,7 @@ export function useCloudDraftsIngest(
       // mirror would keep the stale owner until that host republished or this
       // hook remounted.
       const key = ingestKey(summary);
-      if (ingestedKeys.has(key)) continue;
+      if (guardMaySkip(ingestedKeys, summary)) continue;
       ingestedKeys.set(key, summary.identity.chatId);
       unsettledKeys.add(key);
       const settle = (): void => {

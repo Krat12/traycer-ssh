@@ -4,6 +4,11 @@ import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import type { DraftHeadReaderRecord } from "@traycer/protocol/persistence/draft/schemas";
 import { DRAFT_HEAD_DIALECT } from "@traycer/protocol/persistence/draft/version";
 import { appLogger } from "@/lib/logger";
+import {
+  emptyLandingDraftWorkspaceSnapshot,
+  useLandingDraftStore,
+  type LandingDraftTab,
+} from "@/stores/home/landing-draft-store";
 
 const directoryMock = vi.hoisted(() => ({
   chats: [] as ReadonlyArray<CloudChatSummary>,
@@ -100,6 +105,27 @@ function summary(
   };
 }
 
+function landingRow(id: string, ownerHostId: string | null): LandingDraftTab {
+  return {
+    id,
+    content: { type: "doc", content: [] },
+    selection: null,
+    lastTouchedAt: 0,
+    settings: null,
+    composerMode: "chat",
+    workspace: emptyLandingDraftWorkspaceSnapshot(),
+    adoption: { state: "unadopted" },
+    hostRevision: 0,
+    generation: 0,
+    syncedGeneration: 0,
+    ownerHostId,
+    origin: null,
+    publication: null,
+    confirmedHostBlobHashes: [],
+    closed: false,
+  };
+}
+
 const HEAD: DraftHeadReaderRecord = {
   dialect: DRAFT_HEAD_DIALECT,
   schemaVersion: { major: 1, minor: 0 },
@@ -132,6 +158,7 @@ afterEach(() => {
   sweepMock.sweep.mockReset();
   // No mirrors dropped unless a test says otherwise.
   sweepMock.sweep.mockReturnValue([]);
+  useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
   vi.useRealTimers();
 });
 
@@ -539,5 +566,62 @@ describe("useCloudDraftsIngest", () => {
       expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
     });
     expect(readMock.read).toHaveBeenCalledTimes(3);
+  });
+
+  it("re-reads the same head when the local landing row's owner differs from the listed owner", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+
+    // A claim moved the local row's owner to "host-c" without a republish
+    // (no new head), so the directory still lists the original owner
+    // (OWNER_HOST_ID, "host-b") under the same head. The guard must not
+    // trust its own record of that key: the row now disagrees with it.
+    useLandingDraftStore.setState({
+      drafts: [landingRow("draft-1", "host-c")],
+      activeDraftId: null,
+    });
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    await vi.waitFor(() => {
+      expect(readMock.read).toHaveBeenCalledTimes(2);
+    });
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("does not re-read when the local landing row's owner matches the listed owner", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+
+    // The local row agrees with the listed owner, so the guard skips as
+    // usual.
+    useLandingDraftStore.setState({
+      drafts: [landingRow("draft-1", OWNER_HOST_ID)],
+      activeDraftId: null,
+    });
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readMock.read).toHaveBeenCalledTimes(1);
+    expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
   });
 });
