@@ -80,6 +80,14 @@ export function useDraftAuthorityControl(args: {
   // - but only for THAT draft. Keyed by draftId like `inflight`, so a claim
   // that outlives a move to another (unowned) draft can never fire the new
   // draft's repair: B must not ride A's outcome, in either direction.
+  // The host the surface currently shows, for the in-flight continuation:
+  // a claim made through a host the composer has since left must not apply
+  // its document, or the row would roll back to that host's ownership after
+  // the current host's own claim landed.
+  const currentHostRef = useRef(args.tabHostId);
+  useEffect(() => {
+    currentHostRef.current = args.tabHostId;
+  }, [args.tabHostId]);
   const repairRef = useRef<{
     readonly draftId: string;
     readonly tabHostId: string;
@@ -121,6 +129,10 @@ export function useDraftAuthorityControl(args: {
       if (result.status !== "ok" && result.status !== "already-owned") {
         return false;
       }
+      // Superseded: the surface moved to another host while this claim ran.
+      // Its document names this host as owner and would route the dirty row
+      // back here; the current host's claim is the one that counts.
+      if (currentHostRef.current !== tabHostId) return true;
       await applyIncomingDraftDocument(result.draft);
       return true;
     })();
