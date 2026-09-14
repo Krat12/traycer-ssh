@@ -31,6 +31,23 @@ export interface DraftAuthorityControl {
 interface PendingClaim {
   readonly promise: Promise<boolean>;
   repairArmed: boolean;
+  /**
+   * A submit joined this claim. Its refusal handling is the send itself
+   * (proceed on the row as it is), so an edit-armed fork must not re-key
+   * the tab underneath the deferred send.
+   */
+  repairSuppressed: boolean;
+}
+
+/**
+ * A claim is made through one host's client and its outcome names that
+ * host as the owner, so a pending claim is identified by the host it was
+ * made on as well as the draft: an edit observed after the composer moved
+ * to another host starts that host's own claim rather than riding the old
+ * one and ending up owned by a host the composer no longer shows.
+ */
+function pendingClaimKey(tabHostId: string, draftId: string): string {
+  return `${tabHostId}:${draftId}`;
 }
 
 export function useDraftAuthorityControl(args: {
@@ -77,11 +94,13 @@ export function useDraftAuthorityControl(args: {
     if (repair !== null && repair.draftId === draftId) repair.fn();
   }, []);
 
-  const runClaim = useCallback((): Promise<boolean> => {
+  const runClaim = useCallback((): PendingClaim | null => {
     const draftId = args.draftId;
-    if (draftId === null) return Promise.resolve(false);
-    const pending = inflight.current.get(draftId);
-    if (pending !== undefined) return pending.promise;
+    const tabHostId = args.tabHostId;
+    if (draftId === null || tabHostId === null) return null;
+    const key = pendingClaimKey(tabHostId, draftId);
+    const pending = inflight.current.get(key);
+    if (pending !== undefined) return pending;
     const promise = (async (): Promise<boolean> => {
       const result = await claimDraft(draftId);
       if (result.status !== "ok" && result.status !== "already-owned") {
@@ -90,15 +109,17 @@ export function useDraftAuthorityControl(args: {
       await applyIncomingDraftDocument(result.draft);
       return true;
     })();
-    const entry: PendingClaim = { promise, repairArmed: false };
+    const entry: PendingClaim = {
+      promise,
+      repairArmed: false,
+      repairSuppressed: false,
+    };
     void promise.finally(() => {
-      if (inflight.current.get(draftId) === entry) {
-        inflight.current.delete(draftId);
-      }
+      if (inflight.current.get(key) === entry) inflight.current.delete(key);
     });
-    inflight.current.set(draftId, entry);
-    return promise;
-  }, [args.draftId, claimDraft]);
+    inflight.current.set(key, entry);
+    return entry;
+  }, [args.draftId, args.tabHostId, claimDraft]);
 
   const noteEdit = useCallback((): void => {
     if (!unowned) return;
@@ -108,18 +129,20 @@ export function useDraftAuthorityControl(args: {
     // earlier edit started - and arms the repair on it once. Dropping the
     // edit instead would leave it on the unowned identity if that claim is
     // refused.
-    void runClaim();
-    const entry = inflight.current.get(draftId);
-    if (entry === undefined || entry.repairArmed) return;
+    const entry = runClaim();
+    if (entry === null || entry.repairArmed) return;
     entry.repairArmed = true;
     void entry.promise.then((owned) => {
-      if (!owned) repairFor(draftId);
+      if (!owned && !entry.repairSuppressed) repairFor(draftId);
     });
   }, [args.draftId, repairFor, runClaim, unowned]);
 
   const settleOwnership = useCallback(async (): Promise<void> => {
     if (!unowned) return;
-    await runClaim();
+    const entry = runClaim();
+    if (entry === null) return;
+    entry.repairSuppressed = true;
+    await entry.promise;
   }, [runClaim, unowned]);
 
   return { unowned, noteEdit, settleOwnership };

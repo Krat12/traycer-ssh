@@ -255,7 +255,7 @@ describe("useDraftAuthorityControl", () => {
     expect(repairOnEditB).not.toHaveBeenCalled();
   });
 
-  it("an edit that joins a submit-started claim arms the repair once", async () => {
+  it("an edit that joins a submit-started claim does not fork under the send", async () => {
     const repairOnEdit = vi.fn();
     const first = deferred<DraftClaimResult>();
     claimMock.claim.mockReturnValueOnce(first.promise);
@@ -277,7 +277,7 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(claimMock.claim).toHaveBeenCalledTimes(1);
 
-    // Two edits join the same pending claim; the repair must arm once.
+    // Two edits join the same pending claim.
     act(() => {
       view.result.current.noteEdit();
     });
@@ -291,9 +291,9 @@ describe("useDraftAuthorityControl", () => {
       await first.promise;
     });
 
-    await waitFor(() => {
-      expect(repairOnEdit).toHaveBeenCalledTimes(1);
-    });
+    // The claim was joined by the submit's own settleOwnership, which
+    // suppresses repair on refusal - even though an edit also joined it.
+    expect(repairOnEdit).not.toHaveBeenCalled();
     expect(claimMock.claim).toHaveBeenCalledTimes(1);
   });
 
@@ -337,6 +337,91 @@ describe("useDraftAuthorityControl", () => {
     });
     expect(applyIncomingMock.apply).toHaveBeenCalledTimes(1);
     expect(repairOnEdit).not.toHaveBeenCalled();
+  });
+
+  it("an edit-armed claim that a submit later joins does not fork", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(() =>
+      useDraftAuthorityControl({
+        draftId: "draft-1",
+        ownerHostId: "host-b",
+        origin: "own",
+        tabHostId: "host-a",
+        client: CLIENT,
+        repairOnEdit,
+      }),
+    );
+
+    // An edit starts the claim and arms the repair.
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    let settled = false;
+    const settlePromise = view.result.current.settleOwnership().then(() => {
+      settled = true;
+    });
+    // Joins the in-flight claim rather than starting a second one.
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      await settlePromise;
+    });
+
+    expect(settled).toBe(true);
+    expect(repairOnEdit).not.toHaveBeenCalled();
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it("a host change during a pending claim starts that host's own claim", async () => {
+    const repairOnEdit = vi.fn();
+    const first = deferred<DraftClaimResult>();
+    const second = deferred<DraftClaimResult>();
+    claimMock.claim.mockReturnValueOnce(first.promise);
+
+    const view = renderHook(
+      (props: { tabHostId: string }) =>
+        useDraftAuthorityControl({
+          draftId: "draft-1",
+          ownerHostId: "host-c",
+          origin: "own",
+          tabHostId: props.tabHostId,
+          client: CLIENT,
+          repairOnEdit,
+        }),
+      { initialProps: { tabHostId: "host-a" } },
+    );
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(1);
+
+    // Composer moves to another host while host-a's claim is still pending;
+    // the draft is still unowned (owner is host-c) on host-b.
+    claimMock.claim.mockReturnValueOnce(second.promise);
+    view.rerender({ tabHostId: "host-b" });
+
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      first.resolve({ status: "unavailable", reason: "not-found" });
+      second.resolve({ status: "unavailable", reason: "not-found" });
+      await Promise.all([first.promise, second.promise]);
+    });
+
+    await waitFor(() => {
+      expect(repairOnEdit.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
+    expect(claimMock.claim).toHaveBeenCalledTimes(2);
   });
 
   it("returning to a draft with a pending claim joins it", async () => {
