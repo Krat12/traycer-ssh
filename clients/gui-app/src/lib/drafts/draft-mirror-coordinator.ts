@@ -1036,6 +1036,16 @@ export async function submitComposerDraft(chatId: string): Promise<void> {
   const store = useComposerDraftStore.getState();
   store.clearDraft(chatId);
   if (before.draftId === null || hostId === null) return;
+  // A fork whose first write has not been acknowledged still carries
+  // `supersedes`: the upsert that would make the host retract the
+  // ancestor's cloud row has not landed (and after the fence below it never
+  // will), while the delete of the fresh id answers `absent`. The ancestor
+  // is retracted here on the user's authority instead, whatever the fresh
+  // row's ownership reads; a host that already retracted it (the ack raced
+  // this submit) has nothing left to pay.
+  if (before.supersedes !== null) {
+    retractDraftThroughHost(hostId, before.supersedes);
+  }
   // A row the tab host does not own (a replica, or another host's row),
   // submitted without an edit that would have forked it: `drafts.delete`
   // there would answer `absent` and the owner's cloud row would survive.

@@ -1331,20 +1331,16 @@ export class TabCommandCoordinator {
   }
 
   /**
-   * Re-key a draft tab in place onto a fresh copy of its draft: the strip
-   * item keeps its position, split side and focus, the copy becomes the
-   * source it renders, and the previous draft is retired locally without a
-   * host delete (its owner is another host, or a row this host could not
-   * reclaim). `null` when the previous draft has no strip item.
-   */
-  /**
    * Re-key the strip item of `previousDraftId` onto a successor row that a
    * HOST document supplies (a re-mint, or a fork made on another device,
    * whose `supersedes` names the row open here), keeping the item's strip
-   * position and group. `installNext` puts the successor in the store; the
-   * previous row is then retired locally, so the host's following `delete`
-   * frame finds nothing to remove from the layout. Null when the previous
-   * draft has no strip item or the successor already exists.
+   * position and group. Order inside the transaction: `installNext` runs
+   * FIRST, putting the successor in the store (a `false` aborts before
+   * anything moves); the strip item is then re-keyed onto it; the previous
+   * row is retired locally last, so the host's following `delete` frame
+   * finds nothing to remove from the layout. Null when the previous draft
+   * has no strip item, its row is gone, or the successor already exists or
+   * is retired; throws when the successor could not be installed.
    */
   replaceDraftWithDocument(
     command: ReplaceDraftWithDocumentCommand,
@@ -1392,6 +1388,16 @@ export class TabCommandCoordinator {
     return nextRef;
   }
 
+  /**
+   * Re-key a draft tab in place onto a fresh copy of its draft: the copy is
+   * forked in the store first, the strip item then keeps its position,
+   * split side and focus while the copy becomes the source it renders, and
+   * the previous draft is retired locally last without a host delete (its
+   * owner is another host, or a row this host could not reclaim). `null`
+   * when the previous draft has no strip item, its row is gone, or the
+   * successor id is taken; throws when the store refuses the fork
+   * mid-transaction.
+   */
   replaceDraftWithDraft(command: ReplaceDraftWithDraftCommand): TabRef | null {
     const previous: TabRef = { kind: "draft", id: command.previousDraftId };
     const nextRef: TabRef = { kind: "draft", id: command.nextDraftId };

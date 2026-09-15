@@ -135,6 +135,34 @@ describe("composer draft store: composerDraftRememberSynced clears supersedes on
   });
 });
 
+describe("composer draft store: fenceAndDetachSubmittedDraft clears supersedes so the next identity does not inherit it", () => {
+  it("clears supersedes on fence, and a later minted identity starts with none", () => {
+    const chatId = "chat-fence-clears-supersedes";
+    seedReplicaRow(chatId);
+    useComposerDraftStore.getState().detachDraftIdentity(chatId);
+    const forked = useComposerDraftStore.getState().drafts[chatId];
+    const freshId = forked?.draftId ?? null;
+    if (freshId === null) throw new Error("expected a forked draftId");
+    expect(forked?.supersedes).not.toBeNull();
+
+    useComposerDraftStore
+      .getState()
+      .fenceAndDetachSubmittedDraft(chatId, freshId, "host-a");
+
+    const fenced = useComposerDraftStore.getState().drafts[chatId];
+    expect(fenced?.supersedes).toBeNull();
+    expect(fenced?.draftId).toBeNull();
+
+    useComposerDraftStore
+      .getState()
+      .setSnapshot(chatId, DOC, { from: 1, to: 1 });
+
+    const next = useComposerDraftStore.getState().drafts[chatId];
+    expect(next?.supersedes).toBeNull();
+    expect(next?.draftId).not.toBe(freshId);
+  });
+});
+
 function chatComposerDocument(input: {
   readonly chatId: string;
   readonly draftId: string;

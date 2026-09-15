@@ -398,6 +398,43 @@ describe("submitComposerDraft: a row the tab host does not own (fixup B)", () =>
   });
 });
 
+describe("submitComposerDraft: an unacknowledged fork (fixup round 3)", () => {
+  const TAB_HOST = "host-tab-fork";
+
+  it("retracts the ancestor through the tab host and deletes the fresh id", async () => {
+    const log: ForeignSubmitLog = { retracts: [], deletes: [] };
+    mountTabHostSession(TAB_HOST, log);
+    bindComposerDraftHost(CHAT_ID, TAB_HOST);
+
+    await applyForeignComposerDocument({
+      draftId: "ancestor-row",
+      ownerHostId: "host-owner",
+      origin: "replica",
+    });
+
+    useComposerDraftStore.getState().detachDraftIdentity(CHAT_ID);
+    const freshId =
+      useComposerDraftStore.getState().drafts[CHAT_ID]?.draftId ?? null;
+    expect(freshId).not.toBeNull();
+    expect(freshId).not.toBe("ancestor-row");
+
+    await submitComposerDraft(CHAT_ID);
+
+    expect(log.retracts).toEqual(["ancestor-row"]);
+    expect(log.deletes).toEqual([freshId]);
+    expect(
+      useComposerDraftStore.getState().drafts[CHAT_ID]?.draftId,
+    ).toBeNull();
+    expect(
+      useComposerDraftStore.getState().drafts[CHAT_ID]?.supersedes,
+    ).toBeNull();
+    if (freshId === null) throw new Error("expected a fresh draftId");
+    expect(
+      useComposerDraftStore.getState().pendingSubmittedDraftDeletes[freshId],
+    ).toBeUndefined();
+  });
+});
+
 describe("deleteLandingDraftThroughHost", () => {
   const HOST_B = "host-b";
 

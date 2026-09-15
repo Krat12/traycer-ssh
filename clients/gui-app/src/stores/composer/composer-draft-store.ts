@@ -170,7 +170,9 @@ interface ComposerDraftStore {
    *
    * `hostId` names the host the pending delete is routed to; `null` records
    * no pending delete (a row the tab host does not own is retracted through
-   * the cloud by the caller instead of deleted on a host).
+   * the cloud by the caller instead of deleted on a host). `supersedes` is
+   * cleared with the id: an unacknowledged fork's ancestor is the caller's
+   * to retract, never the next identity's.
    */
   readonly fenceAndDetachSubmittedDraft: (
     chatId: string,
@@ -425,6 +427,10 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
                 hostRevision: 0,
                 ownerHostId: null,
                 origin: null,
+                // The one-shot pointer belonged to the id being retired;
+                // the next minted id owes the ancestor nothing (the caller
+                // retracts it alongside this fence).
+                supersedes: null,
                 publication: null,
                 syncedGeneration: current.generation,
               },
