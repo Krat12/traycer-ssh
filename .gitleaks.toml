@@ -85,3 +85,13 @@ paths = [
   '''^clients/desktop/src/electron-main/browser-sessions/__tests__/browser-sessions-owner\.test\.ts$''',
 ]
 regexes = ['''^(?:d3JhcHBlZEtleQ==|cmF3S2V5)$''']
+
+[[allowlists]]
+description = "Chat-session registry scope keys in the draft-image custody suites. `scopeKey` names an entry in the in-process session registry - two tests holding the same (epic, chat, host) need distinct keys to hold distinct handles - so the values are review-round labels (`r6f1-signout` is the sign-out case of round 6's first finding), never credentials. The generic-api-key rule matches `r6f1-signout` on entropy alone; the regex below admits only that label shape (a round prefix plus lowercase kebab words), so a genuinely random value added to either file is still reported. Same `fetch-depth: 0` situation as the entries above: the PR scan reads the branch that introduces them (`fix/draft-image-hash-rewrite`), so this cannot wait for it to land. Scoped to the label shape and the two source paths."
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^clients/gui-app/src/providers/__tests__/auth-lifecycle-bridge-r6f1-cross-account-handoff\.test\.tsx$''',
+  '''^clients/gui-app/src/stores/chats/__tests__/chat-session-store-hash-only-refusal\.test\.ts$''',
+]
+regexes = ['''^(?:r\d+(?:f\d+)?|rr\d+)(?:-[a-z0-9]+)*$''']
