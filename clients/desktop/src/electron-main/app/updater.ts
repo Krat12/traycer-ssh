@@ -1,4 +1,5 @@
 import { app } from "electron";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
 import { autoUpdater } from "electron-updater";
 // Type-only: erased at compile time, so it is unaffected by the unit suite's
 // `electron-updater` package-root mock (which exports `autoUpdater` alone).
@@ -331,6 +332,10 @@ export async function installAutoUpdater(
   isDev: boolean,
   deps: AppUpdaterDeps,
 ): Promise<void> {
+  if (SSH_DESKTOP_ONLY) {
+    markUpdaterInitialized("initialized");
+    return;
+  }
   if (installed) {
     return;
   }
@@ -635,6 +640,14 @@ export async function checkForUpdatesNow(
   isDev: boolean,
   intent: DesktopAppUpdateCheckIntent,
 ): Promise<DesktopAppUpdateSnapshot> {
+  if (SSH_DESKTOP_ONLY) {
+    emitSnapshot({
+      status: "unavailable",
+      errorMessage: "Install updates manually from Traycer SSH releases.",
+      lastCheckIntent: intent,
+    });
+    return getAppUpdateSnapshot();
+  }
   // Serialize behind updater initialization: a check reaching here in the window
   // phase (menu / IPC) before the deferred `installAutoUpdater` runs must wait
   // for the persisted channel, feed, and listeners to be authoritative rather
@@ -953,6 +966,12 @@ export type {
 export function setAllowPrereleaseUpdates(
   allowPrerelease: boolean,
 ): Promise<DesktopAppUpdateChannelChange> {
+  if (SSH_DESKTOP_ONLY) {
+    return Promise.resolve({
+      outcome: "unchanged",
+      snapshot: getAppUpdateSnapshot(),
+    });
+  }
   // Enqueue synchronously (no await before this line) so admission order equals
   // call order: the entire operation below - idempotence, refusal, persistence,
   // generation/feed/snapshot - runs serialized, and the last admitted request
@@ -1274,6 +1293,7 @@ export async function resolveCompatRecovery(input: {
   readonly minimumEpoch: number;
   readonly hostAllowsRcRecovery: boolean;
 }): Promise<DesktopCompatRecoveryPlan> {
+  if (SSH_DESKTOP_ONLY) return manualRecoveryPlan();
   await updaterInitialized;
   if (updaterInitState !== "initialized") {
     // No feed, no candidate, and no ability to acquire either. The manual link
@@ -1568,6 +1588,7 @@ export function checkForUpdatesAfterResume(isDev: boolean): void {
  * second call while already downloading is a no-op (re-asserts the state).
  */
 export function startUpdateDownload(): DesktopAppUpdateSnapshot {
+  if (SSH_DESKTOP_ONLY) return getAppUpdateSnapshot();
   // Readiness guard (finding 1): a download is only reachable once a candidate
   // has been surfaced as `available`, which requires initialization to have
   // completed and attached the listeners that produce that state. This synchronous
@@ -1623,6 +1644,7 @@ export function startUpdateDownload(): DesktopAppUpdateSnapshot {
 }
 
 export function installDownloadedUpdate(): DesktopAppUpdateSnapshot {
+  if (SSH_DESKTOP_ONLY) return getAppUpdateSnapshot();
   // Readiness guard (finding 1): install is only reachable once an artifact has
   // reached "ready", which requires initialization. Refuse before init (or after
   // a failed init) rather than hand off to a not-yet-configured updater.

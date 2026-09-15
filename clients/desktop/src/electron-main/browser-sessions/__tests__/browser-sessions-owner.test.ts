@@ -8,6 +8,7 @@ import type {
   BrowserViewNativeTabStatusChange,
 } from "@traycer-clients/shared/platform/browser-view";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { SshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import { log } from "../../app/logger";
 import {
   BrowserSessionsRegistry,
@@ -809,6 +810,155 @@ describe("the browser.sessions jar plane lives in main", () => {
       "electronTabLifecycleReady",
       "primaryProfileForgetLedger",
     ]);
+  });
+
+  it("starts the private browser handshake with honest null locality in a remote-only desktop", async () => {
+    registry.dispose();
+    harness.localHostId = null;
+    registry = new BrowserSessionsRegistry({
+      ...harness.deps,
+      hasLocalHost: false,
+    });
+    const session = await openLiveStream(harness, registry, "window-1");
+    expect(session.sentFrames.map((frame) => frame.kind)).toEqual([
+      "electronTabLifecycleReady",
+      "primaryProfileForgetLedger",
+    ]);
+    expect(session.sentFrames[0]?.coLocatedHostId).toBeNull();
+    expect(session.sentFrames[0]?.desktopWindowId).toBe("window-1");
+    registry.dispose();
+  });
+
+  it("re-resolves only the named Host's browser stream when its SSH route changes", async () => {
+    await openLiveStream(harness, registry, "window-1");
+    registry.notifyHostRouteChanged("another-host");
+    await Promise.resolve();
+    expect(harness.clients).toHaveLength(1);
+    registry.notifyHostRouteChanged("host-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.clients).toHaveLength(2);
+    registry.dispose();
+  });
+
+  it("keeps an SSH browser owner through an outage and reattaches on the new tunnel port", async () => {
+    registry.dispose();
+    let target: HostDirectoryEntry = {
+      ...LOCAL_HOST_ENTRY,
+      kind: "ssh",
+      websocketUrl: "ws://127.0.0.1:44100/rpc",
+    };
+    harness.resolveHost = () => Promise.resolve(target);
+    const openedTargets: HostDirectoryEntry[] = [];
+    registry = new BrowserSessionsRegistry({
+      ...harness.deps,
+      openTransport: (entry, userId) => {
+        openedTargets.push(entry);
+        // Match the production transport's refusal of an absent endpoint.
+        if (entry.websocketUrl === null) return null;
+        return harness.deps.openTransport(entry, userId);
+      },
+    });
+    const first = await openLiveStream(harness, registry, "window-1");
+    first.emit(
+      {
+        kind: "capturePrimaryProfile",
+        hasBinaryPayload: false,
+        requestId: "old-standing-capture",
+        standing: true,
+      },
+      null,
+    );
+
+    target = {
+      ...target,
+      websocketUrl: null,
+      transportDialability: "not-dialable",
+    };
+    registry.notifyHostRouteChanged("host-1");
+    await settle();
+
+    expect(harness.closedTransports).toEqual([0]);
+    expect(harness.clients).toHaveLength(1);
+    expect(lifecycles(harness.emitted).at(-1)).toBe("reconnecting");
+    expect(lifecycles(harness.emitted)).not.toContain("failed");
+    await registry.captureFinalPrimaryProfiles("window-1");
+    expect(harness.jar.captures).toBe(0);
+
+    target = {
+      ...target,
+      websocketUrl: "ws://127.0.0.1:44200/rpc",
+      transportDialability: "dialable",
+    };
+    // No second renderer open or manual retry: the retained main owner hears
+    // the native manager publish the recovered route.
+    registry.notifyHostRouteChanged("host-1");
+    await settle();
+
+    expect(openedTargets.map((entry) => entry.kind)).toEqual(["ssh", "ssh"]);
+    expect(openedTargets.map((entry) => entry.websocketUrl)).toEqual([
+      "ws://127.0.0.1:44100/rpc",
+      "ws://127.0.0.1:44200/rpc",
+    ]);
+    const recovered = harness.clients[1]?.sessions[0];
+    if (recovered === undefined) throw new Error("SSH stream did not recover");
+    recovered.emitStatus("open");
+    recovered.emit(snapshotFrame(), null);
+    expect(lifecycles(harness.emitted).at(-1)).toBe("live");
+    expect(renderedFrameKinds(harness.emitted)).toEqual([
+      "snapshot",
+      "snapshot",
+    ]);
+    // The replacement connection must receive a fresh standing authority.
+    await registry.captureFinalPrimaryProfiles("window-1");
+    expect(harness.jar.captures).toBe(0);
+    registry.dispose();
+    expect(harness.closedTransports).toEqual([0, 1]);
+  });
+
+  it("retires SSH browser authority when the renderer replaces a re-enrolled Host's owner key", async () => {
+    let target: SshHostDirectoryEntry = {
+      ...LOCAL_HOST_ENTRY,
+      kind: "ssh",
+      publicKey: "registered-key-before",
+    };
+    harness.resolveHost = () => Promise.resolve(target);
+    const first = await openLiveStream(harness, registry, "window-1");
+    first.emit(
+      {
+        kind: "capturePrimaryProfile",
+        hasBinaryPayload: false,
+        requestId: "old-standing-capture",
+        standing: true,
+      },
+      null,
+    );
+
+    target = { ...target, publicKey: "registered-key-after" };
+    // The GUI owns this key's encoding. Main treats it as opaque, but must
+    // keep the old and replacement owners separate even at the same address.
+    const replacementKey = {
+      ...OPEN_REQUEST,
+      identityKey: "identity-after-key-rotation",
+    };
+    registry.close("window-1", OPEN_REQUEST);
+    registry.open("window-1", replacementKey);
+    await settle();
+    expect(first.closed).toBe(true);
+    expect(harness.closedTransports).toEqual([0]);
+    const replacement = harness.clients[1]?.sessions[0];
+    if (replacement === undefined)
+      throw new Error("replacement owner did not open");
+    replacement.emitStatus("open");
+    replacement.emit(snapshotFrame(), null);
+
+    // No standing authority or ledger acknowledgement survives the owner.
+    await registry.captureFinalPrimaryProfiles("window-1");
+    expect(harness.jar.captures).toBe(0);
+    expect(harness.jar.releasedConnectionIds).toHaveLength(1);
+    expect(harness.emitted.at(-1)?.envelope.key).toEqual(replacementKey);
+    registry.dispose();
+    expect(harness.closedTransports).toEqual([0, 1]);
   });
 
   it("prices a ledger ack against what THIS connection was sent, and re-earns it after a reconnect", async () => {

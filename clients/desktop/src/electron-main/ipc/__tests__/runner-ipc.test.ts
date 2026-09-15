@@ -41,6 +41,12 @@ import {
   userBearerClaims,
 } from "../../auth/__tests__/jws-fixture";
 
+// Preserve the upstream lifecycle assertions; SSH-only refusal is covered by
+// ssh-only-host-ipc.test.ts and the startup/selection edition cases.
+vi.mock("@traycer-clients/shared/platform/desktop-edition", () => ({
+  SSH_DESKTOP_ONLY: false,
+}));
+
 const featureSettings = vi.hoisted(() => ({ agentRoles: false }));
 /**
  * `app`-level event listeners, recorded rather than discarded so a test can
@@ -120,7 +126,10 @@ vi.mock("electron", () => ({
     off: (event: string, listener: (...args: unknown[]) => void): void => {
       appEventState.listeners.get(event)?.delete(listener);
     },
+    once: vi.fn(),
+    removeListener: vi.fn(),
   },
+  powerMonitor: { on: vi.fn(), removeListener: vi.fn() },
   safeStorage: {
     isEncryptionAvailable: (): boolean => false,
     encryptString: (_value: string): Buffer => Buffer.from("", "utf8"),
@@ -612,6 +621,10 @@ describe("RunnerIpcBridge", () => {
           RunnerHostInvoke.requestHostRespawn,
           RunnerHostInvoke.lastKnownLocalHostId,
           RunnerHostInvoke.localHostSnapshot,
+          RunnerHostInvoke.sshHostsList,
+          RunnerHostInvoke.sshHostsSave,
+          RunnerHostInvoke.sshHostsRemove,
+          RunnerHostInvoke.sshHostsReconnect,
           RunnerHostInvoke.traySetIndicator,
           RunnerHostInvoke.traySetEpics,
           RunnerHostInvoke.setUnsyncedEditsSnapshot,

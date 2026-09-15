@@ -1,3 +1,5 @@
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
+import type { ISshHostManager } from "../ipc-contracts/ssh-host-types";
 import type { DesktopMenuSnapshot } from "../ipc-contracts/window-types";
 import type {
   ActivateInstalledOk,
@@ -271,6 +273,7 @@ export interface DesktopPreloadBridge {
   power: DesktopPowerBridge;
   zoom: DesktopZoomBridge;
   browserView: BrowserViewBridge;
+  readonly sshHosts?: ISshHostManager;
   hostManagement: DesktopHostManagementBridge;
   hostTray: DesktopHostTrayBridge;
   hostControllerStatus: DesktopHostControllerStatusBridge;
@@ -680,7 +683,7 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly signInUrl: string;
   readonly authnBaseUrl: string;
   readonly relayBaseUrl: string;
-  readonly hasLocalHost: boolean = true;
+  readonly hasLocalHost: boolean = !SSH_DESKTOP_ONLY;
   // The renderer's own clipboard takes images, and where a MIME type defeats
   // it the main-process nativeImage bridge picks the write up.
   readonly canCopyImages: boolean = true;
@@ -705,6 +708,7 @@ export class DesktopRunnerHost implements IRunnerHost {
   readonly power: DesktopPowerBridge;
   readonly zoom: IZoomHost;
   readonly browserView: BrowserViewBridge;
+  readonly sshHosts: ISshHostManager | undefined;
   readonly hostManagement: IHostManagement;
   readonly hostTray: IHostTray;
   // No OS push on the desktop: notifications here are native `show` calls, not
@@ -730,6 +734,7 @@ export class DesktopRunnerHost implements IRunnerHost {
 
   constructor(options: DesktopRunnerHostOptions) {
     this.bridge = options.bridge;
+    this.sshHosts = options.bridge.sshHosts;
     this.signInUrl = options.signInUrl;
     this.authnBaseUrl = options.bridge.authnBaseUrl;
     this.relayBaseUrl = options.bridge.relayBaseUrl;

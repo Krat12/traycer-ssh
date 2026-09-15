@@ -1,3 +1,4 @@
+import type { ISshHostManager } from "./ssh-host";
 import type { Disposable } from "./uri-callback";
 import type { AuthIdentityValidationResult } from "../auth/auth-validation-types";
 import type {
@@ -104,6 +105,8 @@ export type SystemResumeEvent = {
  * register it through module-level globals.
  */
 export interface IRunnerHost {
+  /** Desktop-only routes to existing Linux Hosts through system OpenSSH. */
+  readonly sshHosts?: ISshHostManager;
   /**
    * Durable renderer-crash sink. Desktop forwards directly to its main-process
    * file logger so a dying renderer cannot lose the boundary's component stack.

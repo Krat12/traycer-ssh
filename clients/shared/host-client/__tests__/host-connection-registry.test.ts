@@ -3,6 +3,7 @@ import type { HostLeaseSnapshot } from "../../host-selection/selection-authority
 import type { Disposable } from "../../platform/uri-callback";
 import type { HostDirectoryEntry } from "../host-directory";
 import type { RemoteHostDirectoryEntry } from "../remote-fetcher";
+import type { SshHostDirectoryEntry } from "../ssh-host-directory";
 import {
   HOST_CONNECTION_LINGER_MS,
   acquireHostConnection,
@@ -175,6 +176,29 @@ describe("subscribeHostRowChanged — per-host precision", () => {
 
     expect(listenerB).toHaveBeenCalledTimes(1);
     expect(listenerA).not.toHaveBeenCalled();
+  });
+
+  it("notifies held SSH rows on registry key rotation even when the tunnel endpoint is unchanged", () => {
+    const directory = stubDirectory();
+    const hostId = freshHostId();
+    const before: SshHostDirectoryEntry = {
+      ...localEntry(hostId, {}),
+      kind: "ssh",
+      publicKey: "old-key",
+    };
+    directory.setEntry(hostId, before);
+    installHostConnectionRegistrySource({
+      directory: directory.source,
+      leases: null,
+    });
+    const listener = vi.fn();
+    subscribeHostRowChanged(hostId, listener);
+    directory.emitChanged();
+    expect(listener).not.toHaveBeenCalled();
+    const after: SshHostDirectoryEntry = { ...before, publicKey: "new-key" };
+    directory.setEntry(hostId, after);
+    directory.emitChanged();
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses a directory emit whose rows are field-identical, even though findById returns a fresh object every call", () => {

@@ -57,6 +57,7 @@ export type WatchImpl = (
 ) => FSWatcher;
 
 export interface FileTokenStoreOptions {
+  readonly credentialsPath?: string;
   readonly environment: Environment;
   readonly authnBaseUrl: string;
   readonly watchImpl: WatchImpl | undefined;
@@ -144,7 +145,8 @@ export class FileTokenStore {
   constructor(options: FileTokenStoreOptions) {
     this.authnBaseUrl = options.authnBaseUrl;
     this.watchImpl = options.watchImpl ?? watch;
-    const credentialsPath = cliCredentialsPath(options.environment);
+    const credentialsPath =
+      options.credentialsPath ?? cliCredentialsPath(options.environment);
     this.credentialsPath = credentialsPath;
     this.credentialsDir = dirname(credentialsPath);
     this.credentialsBasename = basename(credentialsPath);

@@ -2,7 +2,7 @@ import { Menu, Tray, app, nativeImage } from "electron";
 import { access, constants } from "node:fs/promises";
 import { join } from "node:path";
 import { platform as nodePlatform } from "node:process";
-import { isDevBuild } from "../../config";
+import { DESKTOP_APP_NAME, isDevBuild } from "../../config";
 import type {
   DesktopTrayEpic,
   DesktopTrayIndicatorState,
@@ -12,7 +12,7 @@ import { log } from "../app/logger";
 
 // Stable GUID so Windows preserves tray icon position across explorer
 // restarts and app upgrades. Only takes effect on signed Windows builds.
-const TRAY_GUID = "9b1d3a7e-4c52-4f8a-bd62-3e7f1a8c5d09";
+const TRAY_GUID = "bd5aa46d-9e9a-427f-a868-752e73ab0541";
 
 // Recent epics rendered inline; any beyond this collapse into a "More" submenu.
 const TRAY_EPIC_PRIMARY_LIMIT = 5;
@@ -190,7 +190,7 @@ export class DesktopTrayController {
     this.onEpicSelected = options.onEpicSelected;
     this.onCommand = options.onCommand;
     this.tray = new Tray(image, TRAY_GUID);
-    this.tray.setToolTip("Traycer");
+    this.tray.setToolTip(DESKTOP_APP_NAME);
     this.tray.on("click", () => this.showMainWindow());
     this.rebuildMenu();
   }
@@ -218,7 +218,7 @@ export class DesktopTrayController {
 
   setIndicator(state: DesktopTrayIndicatorState): void {
     this.indicator = state;
-    this.tray.setToolTip(`Traycer (${state})`);
+    this.tray.setToolTip(`${DESKTOP_APP_NAME} (${state})`);
   }
 
   setPresentation(presentation: DesktopTrayPresentation): void {
@@ -310,7 +310,7 @@ export class DesktopTrayController {
         : [];
     const menu = Menu.buildFromTemplate([
       {
-        label: "Open Traycer",
+        label: `Open ${DESKTOP_APP_NAME}`,
         // Display-only: `registerAccelerator: false` means the OS never
         // binds this from the menu - the global-shortcuts registry owns the
         // real registration. `undefined` (not `null`) is what Electron's
@@ -350,7 +350,7 @@ export class DesktopTrayController {
       },
       { type: "separator" },
       {
-        label: "Quit Traycer",
+        label: `Quit ${DESKTOP_APP_NAME}`,
         click: () => {
           log.info("[tray] quitting from tray menu");
           app.quit();

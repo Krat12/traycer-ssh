@@ -50,7 +50,7 @@ describe("registerDeepLinkHandling (demoted return-signal handler)", () => {
     const handler = vi.fn();
     mod.registerDeepLinkHandling(handler);
 
-    fireOpenUrl("traycer-dev://auth/callback");
+    fireOpenUrl("traycer-ssh://auth/callback");
 
     expect(handler).toHaveBeenCalledTimes(1);
     // The handler takes no arguments - it is a pure nudge.
@@ -62,7 +62,7 @@ describe("registerDeepLinkHandling (demoted return-signal handler)", () => {
     const handler = vi.fn();
     mod.registerDeepLinkHandling(handler);
 
-    fireOpenUrl("traycer-dev://auth/callback?code=legacy-code&error=ignored");
+    fireOpenUrl("traycer-ssh://auth/callback?code=legacy-code&error=ignored");
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler).toHaveBeenNthCalledWith(1);
@@ -73,7 +73,7 @@ describe("registerDeepLinkHandling (demoted return-signal handler)", () => {
     const handler = vi.fn();
     mod.registerDeepLinkHandling(handler);
 
-    fireOpenUrl("traycer-dev://auth/callback/");
+    fireOpenUrl("traycer-ssh://auth/callback/");
 
     expect(handler).toHaveBeenCalledTimes(1);
   });
@@ -83,7 +83,7 @@ describe("registerDeepLinkHandling (demoted return-signal handler)", () => {
     const handler = vi.fn();
     mod.registerDeepLinkHandling(handler);
 
-    fireOpenUrl("traycer-dev://session/xyz");
+    fireOpenUrl("traycer-ssh://session/xyz");
 
     expect(handler).not.toHaveBeenCalled();
   });
@@ -120,14 +120,14 @@ describe("registerDeepLinkHandling under a dev-desktop slot", () => {
     mod.registerDeepLinkHandling(handler);
 
     expect(electron.app.setAsDefaultProtocolClient).toHaveBeenCalledWith(
-      "traycer-dev-my-worktree",
+      "traycer-ssh-my-worktree",
     );
 
-    fireOpenUrl("traycer-dev-my-worktree://auth/callback");
+    fireOpenUrl("traycer-ssh-my-worktree://auth/callback");
     expect(handler).toHaveBeenCalledTimes(1);
 
     // A sibling run's (or the bare dev) callback is not ours.
-    fireOpenUrl("traycer-dev://auth/callback");
+    fireOpenUrl("traycer-ssh://auth/callback");
     expect(handler).toHaveBeenCalledTimes(1);
   });
 });

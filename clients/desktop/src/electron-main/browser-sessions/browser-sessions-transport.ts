@@ -11,11 +11,14 @@ import {
 import type { HostRpcRegistry } from "@traycer/protocol/host/index";
 import type { BearerSourceProvider } from "@traycer-clients/shared/auth/bearer-source";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { SshHostConnection } from "@traycer-clients/shared/platform/ssh-host";
+import { sshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import type { HostTransportEndpoint } from "@traycer-clients/shared/host-transport/host-messenger";
 import {
   fetchRegisteredHostsViaHttp,
   hostListItemToDirectoryEntry,
   isRemoteHostDirectoryEntry,
+  type RemoteHostDirectoryEntry,
 } from "@traycer-clients/shared/host-client/remote-fetcher";
 import { NO_TRANSPORT_EVIDENCE } from "@traycer-clients/shared/host-selection/transport-evidence";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
@@ -99,6 +102,8 @@ export interface BrowserSessionsHostDirectoryDeps {
     readonly version: string | null;
   } | null;
   readonly bearerToken: () => string | null;
+  /** Main-approved routes only; a renderer never supplies a WebSocket URL. */
+  readonly sshConnection?: (hostId: string) => SshHostConnection | null;
   /** `fetchRegisteredHostsViaHttp` in production; a double in tests. */
   readonly listRegisteredHosts: typeof fetchRegisteredHostsViaHttp;
   readonly now: () => number;
@@ -126,7 +131,7 @@ const MISS_REFRESH_COOLDOWN_MS = 30_000;
 export function createBrowserSessionsHostDirectory(
   deps: BrowserSessionsHostDirectoryDeps,
 ): BrowserSessionsHostDirectory {
-  let cachedRemote = new Map<string, HostDirectoryEntry>();
+  let cachedRemote = new Map<string, RemoteHostDirectoryEntry>();
   let inFlight: Promise<void> | null = null;
   let lastRefreshAt: number | null = null;
   let forced = false;
@@ -139,7 +144,7 @@ export function createBrowserSessionsHostDirectory(
       bearerToken,
     );
     if (result.kind !== "ok") return;
-    const next = new Map<string, HostDirectoryEntry>();
+    const next = new Map<string, RemoteHostDirectoryEntry>();
     for (const item of result.response.hosts) {
       // `planAllowsRemote: true` - main holds no plan state, and the fetcher's
       // own contract says a not-yet-known plan reads as allowed: a wasted dial
@@ -206,6 +211,15 @@ export function createBrowserSessionsHostDirectory(
     };
   };
 
+  const routedRemote = (hostId: string): HostDirectoryEntry | null => {
+    const registered = cachedRemote.get(hostId);
+    if (registered === undefined) return null;
+    const connection = deps.sshConnection?.(hostId) ?? null;
+    return connection === null
+      ? registered
+      : sshHostDirectoryEntry(connection, registered);
+  };
+
   return {
     invalidate: (hostId) => {
       cachedRemote.delete(hostId);
@@ -217,17 +231,17 @@ export function createBrowserSessionsHostDirectory(
       forced = true;
     },
     endpoint: (hostId) => {
-      const entry = localEntryFor(hostId) ?? cachedRemote.get(hostId) ?? null;
+      const entry = localEntryFor(hostId) ?? routedRemote(hostId);
       if (entry === null) return null;
       return { hostId, websocketUrl: entry.websocketUrl };
     },
     resolve: async (hostId) => {
       const local = localEntryFor(hostId);
       if (local !== null) return local;
-      const cached = cachedRemote.get(hostId);
-      if (cached !== undefined) return cached;
+      const cached = routedRemote(hostId);
+      if (cached !== null) return cached;
       await refreshOnce();
-      return cachedRemote.get(hostId) ?? null;
+      return routedRemote(hostId);
     },
   };
 }

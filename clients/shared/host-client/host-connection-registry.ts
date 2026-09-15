@@ -12,8 +12,8 @@ import type { HostDirectoryEntry } from "./host-directory";
 import {
   hostUnavailability,
   isRelayFuseRecoveryCandidate,
-  isRemoteHostDirectoryEntry,
 } from "./remote-fetcher";
+import { hostRegistryPublicKey } from "./ssh-host-directory";
 
 /**
  * The window's connection registry (redesign connection-registry §1).
@@ -486,12 +486,8 @@ export function hostDirectoryEntryEquals(
     // some consumer named and expires a linger after the last holder lets go.
     // A host with a populated cache and nobody holding it is exactly the case
     // this module cannot see.
-    remotePublicKeyOf(a) === remotePublicKeyOf(b)
+    hostRegistryPublicKey(a) === hostRegistryPublicKey(b)
   );
-}
-
-function remotePublicKeyOf(entry: HostDirectoryEntry): string | null {
-  return isRemoteHostDirectoryEntry(entry) ? entry.publicKey : null;
 }
 
 /**

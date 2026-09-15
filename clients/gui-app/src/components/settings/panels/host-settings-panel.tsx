@@ -15,6 +15,7 @@ import { useHostScope } from "@/components/settings/host-scope/use-host-scope";
 import { useScopedHostBinding } from "@/components/settings/host-scope/use-scoped-host-binding";
 import { useScopedStreamBinding } from "@/components/settings/host-scope/use-scoped-stream-binding";
 import { HostOverviewPanel } from "@/components/settings/panels/host-overview-panel";
+import { SshHostConnectionCard } from "@/components/settings/panels/ssh-host-connection-card";
 import {
   fixActionLabel,
   parseFreePortInput,
@@ -170,6 +171,12 @@ function HostSettingsPanelInner() {
       description={description}
       bodyClassName="overflow-visible rounded-none border-none bg-transparent"
     >
+      {scope.host !== null && !scopedIsLocalMachine ? (
+        <SshHostConnectionCard
+          hostId={scope.host.hostId}
+          hostLabel={scope.host.name}
+        />
+      ) : null}
       {body}
     </SettingsPanelShell>
   );

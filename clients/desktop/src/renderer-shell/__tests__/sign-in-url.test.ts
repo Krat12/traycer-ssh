@@ -7,12 +7,12 @@ import { DESKTOP_SIGN_IN_BASE_URL } from "../../config";
  * base from `config`), decided at compile time by the `environment` field.
  * The OSS build ships production endpoints in source, so the base URL is the
  * production Cloud UI; the deep-link callback still uses the dev
- * `traycer-dev://` scheme because an unpackaged source build runs the dev shell.
+ * `traycer-ssh://` scheme because an unpackaged source build runs the dev shell.
  */
 describe("composeDesktopSignInUrl", () => {
   it("appends the deep-link redirect to the source-controlled Cloud UI base URL", () => {
     expect(composeDesktopSignInUrl(DESKTOP_REDIRECT_URI)).toBe(
-      `${DESKTOP_SIGN_IN_BASE_URL}?redirect_uri=traycer-dev%3A%2F%2Fauth%2Fcallback`,
+      `${DESKTOP_SIGN_IN_BASE_URL}?redirect_uri=traycer-ssh%3A%2F%2Fauth%2Fcallback`,
     );
   });
 
@@ -58,8 +58,8 @@ describe("DESKTOP_REDIRECT_URI under a dev-desktop slot", () => {
     vi.resetModules();
   });
 
-  it("uses the bare dev scheme when no slot is active", () => {
-    expect(DESKTOP_REDIRECT_URI).toBe("traycer-dev://auth/callback");
+  it("uses the independent SSH scheme when no slot is active", () => {
+    expect(DESKTOP_REDIRECT_URI).toBe("traycer-ssh://auth/callback");
   });
 
   it("suffixes the scheme with the sanitized slot", async () => {
@@ -67,7 +67,7 @@ describe("DESKTOP_REDIRECT_URI under a dev-desktop slot", () => {
     vi.resetModules();
     const slotted = await import("../sign-in-url");
     expect(slotted.DESKTOP_REDIRECT_URI).toBe(
-      "traycer-dev-my-worktree://auth/callback",
+      "traycer-ssh-my-worktree://auth/callback",
     );
   });
 
@@ -75,6 +75,6 @@ describe("DESKTOP_REDIRECT_URI under a dev-desktop slot", () => {
     vi.stubEnv("VITE_DEV_DESKTOP_SLOT", "  !!  ");
     vi.resetModules();
     const slotted = await import("../sign-in-url");
-    expect(slotted.DESKTOP_REDIRECT_URI).toBe("traycer-dev://auth/callback");
+    expect(slotted.DESKTOP_REDIRECT_URI).toBe("traycer-ssh://auth/callback");
   });
 });

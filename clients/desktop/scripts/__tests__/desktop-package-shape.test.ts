@@ -13,9 +13,8 @@
  *   - Desktop **does not** reintroduce a bundled host executable, a
  *     host runtime, a developer Node binary, a host wrapper, or a
  *     service plist via `extraResources`.
- *   - The `resources/host` placeholder entry stays restricted to
- *     `.gitkeep` + `README.md` so the package shape matches RELEASE.md
- *     / AGENTS.md.
+ *   - The SSH edition contains no Host or CLI resources and cannot
+ *     install, update, or uninstall the official Host.
  *
  * The test reads the JSON directly (not the workflow YAMLs) so a hand
  * edit to `package.json` is gated independently of CI workflow drift.
@@ -107,19 +106,11 @@ describe("desktop package.json - extraResources shape", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("does not stage any sibling under the host/ namespace beyond the placeholder entry", () => {
-    // Permitted: { to: "host", filter: ["README.md", ".gitkeep"] }
-    // Forbidden: anything that nests under host/<something-else>
+  it("does not stage anything under the host namespace", () => {
     const hostNamespaceEntries = pkg.extraResources.filter(
       (entry) => entry.to === "host" || entry.to.startsWith("host/"),
     );
-    expect(hostNamespaceEntries).toHaveLength(1);
-    const placeholder = hostNamespaceEntries[0];
-    expect(placeholder.to).toBe("host");
-    expect(placeholder.from).toBe("resources/host");
-    expect([...placeholder.filter].sort()).toEqual(
-      [".gitkeep", "README.md"].sort(),
-    );
+    expect(hostNamespaceEntries).toEqual([]);
   });
 
   it("does not pull from the traycer-host source tree at all", () => {
@@ -148,22 +139,6 @@ describe("desktop package.json - extraResources shape", () => {
     }
   });
 
-  // The bundled CLI is the only host-lifecycle bridge Desktop ships, and it
-  // is staged PER TARGET ARCH. A single arch-blind `resources/cli` -> `cli`
-  // mapping copies every staged `<platform>-<arch>/` dir into every app, and
-  // the macOS release job stages arm64 AND x64 before one `electron-builder
-  // --mac` builds both apps - so the arm64 bundle shipped an x86_64-only
-  // Mach-O and macOS 26 flagged it as an Intel app (traycerai/traycer#1528).
-  // electron-builder's `${arch}` file macro is the supported way to scope a
-  // resource to the arch being packed; the platform prefix has to be literal
-  // per platform because `${os}` expands to `mac`/`win`/`linux`, not the
-  // `process.platform` value the runtime discovery layer keys on.
-  const CLI_PLATFORM_PREFIX: Record<keyof PlatformExtraResources, string> = {
-    mac: "darwin",
-    win: "win32",
-    linux: "linux",
-  };
-
   it("does not map resources/cli arch-blind at the top level", () => {
     const archBlind = pkg.extraResources.filter(
       (entry) =>
@@ -176,23 +151,36 @@ describe("desktop package.json - extraResources shape", () => {
   });
 
   it.each(["mac", "win", "linux"] as const)(
-    "stages exactly the %s target arch's CLI via the ${arch} macro",
+    "does not bundle the CLI on %s",
     (platform) => {
-      const prefix = CLI_PLATFORM_PREFIX[platform];
       const cliEntries = allExtraResourcesFor(pkg, platform).filter(
         (entry) => entry.to === "cli" || entry.to.startsWith("cli/"),
       );
-      expect(cliEntries).toHaveLength(1);
-      const entry = cliEntries[0];
-      expect(entry.from).toBe(`resources/cli/${prefix}-\${arch}`);
-      expect(entry.to).toBe(`cli/${prefix}-\${arch}`);
-      // The runtime resolves `<resourcesPath>/cli/<platform>-<arch>/<binary>`
-      // (cli-discovery.ts) and the macOS afterPack hook copies
-      // `cli/darwin-<arch>/traycer` into the helper app - the `to` must keep
-      // that exact shape, not flatten to `cli/`.
-      expect(entry.to).not.toBe("cli");
+      expect(cliEntries).toEqual([]);
     },
   );
+
+  it("keeps installation and protocol registration separate from the official app", () => {
+    const raw: {
+      build: {
+        appId: string;
+        productName: string;
+        publish: unknown;
+        afterPack?: string;
+        protocols: ReadonlyArray<{ schemes: ReadonlyArray<string> }>;
+        nsis: { include?: string; deleteAppDataOnUninstall: boolean };
+      };
+    } = JSON.parse(readFileSync(DESKTOP_PACKAGE_JSON, "utf8"));
+    expect(raw.build.appId).toBe("io.github.krat12.traycer-ssh");
+    expect(raw.build.productName).toBe("Traycer SSH");
+    expect(raw.build.protocols.flatMap((entry) => entry.schemes)).toEqual([
+      "traycer-ssh",
+    ]);
+    expect(raw.build.publish).toBeNull();
+    expect(raw.build.afterPack).toBeUndefined();
+    expect(raw.build.nsis.include).toBeUndefined();
+    expect(raw.build.nsis.deleteAppDataOnUninstall).toBe(false);
+  });
 
   it("embeds the Windows app icon for Start menu and desktop shortcuts", () => {
     expect(pkg.winIcon).toBe("icon.ico");

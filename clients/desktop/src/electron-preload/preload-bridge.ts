@@ -4,6 +4,7 @@ import { config } from "../config";
 import { readInitialRouteArg } from "../ipc-contracts/window-bootstrap";
 import { buildAuthBridge, buildAuthTokenStoreBridge } from "./auth-bridge";
 import { buildDeviceFlowBridge } from "./device-flow-bridge";
+import { buildSshHostBridge } from "./ssh-host-bridge";
 import { buildHostBridge } from "./host-bridge";
 import {
   buildHostControllerStatusSubscriber,
@@ -87,6 +88,7 @@ contextBridge.exposeInMainWorld("runnerHost", {
   ...buildBrowserViewBridge(),
   selectionAuthority: buildSelectionAuthorityBridge(),
   refreshSelectionFleet: buildSelectionFleetRefresh(),
+  sshHosts: buildSshHostBridge(),
   hostManagement: buildHostManagementBridge(),
   hostTray: buildHostTrayCommandSubscriber(),
   hostControllerStatus: buildHostControllerStatusSubscriber(),

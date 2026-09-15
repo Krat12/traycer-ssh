@@ -1,0 +1,43 @@
+name: Traycer SSH Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/ssh-desktop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: traycer-ssh-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.12"
+      - run: bun install --frozen-lockfile
+      - name: SSH transport tests
+        working-directory: clients/desktop
+        run: bun x vitest run src/electron-main/ssh/__tests__ --maxWorkers=2
+      - name: Build independent installer
+        working-directory: clients/desktop
+        env:
+          TRAYCER_SSH_VERSION: 0.1.0-ssh.${{ github.run_number }}
+          VITE_DESKTOP_LOCAL_STORAGE_KEY: ${{ secrets.TRAYCER_SSH_STORAGE_KEY }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bun run package:ssh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Traycer-SSH-Windows-x64
+          path: clients/desktop/release/*.exe
+          if-no-files-found: error
+          retention-days: 30

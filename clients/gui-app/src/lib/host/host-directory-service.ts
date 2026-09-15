@@ -17,6 +17,11 @@ import type {
   LocalHostSnapshot,
 } from "@traycer-clients/shared/platform/runner-host";
 import type { Disposable } from "@traycer-clients/shared/platform/uri-callback";
+import type { SshHostConnection } from "@traycer-clients/shared/platform/ssh-host";
+import {
+  hostRegistryPublicKey,
+  sshHostDirectoryEntry,
+} from "@traycer-clients/shared/host-client/ssh-host-directory";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { requestFleetRefresh } from "@/lib/host/fleet-refresh";
 import { lastLocalHostIdKey } from "@/lib/persist";
@@ -236,6 +241,12 @@ export class HostDirectoryService implements IHostDirectoryService {
     (refreshing: boolean) => void
   >();
   private localSubscription: Disposable | null = null;
+  private sshSubscription: Disposable | null = null;
+  private sshConnections: readonly SshHostConnection[] = [];
+  // A failed/unfinished profile read must not route saved SSH hosts over the
+  // relay. Membership remains available through the account registry, while
+  // this directory withholds remote transports until their route is known.
+  private sshRoutesKnown = false;
   private started = false;
   private refreshIntervalId: number | null = null;
   private visibilityDocument: Document | null = null;
@@ -306,6 +317,7 @@ export class HostDirectoryService implements IHostDirectoryService {
 
   constructor(options: HostDirectoryServiceOptions) {
     this.runnerHost = options.runnerHost;
+    this.sshRoutesKnown = options.runnerHost.sshHosts === undefined;
     this.onRegistryPollTick = options.onRegistryPollTick;
     this.remoteFetcher =
       options.remoteFetcher === null ? fetchRemoteHosts : options.remoteFetcher;
@@ -353,6 +365,8 @@ export class HostDirectoryService implements IHostDirectoryService {
    * Subscribes to local host changes via `IRunnerHost.onLocalHostChange` and
    * issues the initial remote fetch WITHOUT waiting for it. Safe to call
    * multiple times - subsequent calls are no-ops.
+   * A desktop with SSH support first reads its local connection preferences,
+   * so a cached account listing cannot transiently select the relay route.
    *
    * This is what the renderer boot calls, and the reason is measured: the app
    * shell renders `HostRuntimeBootFallback` until `auth.start()` and
@@ -415,6 +429,31 @@ export class HostDirectoryService implements IHostDirectoryService {
       });
       this.emit();
     });
+    const sshHosts = this.runnerHost.sshHosts;
+    if (sshHosts !== undefined) {
+      // Subscribe before reading, and let a newer push win over an older IPC
+      // response. SSH snapshots are independent of the cloud poll cadence.
+      let pushed = false;
+      this.sshSubscription = sshHosts.onChange((connections) => {
+        if (!this.isStarted()) return;
+        pushed = true;
+        this.acceptSshConnections(connections);
+      });
+      // The account listing may resolve immediately from the main-process
+      // cache. Admit no relay route before the saved SSH preferences arrive.
+      await sshHosts
+        .list()
+        .then((connections) => {
+          if (!this.isStarted() || pushed) return;
+          this.acceptSshConnections(connections);
+        })
+        .catch((error: unknown) => {
+          appLogger.warn("[host-directory] SSH routes unavailable", {
+            error: describeLogError(error),
+          });
+        });
+    }
+    if (!this.isStarted()) return;
     // Issued, not awaited. See this method's doc for why nothing that paints
     // needs it.
     //
@@ -661,7 +700,9 @@ export class HostDirectoryService implements IHostDirectoryService {
   getCardinality(): "unknown" | "zero" | "one" | "many" {
     const total = this.snapshot().length;
     if (total === 0) {
-      return this.hasObservedRemoteListing ? "zero" : "unknown";
+      return this.hasObservedRemoteListing && this.sshRoutesKnown
+        ? "zero"
+        : "unknown";
     }
     if (total === 1) {
       return "one";
@@ -693,7 +734,7 @@ export class HostDirectoryService implements IHostDirectoryService {
    * this deliberately does not offer.
    */
   hasSettledFleet(): boolean {
-    return this.hasObservedRemoteListing;
+    return this.hasObservedRemoteListing && this.sshRoutesKnown;
   }
 
   /**
@@ -735,6 +776,10 @@ export class HostDirectoryService implements IHostDirectoryService {
   }
 
   dispose(): void {
+    this.sshSubscription?.dispose();
+    this.sshSubscription = null;
+    this.sshConnections = [];
+    this.sshRoutesKnown = this.runnerHost.sshHosts === undefined;
     if (this.localSubscription !== null) {
       this.localSubscription.dispose();
       this.localSubscription = null;
@@ -1340,20 +1385,49 @@ export class HostDirectoryService implements IHostDirectoryService {
       if (seenHostIds.has(entry.hostId)) {
         continue;
       }
+      if (!this.sshRoutesKnown && entry.hostId !== this.lastKnownLocalHostId) {
+        continue;
+      }
       // This machine's own host id is served exclusively by the local arm.
       // While the local host is down/booting the registry twin is the only
       // entry carrying it, and it is remote-kind and relay-dialed. Present it
       // as a non-dialable LOCAL entry instead of dropping it, so the id stays
       // resolvable for selection while nothing can dial it through the relay
       // (see `lastKnownLocalHostId`).
-      entries.push(
+      const routedEntry =
         entry.hostId === this.lastKnownLocalHostId
           ? bootingLocalEntry(entry)
-          : entry,
-      );
+          : this.sshEntryFor(entry);
+      if (routedEntry !== null) entries.push(routedEntry);
       seenHostIds.add(entry.hostId);
     }
     return entries;
+  }
+
+  private sshEntryFor(entry: HostDirectoryEntry): HostDirectoryEntry | null {
+    // Only override rows belonging to the current account's registry. Saved
+    // SSH profiles cannot add a previous account's hosts to this directory.
+    const connection = this.sshConnections.find(
+      (candidate) => candidate.profile.hostId === entry.hostId,
+    );
+    if (connection === undefined) return entry;
+    // Production registry rows are validated before projection. An incomplete
+    // injected row still must not silently override the saved SSH choice with
+    // a relay route, or invent an incarnation key for a direct connection.
+    return isRemoteHostDirectoryEntry(entry)
+      ? sshHostDirectoryEntry(connection, entry)
+      : null;
+  }
+
+  private acceptSshConnections(
+    connections: readonly SshHostConnection[],
+  ): void {
+    const previouslyKnown = this.sshRoutesKnown;
+    this.sshConnections = connections;
+    this.sshRoutesKnown = true;
+    // Even an empty snapshot now answers cardinality and fleet membership.
+    if (previouslyKnown) this.emitIfSnapshotChanged();
+    else this.emit();
   }
 
   private emit(): void {
@@ -1451,12 +1525,8 @@ function hostDirectoryEntriesEqual(
     // every consumer kept a `relayFuseGrace: true` entry forever - recovery
     // dials permitted indefinitely past the documented 4h cap.
     isRelayFuseRecoveryCandidate(a) === isRelayFuseRecoveryCandidate(b) &&
-    remotePublicKeyOf(a) === remotePublicKeyOf(b)
+    hostRegistryPublicKey(a) === hostRegistryPublicKey(b)
   );
-}
-
-function remotePublicKeyOf(entry: HostDirectoryEntry): string | null {
-  return isRemoteHostDirectoryEntry(entry) ? entry.publicKey : null;
 }
 
 function hostDirectorySnapshotsEqual(

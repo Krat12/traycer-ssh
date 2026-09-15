@@ -263,6 +263,30 @@ describe("DeviceFlowController", () => {
     expect(results).toEqual([]);
   });
 
+  it.each(["traycer-ssh", "traycer-ssh-worktree"])(
+    "uses polling without an unsupported return scheme for %s",
+    async (scheme) => {
+      restoreFetch = installFetch((url) =>
+        url.endsWith("/device/authorize") ? authorizeOk() : tokenAuthorized(),
+      );
+      const results: DeviceFlowResultPayload[] = [];
+      const controller = new DeviceFlowController(AUTHN, scheme);
+      const outcome = await controller.start({
+        onResult: (_id, result) => results.push(result),
+      });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(
+        new URL(outcome.authorization.verificationUriComplete).searchParams.has(
+          "return_scheme",
+        ),
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(results).toHaveLength(1);
+      controller.disposeAll();
+    },
+  );
+
   it("threads the return scheme into the verification URL it hands the shell (display URI stays clean)", async () => {
     restoreFetch = installFetch((url) => {
       if (url.endsWith("/device/authorize")) {

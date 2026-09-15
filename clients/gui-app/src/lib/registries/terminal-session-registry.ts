@@ -120,6 +120,12 @@ export function useTerminalSessionHandle(
     streamClientFactoryOverride !== null
       ? "test-stream-client-factory"
       : authenticatedOwnerIdentityKey(globalClient, hostEntry);
+  // SSH owns a reconnecting tunnel, not a new terminal incarnation. Keep the
+  // store (including unacknowledged input and the requested grid) while its
+  // transport follows endpoint changes. Identity loss still releases it.
+  const sessionAllowed =
+    ownerIdentityKey !== null &&
+    (transportKey !== null || hostEntry?.kind === "ssh");
 
   const [handle, setHandle] = useReducer(
     (
@@ -130,14 +136,13 @@ export function useTerminalSessionHandle(
   );
 
   // The previous acquire effect's cleanup runs AFTER this commit's layout
-  // effects, so a disappearing `transportKey` is visible to `release` as
+  // effects, so a disappearing session authority is visible to `release` as
   // `transportAlive: false`. The captured effect-local key is still the
   // old non-null value; a render-time ref write is forbidden (`react-hooks/refs`).
   const transportReadyRef = useRef(false);
   useLayoutEffect(() => {
-    transportReadyRef.current =
-      transportKey !== null && ownerIdentityKey !== null;
-  }, [transportKey, ownerIdentityKey]);
+    transportReadyRef.current = sessionAllowed;
+  }, [sessionAllowed]);
 
   useEffect(() => {
     creationConfigRef.current = {
@@ -164,12 +169,7 @@ export function useTerminalSessionHandle(
       setHandle(null);
       return;
     }
-    // Null until there is an authenticated request context and a dialable host
-    // endpoint (or "test-..." when the factory is overridden). `ownerIdentityKey`
-    // is null under that same gate (both derive from the same `globalClient` +
-    // `hostEntry`), so this never masks a ready session behind a not-yet-known
-    // identity.
-    if (transportKey === null || ownerIdentityKey === null) {
+    if (!sessionAllowed) {
       setHandle(null);
       return;
     }
@@ -246,9 +246,9 @@ export function useTerminalSessionHandle(
       registry.release(args.instanceId, next, transportReadyRef.current);
     };
     // `openTransport` is referentially stable and reads its deps live;
-    // `transportKey` already encodes user + host + endpoint identity;
-    // `ownerIdentityKey` additionally discriminates a remote host's
-    // public-key rotation (R-1).
+    // Endpoint changes belong to the durable transport's live resolver, not
+    // to this owner. Only eligibility and authenticated identity re-acquire;
+    // the latter includes a relay host's public-key rotation (R-1).
   }, [
     args.hostId,
     args.enabled,
@@ -256,7 +256,7 @@ export function useTerminalSessionHandle(
     args.sessionId,
     args.instanceId,
     args.kind,
-    transportKey,
+    sessionAllowed,
     ownerIdentityKey,
     openTransport,
   ]);

@@ -174,10 +174,14 @@ export class DeviceFlowController {
         // The short display URI stays clean for manual entry; only the
         // pre-filled URL the shell opens carries the return scheme.
         verificationUri: authorization.verificationUri,
-        verificationUriComplete: withReturnScheme(
-          authorization.verificationUriComplete,
-          this.returnScheme,
-        ),
+        verificationUriComplete:
+          this.returnScheme === "traycer-ssh" ||
+          this.returnScheme.startsWith("traycer-ssh-")
+            ? authorization.verificationUriComplete
+            : withReturnScheme(
+                authorization.verificationUriComplete,
+                this.returnScheme,
+              ),
         expiresInSeconds: authorization.expiresInSeconds,
         intervalSeconds: authorization.intervalSeconds,
       },

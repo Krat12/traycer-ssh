@@ -17,12 +17,13 @@ const runtimeIdentity = resolveDesktopRuntimeIdentity(
   process.env,
 );
 app.setName(runtimeIdentity.appName);
-if (runtimeIdentity.userDataDirName !== null) {
-  app.setPath(
-    "userData",
-    join(app.getPath("appData"), runtimeIdentity.userDataDirName),
-  );
-}
+app.setPath(
+  "userData",
+  join(
+    app.getPath("appData"),
+    runtimeIdentity.userDataDirName ?? runtimeIdentity.appName,
+  ),
+);
 const resolutionTestUserDataDir =
   process.env[RESOLUTION_TEST_USER_DATA_DIR_ENV] ?? null;
 if (

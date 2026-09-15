@@ -7,6 +7,8 @@ import {
   type Session,
   type WebContents,
 } from "electron";
+import { getSshHostManager } from "../ssh/ssh-host-service";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
 import {
   RunnerHostEvent,
   RunnerHostInvoke,
@@ -592,7 +594,10 @@ export function registerBrowserViewIpc(
     return { token, userId: profile.userId };
   };
 
+  const sshHosts = getSshHostManager();
   const browserSessionsDirectory = createBrowserSessionsHostDirectory({
+    sshConnection: (hostId) =>
+      sshHosts.snapshot().find((row) => row.profile.hostId === hostId) ?? null,
     authnBaseUrl: () => bridge.options.authnBaseUrl,
     relayBaseUrl: config.relayBaseUrl,
     localHost: () => {
@@ -609,6 +614,7 @@ export function registerBrowserViewIpc(
     now: () => Date.now(),
   });
   const sessions = new BrowserSessionsRegistry({
+    hasLocalHost: !SSH_DESKTOP_ONLY,
     directory: browserSessionsDirectory,
     openTransport: (target, userId) =>
       openBrowserSessionsTransport(target, userId, {
@@ -1200,7 +1206,30 @@ export function registerBrowserViewIpc(
     },
   );
 
+  let sshRoutes = new Map(
+    sshHosts
+      .snapshot()
+      .map((row) => [
+        row.profile.hostId,
+        `${row.state}:${row.websocketUrl ?? ""}`,
+      ]),
+  );
+  const sshSubscription = sshHosts.onChange((connections) => {
+    const next = new Map(
+      connections.map((row) => [
+        row.profile.hostId,
+        `${row.state}:${row.websocketUrl ?? ""}`,
+      ]),
+    );
+    for (const hostId of new Set([...sshRoutes.keys(), ...next.keys()])) {
+      if (sshRoutes.get(hostId) !== next.get(hostId)) {
+        sessions.notifyHostRouteChanged(hostId);
+      }
+    }
+    sshRoutes = next;
+  });
   bridge.disposeFns.push(() => {
+    sshSubscription.dispose();
     sessions.dispose();
     manager.dispose();
     clearAllAttachmentGrants();

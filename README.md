@@ -1,3 +1,10 @@
+# Traycer SSH fork
+
+Independent Windows client with OpenSSH connections to existing Linux Traycer Hosts.
+The original account and subscription remain in use. See [setup and build instructions](docs/SSH_DESKTOP.md).
+
+---
+
 <img alt="Traycer" src="https://assets.traycer.ai/traycer-readme-banner.png" />
 
 <div align="center">

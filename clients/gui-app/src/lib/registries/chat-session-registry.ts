@@ -238,6 +238,7 @@ export function useChatSessionHandle(
   const sessionAllowed =
     ownerIdentityKey !== null &&
     (transportKey !== null ||
+      hostEntry?.kind === "ssh" ||
       isLocalHostBootingEntry(hostEntry) ||
       lease?.status === "restarting-expected");
 

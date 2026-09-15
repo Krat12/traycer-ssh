@@ -26,21 +26,21 @@ function storePath(): string {
 }
 
 describe("global shortcut preferences", () => {
-  it("defaults to enabled with no custom chord when nothing is persisted", async () => {
+  it("defaults to disabled with no custom chord when nothing is persisted", async () => {
     const preferences = await import("../global-shortcuts-preferences");
 
     await preferences.hydrateGlobalShortcutIntents();
 
     expect(preferences.getGlobalShortcutIntent("summon")).toEqual({
-      enabled: true,
+      enabled: false,
       chord: null,
     });
   });
 
-  it("persists an explicit disable across module reloads", async () => {
+  it("persists an explicit enable across module reloads", async () => {
     const first = await import("../global-shortcuts-preferences");
     await first.setGlobalShortcutIntent("summon", {
-      enabled: false,
+      enabled: true,
       chord: null,
     });
 
@@ -49,7 +49,7 @@ describe("global shortcut preferences", () => {
     await reloaded.hydrateGlobalShortcutIntents();
 
     expect(reloaded.getGlobalShortcutIntent("summon")).toEqual({
-      enabled: false,
+      enabled: true,
       chord: null,
     });
   });
@@ -76,7 +76,7 @@ describe("global shortcut preferences", () => {
     await preferences.hydrateGlobalShortcutIntents();
 
     await preferences.setGlobalShortcutIntent("summon", {
-      enabled: true,
+      enabled: false,
       chord: null,
     });
 
@@ -91,7 +91,7 @@ describe("global shortcut preferences", () => {
       preferences.hydrateGlobalShortcutIntents(),
     ).resolves.toBeDefined();
     expect(preferences.getGlobalShortcutIntent("summon")).toEqual({
-      enabled: true,
+      enabled: false,
       chord: null,
     });
   });
@@ -107,7 +107,7 @@ describe("global shortcut preferences", () => {
     await preferences.hydrateGlobalShortcutIntents();
 
     expect(preferences.getGlobalShortcutIntent("summon")).toEqual({
-      enabled: true,
+      enabled: false,
       chord: null,
     });
   });
@@ -117,7 +117,7 @@ describe("global shortcut preferences", () => {
   // is a canonical chord. `sanitizeChord` resolves an invalid chord to `null`
   // ("use the definition's default") while keeping the rest of the intent
   // (`enabled`) exactly as persisted - it must NOT fall back to the full
-  // `DEFAULT_INTENT` (which would also silently flip `enabled` back to true).
+  // `DEFAULT_INTENT` (which would silently change the persisted `enabled` flag).
   it("coerces an invalid persisted chord string to null while preserving the persisted enabled flag", async () => {
     writeFileSync(
       storePath(),

@@ -17,6 +17,7 @@ import {
 } from "@traycer-clients/shared/host-client/mock/mock-host-directory";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import type { RemoteHostDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
+import { sshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import { buildHostKeyRotationSweep } from "@/lib/host/host-key-rotation-sweep";
 
 /**
@@ -56,6 +57,29 @@ function localEntry(websocketUrl: string): HostDirectoryEntry {
   return { ...mockLocalHostEntry, websocketUrl };
 }
 
+function routedEntry(
+  route: "remote" | "ssh",
+  publicKey: string,
+): HostDirectoryEntry {
+  const registered = remoteEntry({ publicKey });
+  return route === "remote"
+    ? registered
+    : sshHostDirectoryEntry(
+        {
+          profile: {
+            hostId: registered.hostId,
+            label: registered.label,
+            target: "linux-dev",
+          },
+          state: "connected",
+          websocketUrl: "ws://127.0.0.1:44001/rpc",
+          version: "1.3.1",
+          message: null,
+        },
+        registered,
+      );
+}
+
 function buildSweepRecorder(): {
   readonly sweep: (entries: readonly HostDirectoryEntry[]) => void;
   readonly swept: string[];
@@ -70,6 +94,20 @@ function buildSweepRecorder(): {
 }
 
 describe("buildHostKeyRotationSweep", () => {
+  it("ignores SSH port changes and route changes but sweeps a later registered incarnation", () => {
+    const { sweep, swept } = buildSweepRecorder();
+    const first = routedEntry("ssh", "pk-1");
+    sweep([first]);
+    sweep([
+      { ...first, websocketUrl: null, transportDialability: "not-dialable" },
+    ]);
+    sweep([{ ...first, websocketUrl: "ws://127.0.0.1:44002/rpc" }]);
+    sweep([routedEntry("remote", "pk-1")]);
+    expect(swept).toEqual([]);
+    sweep([routedEntry("ssh", "pk-2")]);
+    expect(swept).toEqual([mockRemoteHostEntry.hostId]);
+  });
+
   it("sweeps a host whose public key changed between two emits, and only that host", () => {
     const { sweep, swept } = buildSweepRecorder();
     const other = remoteEntry({ hostId: "other-host", publicKey: "pk-other" });
@@ -228,36 +266,40 @@ async function flushAvailabilityCoalescing(): Promise<void> {
 }
 
 describe("buildHostKeyRotationSweep wired to a real HostClient", () => {
-  it("invalidates the rotated host's scope WITHOUT announcing a change event", async () => {
-    const { client, invalidator, events } = buildRealHostClient();
-    const sweep = buildHostKeyRotationSweep({
-      sweepHostScope: (hostId) => client.invalidateHostScopeUnannounced(hostId),
-    });
+  it.each(["remote", "ssh"] as const)(
+    "invalidates the rotated %s host's scope WITHOUT announcing a change event",
+    async (route) => {
+      const { client, invalidator, events } = buildRealHostClient();
+      const sweep = buildHostKeyRotationSweep({
+        sweepHostScope: (hostId) =>
+          client.invalidateHostScopeUnannounced(hostId),
+      });
 
-    sweep([remoteEntry({ publicKey: "pk-1" })]);
-    await flushAvailabilityCoalescing();
-    // No rotation yet - only a first sighting - so nothing to flush.
-    expect(invalidator.calls).toEqual([]);
-    expect(events).toEqual([]);
+      sweep([routedEntry(route, "pk-1")]);
+      await flushAvailabilityCoalescing();
+      // No rotation yet - only a first sighting - so nothing to flush.
+      expect(invalidator.calls).toEqual([]);
+      expect(events).toEqual([]);
 
-    sweep([remoteEntry({ publicKey: "pk-2" })]);
-    await flushAvailabilityCoalescing();
+      sweep([routedEntry(route, "pk-2")]);
+      await flushAvailabilityCoalescing();
 
-    expect(invalidator.calls).toEqual([mockRemoteHostEntry.hostId]);
-    expect(invalidator.options).toEqual([
-      { refetchActive: true, recovery: "reconnect" },
-    ]);
-    // THE CLAIM: a rotation swept ALONE in its microtask tick must produce
-    // zero change events. A reason-scoped consumer (an `availability-recovered`
-    // subscriber) would otherwise be woken for an event that never happened -
-    // nothing recovered availability here, a scope was merely invalidated.
-    //
-    // This does NOT claim a rotation sweep coalesced with a GENUINE
-    // availability report stays silent - it would announce there, correctly,
-    // because the availability caller asked and its announcement is true.
-    // That composition is `host-client.test.ts`'s "coalesces same-tick
-    // availability reports..." case, at the `HostClient` layer generically;
-    // this file's subject is the sweep alone.
-    expect(events).toEqual([]);
-  });
+      expect(invalidator.calls).toEqual([mockRemoteHostEntry.hostId]);
+      expect(invalidator.options).toEqual([
+        { refetchActive: true, recovery: "reconnect" },
+      ]);
+      // THE CLAIM: a rotation swept ALONE in its microtask tick must produce
+      // zero change events. A reason-scoped consumer (an `availability-recovered`
+      // subscriber) would otherwise be woken for an event that never happened -
+      // nothing recovered availability here, a scope was merely invalidated.
+      //
+      // This does NOT claim a rotation sweep coalesced with a GENUINE
+      // availability report stays silent - it would announce there, correctly,
+      // because the availability caller asked and its announcement is true.
+      // That composition is `host-client.test.ts`'s "coalesces same-tick
+      // availability reports..." case, at the `HostClient` layer generically;
+      // this file's subject is the sweep alone.
+      expect(events).toEqual([]);
+    },
+  );
 });

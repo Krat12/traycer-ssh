@@ -6,8 +6,17 @@ import { HostClient } from "@traycer-clients/shared/host-client/host-client";
 import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock-host-messenger";
 import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtures/request-context";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import {
+  sshHostDirectoryEntry,
+  type SshHostDirectoryEntry,
+} from "@traycer-clients/shared/host-client/ssh-host-directory";
 import type { RemoteHostDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
-import type { IStreamSession } from "@traycer-clients/shared/host-transport/i-stream-session";
+import type {
+  IStreamSession,
+  ServerFrameHandler,
+  StatusChangeHandler,
+  StreamFrameEnvelope,
+} from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { IHostStreamClient } from "@traycer-clients/shared/host-transport/host-stream-client";
 import {
   hostRpcRegistry,
@@ -99,6 +108,29 @@ function remoteTarget(publicKey: string): RemoteHostDirectoryEntry {
       lastSeenAt: null,
     },
   };
+}
+
+function rotationTarget(
+  route: "remote" | "ssh",
+  publicKey: string,
+): HostDirectoryEntry {
+  const registered = remoteTarget(publicKey);
+  return route === "remote"
+    ? registered
+    : sshHostDirectoryEntry(
+        {
+          profile: {
+            hostId: registered.hostId,
+            label: registered.label,
+            target: "linux-dev",
+          },
+          state: "connected",
+          websocketUrl: "ws://127.0.0.1:44001/rpc",
+          version: "1.3.1",
+          message: null,
+        },
+        registered,
+      );
 }
 
 function buildGlobalClient(): HostClient<HostRpcRegistry> {
@@ -197,69 +229,72 @@ describe("useTerminalSessionHandle owner identity (R-1)", () => {
     openTransportRef.fn = null;
   });
 
-  it("forces a release + reacquire on a same-host remote public-key rotation, isolated from every other field", async () => {
-    const tracked = createTrackedOpenTransport();
-    openTransportRef.fn = tracked.openTransport;
-    const globalClient = buildGlobalClient();
-    expect(globalClient.getRequestContextUserId()).toBe(FIXTURE_USER_ID);
-    globalClientRef.value = globalClient;
-    hostEntryRef.value = remoteTarget("pubkey-a");
+  it.each(["remote", "ssh"] as const)(
+    "forces a release + reacquire on a same-host %s public-key rotation, isolated from every other field",
+    async (route) => {
+      const tracked = createTrackedOpenTransport();
+      openTransportRef.fn = tracked.openTransport;
+      const globalClient = buildGlobalClient();
+      expect(globalClient.getRequestContextUserId()).toBe(FIXTURE_USER_ID);
+      globalClientRef.value = globalClient;
+      hostEntryRef.value = rotationTarget(route, "pubkey-a");
 
-    const { result, rerender } = renderHook(
-      () =>
-        useTerminalSessionHandle({
-          hostId: REMOTE_HOST_ID,
-          scope: { kind: "epic", epicId: "epic-1" },
-          sessionId: "terminal-1",
-          instanceId: "inst-1",
-          cols: 80,
-          rows: 24,
-          reattachMode: "fresh",
-          // `terminal-agent`, not `terminal`: `TerminalSessionRegistry` only
-          // keeps a lease-free entry WARM for a `terminal-agent` kind
-          // (`shouldKeepLeaseFree`) - a plain `terminal` is always torn down
-          // and rebuilt on the effect's own release/reacquire cleanup cycle
-          // regardless of `ownerIdentityKey`, which would make this test pass
-          // even with the fix reverted (confirmed: see negative control).
-          // Only the warm path actually exercises the `existingOwnerIdentityKey`
-          // comparison this discriminator depends on.
-          kind: "terminal-agent",
-          enabled: true,
-        }),
-      { wrapper },
-    );
+      const { result, rerender } = renderHook(
+        () =>
+          useTerminalSessionHandle({
+            hostId: REMOTE_HOST_ID,
+            scope: { kind: "epic", epicId: "epic-1" },
+            sessionId: "terminal-1",
+            instanceId: "inst-1",
+            cols: 80,
+            rows: 24,
+            reattachMode: "fresh",
+            // `terminal-agent`, not `terminal`: `TerminalSessionRegistry` only
+            // keeps a lease-free entry WARM for a `terminal-agent` kind
+            // (`shouldKeepLeaseFree`) - a plain `terminal` is always torn down
+            // and rebuilt on the effect's own release/reacquire cleanup cycle
+            // regardless of `ownerIdentityKey`, which would make this test pass
+            // even with the fix reverted (confirmed: see negative control).
+            // Only the warm path actually exercises the `existingOwnerIdentityKey`
+            // comparison this discriminator depends on.
+            kind: "terminal-agent",
+            enabled: true,
+          }),
+        { wrapper },
+      );
 
-    await waitFor(() => {
-      expect(result.current).not.toBeNull();
-    });
-    const firstHandle = result.current;
-    if (firstHandle === null) {
-      throw new Error("expected initial handle");
-    }
-    expect(tracked.records()).toHaveLength(1);
-    expect(tracked.records()[0].closeCount).toBe(0);
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+      });
+      const firstHandle = result.current;
+      if (firstHandle === null) {
+        throw new Error("expected initial handle");
+      }
+      expect(tracked.records()).toHaveLength(1);
+      expect(tracked.records()[0].closeCount).toBe(0);
 
-    // Same hostId/epicId/sessionId/instanceId, same signed-in user, same
-    // websocketUrl/version/status - ONLY the remote host's public key rotates
-    // (re-enrollment / corruption recovery). `args.hostId` never changes here
-    // (a terminal tab is bound for life), so a pass proves `ownerIdentityKey`
-    // alone forces the `forceRelease` + reacquire.
-    hostEntryRef.value = remoteTarget("pubkey-b");
-    rerender();
+      // Same hostId/epicId/sessionId/instanceId, same signed-in user, same
+      // websocketUrl/version/status - ONLY the remote host's public key rotates
+      // (re-enrollment / corruption recovery). `args.hostId` never changes here
+      // (a terminal tab is bound for life), so a pass proves `ownerIdentityKey`
+      // alone forces the `forceRelease` + reacquire.
+      hostEntryRef.value = rotationTarget(route, "pubkey-b");
+      rerender();
 
-    await waitFor(() => {
-      expect(result.current).not.toBe(firstHandle);
-    });
+      await waitFor(() => {
+        expect(result.current).not.toBe(firstHandle);
+      });
 
-    // Effect cleanup releases the lease first (keep-warm retags cache and
-    // reopens subscribe — a new transport), then the remounted effect sees
-    // the owner-identity mismatch, force-releases, and acquires a fresh
-    // presentation stream.
-    expect(tracked.records()).toHaveLength(3);
-    expect(tracked.records()[0].closeCount).toBe(1);
-    expect(tracked.records()[1].closeCount).toBe(1);
-    expect(tracked.records()[2].closeCount).toBe(0);
-  });
+      // Effect cleanup releases the lease first (keep-warm retags cache and
+      // reopens subscribe — a new transport), then the remounted effect sees
+      // the owner-identity mismatch, force-releases, and acquires a fresh
+      // presentation stream.
+      expect(tracked.records()).toHaveLength(3);
+      expect(tracked.records()[0].closeCount).toBe(1);
+      expect(tracked.records()[1].closeCount).toBe(1);
+      expect(tracked.records()[2].closeCount).toBe(0);
+    },
+  );
 });
 
 describe("useTerminalSessionHandle acquire-time defunct guard", () => {
@@ -448,6 +483,140 @@ describe("useTerminalSessionHandle transport-loss release", () => {
     };
     return tracked;
   }
+
+  it.each(["terminal", "terminal-agent"] as const)(
+    "preserves the %s store and unacknowledged input across SSH tunnel replacement",
+    async (kind) => {
+      globalClientRef.value = buildGlobalClient();
+      const sshEntry: SshHostDirectoryEntry = {
+        hostId: REMOTE_HOST_ID,
+        label: "Linux dev",
+        kind: "ssh",
+        publicKey: "registry-key",
+        websocketUrl: "ws://127.0.0.1:44001/rpc",
+        version: "1.3.1",
+        transportDialability: "dialable",
+      };
+      hostEntryRef.value = sshEntry;
+      let onStatus: StatusChangeHandler = () => undefined;
+      let onFrame: ServerFrameHandler = () => undefined;
+      const send = vi.fn(
+        (_frame: StreamFrameEnvelope, _binary: Uint8Array | null) => undefined,
+      );
+      const close = vi.fn();
+      const open = vi.fn((): DurableStreamTransport => ({
+        wsStreamClient: {
+          ...fakeWsStreamClient(),
+          subscribe: () => ({
+            ...fakeStreamSession(),
+            sendClientFrame: send,
+            onStatusChange: (handler) => {
+              onStatus = handler;
+            },
+            onServerFrame: (handler) => {
+              onFrame = handler;
+            },
+          }),
+        },
+        close,
+      }));
+      openTransportRef.fn = open;
+      const { result, rerender } = renderHook(
+        () =>
+          useTerminalSessionHandle({
+            hostId: REMOTE_HOST_ID,
+            scope: { kind: "epic", epicId: "epic-1" },
+            sessionId: "terminal-1",
+            instanceId: "inst-ssh",
+            cols: 80,
+            rows: 24,
+            reattachMode: "fresh",
+            kind,
+            enabled: true,
+          }),
+        { wrapper },
+      );
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+      });
+      const firstHandle = result.current;
+      if (firstHandle === null) throw new Error("expected initial handle");
+      const snapshot: StreamFrameEnvelope = {
+        kind: "snapshot",
+        hasBinaryPayload: false,
+        sessionId: "terminal-1",
+        scrollback: "shell output",
+        session: {
+          sessionId: "terminal-1",
+          epicId: "epic-1",
+          sessionKind: kind,
+          cwd: "/repo",
+          shellCommand: "bash",
+          shellArgs: [],
+          cols: 80,
+          rows: 24,
+          status: "running",
+          exitCode: null,
+          createdAt: 1,
+          title: null,
+        },
+      };
+      act(() => {
+        onStatus("open", null, null);
+        onFrame(snapshot, null);
+        firstHandle.store.getState().writeInput("echo hello\r");
+        firstHandle.store.getState().requestResize(100, 40);
+      });
+      const pending = firstHandle.store.getState().pendingActions;
+      const write = Object.values(pending).find(
+        (action) => action.frame.kind === "write",
+      );
+      expect(write).toBeDefined();
+      expect(Object.keys(pending)).toHaveLength(2);
+      act(() => {
+        onStatus("reconnecting", null, null);
+      });
+      hostEntryRef.value = {
+        ...sshEntry,
+        websocketUrl: null,
+        transportDialability: "not-dialable",
+      };
+      rerender();
+      expect(result.current).toBe(firstHandle);
+      expect(firstHandle.store.getState().pendingActions).toEqual(pending);
+      act(() => {
+        firstHandle.store.getState().requestResize(132, 43);
+      });
+      hostEntryRef.value = {
+        ...sshEntry,
+        websocketUrl: "ws://127.0.0.1:44002/rpc",
+      };
+      rerender();
+      expect(result.current).toBe(firstHandle);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+      send.mockClear();
+      act(() => {
+        onStatus("open", null, null);
+        onFrame(snapshot, null);
+      });
+      // Existing terminal action IDs make this replay idempotent at the Host.
+      expect(send).toHaveBeenCalledWith(write?.frame, null);
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "resize",
+          cols: 132,
+          rows: 43,
+        }),
+        null,
+      );
+      expect(firstHandle.store.getState()).toMatchObject({
+        requestedCols: 132,
+        requestedRows: 43,
+        status: "running",
+      });
+    },
+  );
 
   it("does not throw from effect cleanup when the host leaves the directory; disposes instead of retagging cache", async () => {
     const tracked = throwingWhenHostGoneOpenTransport();

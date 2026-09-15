@@ -5,6 +5,10 @@ import { DEFAULT_DIAL_TIMEOUT_MS } from "@traycer-clients/shared/host-transport/
 import { createWhatwgStreamWebSocketFactory } from "@traycer-clients/shared/host-transport/whatwg-stream-ws-factory";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import {
+  hostRegistryPublicKey,
+  type SshHostDirectoryEntry,
+} from "@traycer-clients/shared/host-client/ssh-host-directory";
+import {
   isRemoteHostDirectoryEntry,
   type RemoteHostDirectoryEntry,
 } from "@traycer-clients/shared/host-client/remote-fetcher";
@@ -426,9 +430,7 @@ export function useHostStreamClientBindingFor(
   const endpointWebsocketUrl = target?.websocketUrl ?? null;
   const endpointKind = target?.kind ?? null;
   const endpointPublicKey =
-    target !== null && isRemoteHostDirectoryEntry(target)
-      ? target.publicKey
-      : null;
+    target === null ? null : hostRegistryPublicKey(target);
 
   const [binding, setBinding] = useState<HostStreamClientBinding | null>(null);
   const [rebuildNonce, setRebuildNonce] = useState(0);
@@ -489,34 +491,37 @@ export function useHostStreamClientBindingFor(
     // decided to dial, not a directory row carrying a verdict about a machine.
     // The gate that decides whether to dial at all ran above this, against the
     // real entry.
-    const memoizedTarget =
-      endpointKind === "remote" && endpointPublicKey !== null
-        ? ({
-            hostId: endpointHostId,
-            label: endpointHostId,
-            kind: "remote",
-            websocketUrl: endpointWebsocketUrl,
-            version: null,
-            transportDialability: "dialable",
-            publicKey: endpointPublicKey,
-            remoteStatus: PLACEHOLDER_REMOTE_STATUS,
-            // Fabricated endpoint, not a directory verdict: never in fuse grace.
-            relayFuseGrace: false,
-            recentHostCheckIn: false,
-            // Same reason `transportDialability` is written coarsely above:
-            // the plan gate ran upstream against the real directory entry, and
-            // re-asserting a refusal here would contradict a dial this effect
-            // has already been cleared to make.
-            planAllowsRemote: true,
-          } satisfies RemoteHostDirectoryEntry)
-        : ({
-            hostId: endpointHostId,
-            label: endpointHostId,
-            kind: endpointKind,
-            websocketUrl: endpointWebsocketUrl,
-            version: null,
-            transportDialability: "dialable",
-          } satisfies HostDirectoryEntry);
+    const targetBase = {
+      hostId: endpointHostId,
+      label: endpointHostId,
+      websocketUrl: endpointWebsocketUrl,
+      version: null,
+      transportDialability: "dialable" as const,
+    };
+    let memoizedTarget: HostDirectoryEntry;
+    if (endpointKind === "remote" && endpointPublicKey !== null) {
+      const remoteTarget: RemoteHostDirectoryEntry = {
+        ...targetBase,
+        kind: "remote",
+        publicKey: endpointPublicKey,
+        remoteStatus: PLACEHOLDER_REMOTE_STATUS,
+        // The real directory's plan and availability gates ran before this
+        // fabricated endpoint was admitted; do not reassert them here.
+        relayFuseGrace: false,
+        recentHostCheckIn: false,
+        planAllowsRemote: true,
+      };
+      memoizedTarget = remoteTarget;
+    } else if (endpointKind === "ssh" && endpointPublicKey !== null) {
+      const sshTarget: SshHostDirectoryEntry = {
+        ...targetBase,
+        kind: "ssh",
+        publicKey: endpointPublicKey,
+      };
+      memoizedTarget = sshTarget;
+    } else {
+      memoizedTarget = { ...targetBase, kind: endpointKind };
+    }
 
     // ONE reference on the SHARED client for this hook instance, taken here
     // and returned in the cleanup below. `buildHostStreamClient` runs only on

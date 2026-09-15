@@ -130,6 +130,11 @@ vi.mock("@/hooks/host/use-host-client-for", () => ({
     onChange: () => () => undefined,
   }),
 }));
+
+vi.mock("@/hooks/host/use-host-client-for-host-id", async () => {
+  const { useHostClientFor } = await import("@/hooks/host/use-host-client-for");
+  return { useHostClientForHostId: useHostClientFor };
+});
 vi.mock("@/hooks/terminal/use-terminal-list-query", () => ({
   useTerminalList: () => mockList,
 }));

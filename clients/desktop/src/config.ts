@@ -76,13 +76,13 @@ const bakedConfig = {
   // script stamps the shipped values for a packaged build. Keeping each slot's
   // identity distinct is what lets separate builds coexist without stealing one
   // another's lock/state.
-  appName: "Traycer Dev",
-  protocolScheme: "traycer-dev",
-  appId: "ai.traycer.desktop",
+  appName: "Traycer SSH Dev",
+  protocolScheme: "traycer-ssh",
+  appId: "io.github.krat12.traycer-ssh",
   // Release routing is baked alongside the native identity. Production keeps
   // its historical repository and channel; staging points at the internal
   // train's repository and discovers only its `-staging.*` releases.
-  releaseRepo: "traycerai/traycer",
+  releaseRepo: "Krat12/traycer-ssh",
   releaseChannel: "dev",
 };
 
@@ -145,5 +145,5 @@ export const DESKTOP_RELEASE_CHANNEL = config.releaseChannel;
 
 export function configuredDesktopReleaseRepo(): string {
   const repo = config.releaseRepo.trim();
-  return repo.length === 0 ? "traycerai/traycer" : repo;
+  return repo.length === 0 ? "Krat12/traycer-ssh" : repo;
 }

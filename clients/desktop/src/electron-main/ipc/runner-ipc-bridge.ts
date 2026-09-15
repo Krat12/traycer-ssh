@@ -1,3 +1,5 @@
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
+import { registerSshOnlyHostIpc } from "./ssh-only-host-ipc";
 import { ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { describeLogError, log } from "../app/logger";
@@ -82,6 +84,7 @@ import {
 } from "./window-visibility-ipc";
 import { EpicWindowVisibility } from "../windows/epic-window-visibility";
 import { registerPerWindowStateIpc } from "./per-window-state-ipc";
+import { registerSshHostIpc } from "./ssh-host-ipc";
 import { registerHostIpc } from "./host-ipc";
 import { registerHostManagementIpc } from "./host-management-ipc";
 import { registerHostControllerStatusBroadcast } from "./host-controller-status-broadcast";
@@ -609,15 +612,22 @@ export class RunnerIpcBridge {
     registerWindowVisibilityIpc(this);
     registerPerWindowStateIpc(this);
     registerSupportIpc(this);
-    registerHostIpc(this);
-    registerHostManagementIpc(this);
-    registerHostControllerStatusBroadcast(this);
+    if (SSH_DESKTOP_ONLY) {
+      registerSshOnlyHostIpc(this);
+    } else {
+      registerHostIpc(this);
+      registerHostManagementIpc(this);
+      registerHostControllerStatusBroadcast(this);
+    }
+    registerSshHostIpc(this);
     // After the status broadcast: the selection authority's local
     // expected-outage signal subscribes to the tick source that module owns
     // rather than standing up a second poll loop.
     registerSelectionAuthorityIpc(this);
-    registerMigrationIpc(this);
-    registerTraycerCliIpc(this);
+    if (!SSH_DESKTOP_ONLY) {
+      registerMigrationIpc(this);
+      registerTraycerCliIpc(this);
+    }
     // Platform IPC (recent docs, window effects, diagnostics, etc.) is wired
     // in here so `dispose()` also tears it down via the shared
     // `disposeFns` / `ipcMain.removeHandler` sweep.

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostListItem } from "@traycer/protocol/host/host-status";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { SshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import {
   hostListItemToDirectoryEntry,
   type RemoteHostDirectoryEntry,
@@ -245,6 +246,27 @@ describe("the transport's refusal gate", () => {
 });
 
 describe("remoteAwareOwnerIdentityKey", () => {
+  it("keeps SSH tunnel recovery separate from a registered Host incarnation change", () => {
+    const first: SshHostDirectoryEntry = {
+      ...entry({}),
+      kind: "ssh",
+      publicKey: "pk-first",
+    };
+    const identity = remoteAwareOwnerIdentityKey(first, "user-1");
+    expect(
+      remoteAwareOwnerIdentityKey({ ...first, websocketUrl: null }, "user-1"),
+    ).toBe(identity);
+    expect(
+      remoteAwareOwnerIdentityKey(
+        { ...first, websocketUrl: "ws://127.0.0.1:44002/rpc" },
+        "user-1",
+      ),
+    ).toBe(identity);
+    const rotated: SshHostDirectoryEntry = { ...first, publicKey: "pk-second" };
+    expect(remoteAwareOwnerIdentityKey(rotated, "user-1")).not.toBe(identity);
+    expect(hostTransportKey(rotated)).toBe(hostTransportKey(first));
+  });
+
   it("returns null without a target or a signed-in user", () => {
     expect(remoteAwareOwnerIdentityKey(null, "user-1")).toBeNull();
     expect(remoteAwareOwnerIdentityKey(entry({}), null)).toBeNull();

@@ -339,6 +339,7 @@ function retainedBadgeWord(kind: FleetUpdateViewKind): string | null {
  */
 export function hostOptionKindLabel(host: HostScopeOption): string {
   if (host.isLocalMachine) return "This machine";
+  if (host.entry?.kind === "ssh") return "Remote host via SSH";
   if (host.entry?.kind === "remote") return "Remote host";
   if (host.entry?.kind === "mock") return "Mock host";
   return "Host";

@@ -2,8 +2,8 @@
   "name": "@traycer-clients/desktop",
   "version": "0.0.0",
   "private": true,
-  "description": "Traycer standalone desktop shell (Electron) hosting the gui-app renderer; host lifecycle is delegated to the Traycer CLI.",
-  "homepage": "https://traycer.ai",
+  "description": "Traycer SSH: independent desktop client for existing Traycer hosts over OpenSSH.",
+  "homepage": "https://github.com/Krat12/traycer-ssh",
   "license": "MIT",
   "author": {
     "name": "Traycer AI",
@@ -21,8 +21,8 @@
     "prepack:check-icons": "bun scripts/prepack/check-bundle-icons.cjs",
     "prepack:check-tray": "bun scripts/prepack/check-tray-assets.cjs",
     "build": "bun run build:app",
-    "package": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --publish never",
-    "package:dir": "bun run build:app && bun run prepack:check-cli && bun run prepack:check-icons && bun run prepack:check-tray && bun x electron-builder --dir --publish never",
+    "package": "bun scripts/package-ssh.cjs",
+    "package:dir": "bun scripts/package-ssh.cjs --dir",
     "dev:renderer": "vite --config vite.renderer.config.ts",
     "dev:main": "bun run build:main && bun scripts/dev/dev-main.cjs",
     "dev": "bun scripts/dev/dev-stack.cjs",
@@ -31,7 +31,8 @@
     "format:check": "oxfmt --check .",
     "test": "vitest run",
     "test:resolution": "VITE_DESKTOP_LOCAL_STORAGE_KEY=traycer-resolution-test-local-storage-key bun run build:app && bun scripts/resolution/run-resolution-matrix.cjs",
-    "test:packaging": "vitest run --config vitest.config.packaging.ts"
+    "test:packaging": "vitest run --config vitest.config.packaging.ts",
+    "package:ssh": "bun scripts/package-ssh.cjs"
   },
   "dependencies": {
     "@sentry/browser": "catalog:",
@@ -70,9 +71,9 @@
     "vitest": "catalog:"
   },
   "build": {
-    "appId": "ai.traycer.desktop",
-    "productName": "Traycer",
-    "artifactName": "traycer-desktop-${arch}.${ext}",
+    "appId": "io.github.krat12.traycer-ssh",
+    "productName": "Traycer SSH",
+    "artifactName": "Traycer-SSH-${version}-${arch}.${ext}",
     "asar": true,
     "electronFuses": {
       "runAsNode": false,
@@ -86,7 +87,6 @@
       "buildResources": "resources/bundle",
       "output": "release"
     },
-    "afterPack": "scripts/prepack/inject-host-launch-agent.cjs",
     "files": [
       "dist/**/*",
       "package.json",
@@ -113,14 +113,6 @@
         ]
       },
       {
-        "from": "resources/host",
-        "to": "host",
-        "filter": [
-          "README.md",
-          ".gitkeep"
-        ]
-      },
-      {
         "from": "resources/tray",
         "to": "tray",
         "filter": [
@@ -130,21 +122,15 @@
     ],
     "protocols": [
       {
-        "name": "Traycer",
+        "name": "Traycer SSH",
         "schemes": [
-          "traycer"
+          "traycer-ssh"
         ]
       }
     ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "traycerai",
-        "repo": "traycer"
-      }
-    ],
+    "publish": null,
     "mac": {
-      "artifactName": "traycer-desktop-macos-${arch}.${ext}",
+      "artifactName": "Traycer-SSH-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "minimumSystemVersion": "12.0",
       "entitlements": "resources/bundle/entitlements.mac.plist",
@@ -152,15 +138,6 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Traycer uses the microphone for voice dictation in the composer."
       },
-      "extraResources": [
-        {
-          "from": "resources/cli/darwin-${arch}",
-          "to": "cli/darwin-${arch}",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         {
           "target": "dmg",
@@ -181,52 +158,29 @@
       "gatekeeperAssess": false
     },
     "win": {
-      "artifactName": "traycer-desktop-windows-${arch}.${ext}",
+      "artifactName": "Traycer-SSH-${version}-win-${arch}.${ext}",
       "icon": "icon.ico",
       "signtoolOptions": {
         "signingHashAlgorithms": [
           "sha256"
         ]
       },
-      "extraResources": [
-        {
-          "from": "resources/cli/win32-${arch}",
-          "to": "cli/win32-${arch}",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         {
           "target": "nsis",
           "arch": [
             "x64"
           ]
-        },
-        {
-          "target": "msi",
-          "arch": [
-            "x64"
-          ]
         }
-      ]
+      ],
+      "executableName": "Traycer SSH"
     },
     "linux": {
-      "artifactName": "traycer-desktop-linux-${arch}.${ext}",
-      "executableName": "traycer-desktop",
+      "artifactName": "Traycer-SSH-${version}-linux-${arch}.${ext}",
+      "executableName": "traycer-ssh",
       "icon": "icons",
       "syncDesktopName": true,
       "maintainer": "Traycer AI <support@traycer.ai>",
-      "extraResources": [
-        {
-          "from": "resources/cli/linux-${arch}",
-          "to": "cli/linux-${arch}",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         {
           "target": "AppImage",
@@ -253,7 +207,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "include": "uninstall-host-autostart.nsh"
+      "deleteAppDataOnUninstall": false
     },
     "dmg": {
       "background": "resources/bundle/dmg/assets/dmg-background.png",
@@ -277,6 +231,6 @@
       ]
     }
   },
-  "desktopName": "traycer-desktop.desktop",
-  "productName": "Traycer"
+  "desktopName": "traycer-ssh.desktop",
+  "productName": "Traycer SSH"
 }

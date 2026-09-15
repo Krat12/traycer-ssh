@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostListFetchResult } from "@traycer-clients/shared/host-client/remote-fetcher";
+import type { SshHostConnection } from "@traycer-clients/shared/platform/ssh-host";
 import { createBrowserSessionsHostDirectory } from "../browser-sessions-transport";
 
 /**
@@ -49,6 +50,105 @@ let now = 0;
 describe("main resolves the browser.sessions host itself", () => {
   beforeEach(() => {
     now = 1_000_000;
+  });
+
+  it("uses the approved SSH route for a registered Host, tracks reconnects and restores relay on removal", async () => {
+    let ssh: SshHostConnection | null = {
+      profile: { hostId: "host-2", label: "Linux", target: "linux-dev" },
+      state: "connected",
+      websocketUrl: "ws://127.0.0.1:44100/rpc",
+      version: "1.3.1",
+      message: null,
+    };
+    const listRegisteredHosts = vi.fn(() =>
+      Promise.resolve(remoteResponse("host-2")),
+    );
+    const directory = createBrowserSessionsHostDirectory({
+      authnBaseUrl: () => "https://authn.test",
+      relayBaseUrl: "wss://relay.test/attach",
+      localHost: () => null,
+      bearerToken: () => "bearer",
+      sshConnection: () => ssh,
+      listRegisteredHosts,
+      now: () => now,
+    });
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "ssh",
+      hostId: "host-2",
+      publicKey: "cHVibGljS2V5",
+    });
+    ssh = { ...ssh, state: "reconnecting", websocketUrl: null };
+    expect(directory.endpoint("host-2")?.websocketUrl).toBeNull();
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "ssh",
+      publicKey: "cHVibGljS2V5",
+      websocketUrl: null,
+    });
+    ssh = {
+      ...ssh,
+      state: "connected",
+      websocketUrl: "ws://127.0.0.1:44200/rpc",
+    };
+    expect(directory.endpoint("host-2")?.websocketUrl).toBe(
+      "ws://127.0.0.1:44200/rpc",
+    );
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "ssh",
+      publicKey: "cHVibGljS2V5",
+    });
+    expect(listRegisteredHosts).toHaveBeenCalledTimes(1);
+    expect(await directory.resolve("unregistered")).toBeNull();
+    ssh = null;
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "remote",
+      websocketUrl: "wss://relay.test/attach",
+    });
+  });
+
+  it("takes a re-enrolled SSH Host's public key from main's refreshed registry", async () => {
+    const original = remoteResponse("host-2");
+    if (original.kind !== "ok") throw new Error("expected registered Host");
+    const rotated: HostListFetchResult = {
+      ...original,
+      response: {
+        ...original.response,
+        hosts: original.response.hosts.map((host) => ({
+          ...host,
+          publicKey: "cm9hdGVkS2V5",
+        })),
+      },
+    };
+    const listRegisteredHosts = vi
+      .fn(() => Promise.resolve(rotated))
+      .mockResolvedValueOnce(original);
+    const directory = createBrowserSessionsHostDirectory({
+      authnBaseUrl: () => "https://authn.test",
+      relayBaseUrl: "wss://relay.test/attach",
+      localHost: () => null,
+      bearerToken: () => "bearer",
+      sshConnection: () => ({
+        profile: { hostId: "host-2", label: "Linux", target: "linux-dev" },
+        state: "connected",
+        websocketUrl: "ws://127.0.0.1:44100/rpc",
+        version: "1.3.1",
+        message: null,
+      }),
+      listRegisteredHosts,
+      now: () => now,
+    });
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "ssh",
+      publicKey: "cHVibGljS2V5",
+    });
+
+    directory.invalidate("host-2");
+
+    expect(await directory.resolve("host-2")).toMatchObject({
+      kind: "ssh",
+      publicKey: "cm9hdGVkS2V5",
+      websocketUrl: "ws://127.0.0.1:44100/rpc",
+    });
+    expect(listRegisteredHosts).toHaveBeenCalledTimes(2);
   });
 
   it("answers this machine's own host from the live local snapshot", async () => {

@@ -347,7 +347,7 @@ function resolveHostTargetKind(
   entry: HostDirectoryEntry | undefined,
 ): HostTargetKind {
   if (entry === undefined) return "unknown";
-  return entry.kind === "remote" ? "remote" : "local";
+  return entry.kind === "remote" || entry.kind === "ssh" ? "remote" : "local";
 }
 
 /**
@@ -392,7 +392,11 @@ function resolveLocalBootIntent(args: {
   readonly selectionIntent: LocalBootSelection | null;
 }): boolean {
   if (!args.hasLocalHost) return false;
-  if (args.targetEntry !== undefined) return args.targetEntry.kind !== "remote";
+  if (args.targetEntry !== undefined) {
+    return (
+      args.targetEntry.kind === "local" || args.targetEntry.kind === "mock"
+    );
+  }
   if (args.selectionIntent === null) return true;
   const { selectedHostId, localHostId } = args.selectionIntent;
   if (selectedHostId === null) return true;

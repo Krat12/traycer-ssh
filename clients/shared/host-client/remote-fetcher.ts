@@ -367,6 +367,11 @@ export function hostUnavailability(
   if (entry.transportDialability === "dialable") {
     return null;
   }
+  // A tunnel outage says nothing about the Linux process. Keep the session
+  // owners while OpenSSH reconnects; only their own RPCs can prove Host death.
+  if (entry.kind === "ssh") {
+    return "indeterminate";
+  }
   if (!isRemoteHostDirectoryEntry(entry)) {
     return "offline";
   }

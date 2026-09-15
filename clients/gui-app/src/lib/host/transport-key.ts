@@ -1,4 +1,5 @@
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import { hostRegistryPublicKey } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import {
   isConfirmedTransportRefusal,
   isRemoteHostDirectoryEntry,
@@ -158,6 +159,8 @@ export function isLocalHostBootingEntry(
  *    corruption recovery - `registerOrAdoptHost` overwrites the key on the
  *    same `hostId`) is a genuine identity change here, not something a URL
  *    move happens to also cover.
+ *  - `ssh`: `hostId + userId + publicKey`. Re-enrollment replaces the owner;
+ *    a tunnel outage or a new forwarded port only changes its live endpoint.
  *  - anything else (`local` / `mock`): `hostId + userId` only - a websocket
  *    URL move under a stable `hostId` is healed LIVE by the owned transport's
  *    endpoint re-dial (`dialableHostEndpoint` / `reconnectAll`), not by
@@ -204,6 +207,14 @@ export function remoteAwareOwnerIdentity(
       userId,
       target.publicKey,
       target.websocketUrl ?? "",
+    ].join(SEPARATOR);
+  }
+  if (target.kind === "ssh") {
+    return [
+      "ssh",
+      target.hostId,
+      userId,
+      hostRegistryPublicKey(target) ?? "",
     ].join(SEPARATOR);
   }
   return ["local", target.hostId, userId].join(SEPARATOR);

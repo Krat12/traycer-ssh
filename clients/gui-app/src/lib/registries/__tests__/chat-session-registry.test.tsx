@@ -7,6 +7,10 @@ import { MockHostMessenger } from "@traycer-clients/shared/host-client/mock/mock
 import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtures/request-context";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 import {
+  sshHostDirectoryEntry,
+  type SshHostDirectoryEntry,
+} from "@traycer-clients/shared/host-client/ssh-host-directory";
+import {
   hostListItemToDirectoryEntry,
   type RemoteHostDirectoryEntry,
 } from "@traycer-clients/shared/host-client/remote-fetcher";
@@ -145,6 +149,29 @@ function remoteTarget(publicKey: string): RemoteHostDirectoryEntry {
       lastSeenAt: null,
     },
   };
+}
+
+function rotationTarget(
+  route: "remote" | "ssh",
+  publicKey: string,
+): HostDirectoryEntry {
+  const registered = remoteTarget(publicKey);
+  return route === "remote"
+    ? registered
+    : sshHostDirectoryEntry(
+        {
+          profile: {
+            hostId: registered.hostId,
+            label: registered.label,
+            target: "linux-dev",
+          },
+          state: "connected",
+          websocketUrl: "ws://127.0.0.1:44001/rpc",
+          version: "1.3.1",
+          message: null,
+        },
+        registered,
+      );
 }
 
 function buildGlobalClient(): HostClient<HostRpcRegistry> {
@@ -300,53 +327,56 @@ describe("useChatSessionHandle owner identity (R-1)", () => {
     useAuthStore.setState({ profile: null, status: "signed-out" });
   });
 
-  it("forces a release + reacquire on a same-host remote public-key rotation, isolated from every other field", async () => {
-    useAuthStore.setState({
-      status: "signed-in",
-      profile: {
-        userId: CHAT_PROFILE_USER_ID,
-        userName: CHAT_PROFILE_USER_ID,
-        email: `${CHAT_PROFILE_USER_ID}@example.com`,
-      },
-    });
-    const tracked = createTrackedOpenTransport();
-    openTransportRef.fn = tracked.openTransport;
-    const globalClient = buildGlobalClient();
-    expect(globalClient.getRequestContextUserId()).toBe(FIXTURE_USER_ID);
-    globalClientRef.value = globalClient;
-    hostEntryRef.value = remoteTarget("pubkey-a");
+  it.each(["remote", "ssh"] as const)(
+    "forces a release + reacquire on a same-host %s public-key rotation, isolated from every other field",
+    async (route) => {
+      useAuthStore.setState({
+        status: "signed-in",
+        profile: {
+          userId: CHAT_PROFILE_USER_ID,
+          userName: CHAT_PROFILE_USER_ID,
+          email: `${CHAT_PROFILE_USER_ID}@example.com`,
+        },
+      });
+      const tracked = createTrackedOpenTransport();
+      openTransportRef.fn = tracked.openTransport;
+      const globalClient = buildGlobalClient();
+      expect(globalClient.getRequestContextUserId()).toBe(FIXTURE_USER_ID);
+      globalClientRef.value = globalClient;
+      hostEntryRef.value = rotationTarget(route, "pubkey-a");
 
-    const { result, rerender } = renderHook(
-      () => useChatSessionHandle("chat-1", REMOTE_HOST_ID, true),
-      { wrapper },
-    );
+      const { result, rerender } = renderHook(
+        () => useChatSessionHandle("chat-1", REMOTE_HOST_ID, true),
+        { wrapper },
+      );
 
-    await waitFor(() => {
-      expect(result.current).not.toBeNull();
-    });
-    const firstHandle = result.current;
-    if (firstHandle === null) {
-      throw new Error("expected initial handle");
-    }
-    expect(tracked.records()).toHaveLength(1);
-    expect(tracked.records()[0].closeCount).toBe(0);
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+      });
+      const firstHandle = result.current;
+      if (firstHandle === null) {
+        throw new Error("expected initial handle");
+      }
+      expect(tracked.records()).toHaveLength(1);
+      expect(tracked.records()[0].closeCount).toBe(0);
 
-    // Same chatId/epicId/hostId, same signed-in user, same
-    // websocketUrl/version/status - ONLY the remote host's public key rotates
-    // (re-enrollment / corruption recovery). A pass proves `ownerIdentityKey`
-    // alone (folded into `chatSessionScopeKey`) forces the registry's own
-    // scope-key mismatch teardown, not a coincident host/user churn.
-    hostEntryRef.value = remoteTarget("pubkey-b");
-    rerender();
+      // Same chatId/epicId/hostId, same signed-in user, same
+      // websocketUrl/version/status - ONLY the remote host's public key rotates
+      // (re-enrollment / corruption recovery). A pass proves `ownerIdentityKey`
+      // alone (folded into `chatSessionScopeKey`) forces the registry's own
+      // scope-key mismatch teardown, not a coincident host/user churn.
+      hostEntryRef.value = rotationTarget(route, "pubkey-b");
+      rerender();
 
-    await waitFor(() => {
-      expect(result.current).not.toBe(firstHandle);
-    });
+      await waitFor(() => {
+        expect(result.current).not.toBe(firstHandle);
+      });
 
-    expect(tracked.records()).toHaveLength(2);
-    expect(tracked.records()[0].closeCount).toBe(1);
-    expect(tracked.records()[1].closeCount).toBe(0);
-  });
+      expect(tracked.records()).toHaveLength(2);
+      expect(tracked.records()[0].closeCount).toBe(1);
+      expect(tracked.records()[1].closeCount).toBe(0);
+    },
+  );
 
   // G1's control: the scope dropped the websocket URL, but only for a LOCAL
   // host. A remote host's relay attach URL is part of its owner identity, so
@@ -665,6 +695,40 @@ describe("useChatSessionHandle through a local host restart (G1)", () => {
 
   const FIRST_URL = "ws://127.0.0.1:55300/rpc";
   const RESPAWN_URL = "ws://127.0.0.1:61234/rpc";
+
+  it("retains the chat and transcript owner while SSH reconnects on a different port", async () => {
+    signIn();
+    const tracked = createTrackedOpenTransport();
+    openTransportRef.fn = tracked.openTransport;
+    globalClientRef.value = buildGlobalClient();
+    const sshEntry: SshHostDirectoryEntry = {
+      ...localEntry(FIRST_URL, "1.0.0"),
+      kind: "ssh",
+      publicKey: "registry-key",
+    };
+    hostEntryRef.value = sshEntry;
+    const { result, rerender } = renderHook(
+      () => useChatSessionHandle("chat-ssh-reconnect", LOCAL_HOST_ID, true),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current).not.toBeNull());
+    const liveHandle = result.current;
+
+    hostEntryRef.value = {
+      ...sshEntry,
+      websocketUrl: null,
+      transportDialability: "not-dialable",
+    };
+    rerender();
+    await settle();
+    expect(result.current).toBe(liveHandle);
+    hostEntryRef.value = { ...sshEntry, websocketUrl: RESPAWN_URL };
+    rerender();
+    await settle();
+    expect(result.current).toBe(liveHandle);
+    expect(tracked.records()).toHaveLength(1);
+    expect(tracked.records()[0].closeCount).toBe(0);
+  });
 
   it.each([
     ["the websocket URL", localEntry(RESPAWN_URL, "1.0.0")],

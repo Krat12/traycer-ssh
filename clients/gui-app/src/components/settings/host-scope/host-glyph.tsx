@@ -30,7 +30,7 @@ export function HostGlyph(props: {
   if (props.host.entry?.kind === "remote") {
     return <Cloud className={className} aria-hidden />;
   }
-  if (props.host.entry?.kind === "mock") {
+  if (props.host.entry?.kind === "mock" || props.host.entry?.kind === "ssh") {
     return <Server className={className} aria-hidden />;
   }
   return <MonitorSmartphone className={className} aria-hidden />;

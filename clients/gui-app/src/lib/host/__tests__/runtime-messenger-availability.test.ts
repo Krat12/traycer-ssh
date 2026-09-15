@@ -33,6 +33,7 @@ import {
 } from "@traycer/protocol/host/index";
 import type { HostStreamRpcRegistry } from "@traycer/protocol/host/registry";
 import { buildRuntimeHostMessenger } from "../host-messenger";
+import { WsRpcClient } from "@traycer-clients/shared/host-transport/ws-rpc-client";
 
 // Only the network boundary is replaced. Every other export of this barrel
 // stays REAL, matching `stream-runtime.test.tsx`.
@@ -379,6 +380,49 @@ afterEach(() => {
 });
 
 describe("RuntimeHostMessenger availability forwarding", () => {
+  it("sends an SSH request through direct WS with the original Host and bearer, without relay acquisition", async () => {
+    const send = vi
+      .spyOn(WsRpcClient.prototype, "request")
+      .mockRejectedValue(new Error("direct-request"));
+    const target: HostDirectoryEntry = {
+      ...localEntry,
+      hostId: REMOTE_HOST_ID,
+      kind: "ssh",
+      websocketUrl: "ws://127.0.0.1:44001/rpc",
+    };
+    const binding = buildRuntimeHostMessenger<HostRpcRegistry>({
+      registry: hostRpcRegistry,
+      resolveTarget: () => target,
+      auth: null,
+      authnBaseUrl: "https://authn.invalid",
+      requestId: () => "ssh-request",
+      onRemoteAvailabilityRecovered: () => undefined,
+    });
+    const authority = authorityFor(REMOTE_HOST_ID, "ws://127.0.0.1:44001/rpc");
+    try {
+      await expect(
+        binding.messenger.request(
+          "host.status",
+          {},
+          {
+            replayMustBeKeyed: false,
+            requiredHostMethodVersion: null,
+            idempotencyKey: null,
+            authority,
+          },
+        ),
+      ).rejects.toThrow("direct-request");
+      expect(send).toHaveBeenCalledWith(
+        "host.status",
+        {},
+        expect.objectContaining({ authority }),
+      );
+      expect(mocks.createRemoteHostTransport).not.toHaveBeenCalled();
+    } finally {
+      binding.dispose();
+      send.mockRestore();
+    }
+  });
   it("still delivers the ready boundary after an interleaved local request replaced the binding", () => {
     const h = harness();
     h.requestRemote();

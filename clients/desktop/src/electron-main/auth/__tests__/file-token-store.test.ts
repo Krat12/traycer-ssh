@@ -179,6 +179,32 @@ describe("FileTokenStore (real fs + lock/WAL)", () => {
     expect(store).toBeDefined();
   });
 
+  it("isolates fork login and sign-out from official CLI credentials", async () => {
+    const official = makeStore();
+    await official.signIn(
+      { token: "official-token", refreshToken: "official-refresh" },
+      IDENTITY,
+    );
+    const before = readFileSync(credentialsPath(), "utf8");
+    const forkPath = join(homeDir, "Traycer SSH", "auth", "credentials");
+    const fork = new FileTokenStore({
+      environment: ENVIRONMENT,
+      authnBaseUrl: AUTHN_BASE_URL,
+      watchImpl: undefined,
+      credentialsPath: forkPath,
+    });
+    stores.push(fork);
+    expect(await fork.get()).toBeNull();
+    await fork.signIn(
+      { token: "fork-token", refreshToken: "fork-refresh" },
+      IDENTITY,
+    );
+    expect((await fork.get())?.token).toBe("fork-token");
+    await fork.delete();
+    expect(await fork.get()).toBeNull();
+    expect(readFileSync(credentialsPath(), "utf8")).toBe(before);
+  });
+
   it("signIn stamps savedAt, get round-trips the full identity", async () => {
     const store = makeStore();
     await store.signIn({ token: "tok-1", refreshToken: "rt-1" }, IDENTITY);

@@ -7,6 +7,8 @@ import { createRequestContextFixture } from "@traycer-clients/shared/test-fixtur
 import { WsStreamClient } from "@traycer-clients/shared/host-transport/ws-stream-client";
 import type { StreamAuthRevalidator } from "@traycer-clients/shared/auth/bearer-revalidator";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { SshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
+import { remoteAwareOwnerIdentityKey } from "@/lib/host/transport-key";
 import {
   hostRpcRegistry,
   type HostRpcRegistry,
@@ -50,7 +52,10 @@ vi.mock("@/providers/use-runner-host", () => ({
   useRunnerHost: () => ({ authnBaseUrl: "http://localhost:5005" }),
 }));
 
-import { useHostStreamClientFor } from "@/hooks/host/use-host-stream-client-for";
+import {
+  useHostStreamClientBindingFor,
+  useHostStreamClientFor,
+} from "@/hooks/host/use-host-stream-client-for";
 import { useAuthStore } from "@/stores/auth/auth-store";
 
 // The SPINE `useHostClient` hands back in this suite - never bound to any one
@@ -115,6 +120,65 @@ describe("useHostStreamClientFor", () => {
     // SPINE an active host of its own (no global side effect) - it stays
     // unbound (redesign P4.2 deleted the active slot `.bind()` used to set).
     expect(globalClient.getActiveHostId()).toBeNull();
+  });
+
+  it("uses the authenticated direct stream transport for an SSH Host", () => {
+    globalClientRef.value = buildGlobalClient(true);
+    const target: HostDirectoryEntry = {
+      ...TARGET_B,
+      kind: "ssh",
+      websocketUrl: "ws://127.0.0.1:44001/rpc",
+    };
+    const { result } = renderHook(() => useHostStreamClientFor(target, null));
+    expect(result.current).toBeInstanceOf(WsStreamClient);
+    expect(globalClientRef.value.getActiveHostId()).toBeNull();
+  });
+
+  it("replaces the shared direct SSH client on registry key rotation while an old incarnation is still pinned", () => {
+    const globalClient = buildGlobalClient(true);
+    globalClientRef.value = globalClient;
+    const target: SshHostDirectoryEntry = {
+      ...TARGET_B,
+      kind: "ssh",
+      publicKey: "old-key",
+      websocketUrl: "ws://127.0.0.1:44001/rpc",
+    };
+    const auth: StreamAuthRevalidator = {
+      revalidateForReconnect: () => Promise.resolve("rotated"),
+    };
+    const { result, rerender } = renderHook(
+      ({ target }) => useHostStreamClientBindingFor(target, auth),
+      { initialProps: { target } },
+    );
+    const before = result.current;
+    if (before === null) throw new Error("expected initial SSH binding");
+    expect(before.client).toBeInstanceOf(WsStreamClient);
+    expect(before.transportKey).toBe(
+      remoteAwareOwnerIdentityKey(
+        target,
+        globalClient.getRequestContextUserId(),
+      ),
+    );
+    before.pin();
+    try {
+      const rotated: SshHostDirectoryEntry = {
+        ...target,
+        publicKey: "new-key",
+      };
+      rerender({ target: rotated });
+      expect(result.current?.client).toBeInstanceOf(WsStreamClient);
+      expect(result.current?.client).not.toBe(before.client);
+      expect(result.current?.transportKey).toBe(
+        remoteAwareOwnerIdentityKey(
+          rotated,
+          globalClient.getRequestContextUserId(),
+        ),
+      );
+      expect(before.client.isClosed()).toBe(false);
+    } finally {
+      before.unpin();
+    }
+    expect(before.client.isClosed()).toBe(true);
   });
 
   it("memoizes for a stable target and rebuilds for a different host", () => {

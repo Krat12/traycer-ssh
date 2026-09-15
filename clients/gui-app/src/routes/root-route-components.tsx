@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Outlet, useRouterState } from "@tanstack/react-router";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
 import { HostTrayCommandListener } from "@/components/layout/bridges/host-tray-command-listener";
 import { DesktopDialogHost } from "@/components/layout/dialogs/desktop-dialog-host";
 import { HostReadyGate } from "@/components/layout/host-ready-gate";
@@ -48,13 +49,17 @@ export function RootComponent() {
     select: (state) =>
       state.location.pathname.startsWith(GATE_BYPASS_PATH_PREFIX),
   });
-  // A signed-in user who hasn't finished onboarding sees the tour on any route.
+  // SSH desktop must let a first-run user configure their remote connection
+  // before taking the tour. Leaving Settings still presents unfinished
+  // onboarding; merely opening the connection settings never completes it.
   // Deliberately `signed-in` and not `admitsLocalPlane`: the tour walks through
   // account-backed setup, so an unverified session has no business starting it
   // (and a user with no stored credentials at all is `signed-out`, never
   // `unverified`, so nobody loses their first-run tour to this).
   const showOnboarding =
-    authStatus === "signed-in" && onboardingCompletedAt === null;
+    authStatus === "signed-in" &&
+    onboardingCompletedAt === null &&
+    !(SSH_DESKTOP_ONLY && isHostIndependentRoute);
   // Sign-in and the tour render bare, without the app shell. This is the
   // structural half of renderer admission - `RootLandingPage` decides what the
   // route BODY renders, this decides whether the shell exists around it at all

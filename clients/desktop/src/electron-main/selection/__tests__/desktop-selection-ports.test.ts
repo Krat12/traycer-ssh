@@ -47,6 +47,14 @@ import {
   DesktopLocalHostOutageSignal,
 } from "../desktop-selection-ports";
 
+// Existing cases document the upstream local-host edition. SSH cases below
+// exercise the same production ports with the fork's edition enabled.
+const desktopEdition = vi.hoisted(() => ({ SSH_DESKTOP_ONLY: false }));
+vi.mock(
+  "@traycer-clients/shared/platform/desktop-edition",
+  () => desktopEdition,
+);
+
 /**
  * Controllable stand-in for the fleet port's enrollment read. Default is the
  * real implementation; A1 overrides it with a deferred gate so the gen-0 read
@@ -122,6 +130,7 @@ async function writeEnrollment(dir: string, hostId: string): Promise<string> {
 afterEach(async () => {
   tempDirs.length = 0;
   localHostIdentityTestDoubles.restore();
+  desktopEdition.SSH_DESKTOP_ONLY = false;
 });
 
 /**
@@ -465,6 +474,44 @@ function buildFleetSourceWithPublisher(overrides: {
 }
 
 describe("DesktopHostFleetSource", () => {
+  it("SSH fleet never reads local identity or promotes its matching registry row to local", async () => {
+    desktopEdition.SSH_DESKTOP_ONLY = true;
+    const dir = await makeTempDir();
+    const host = new FakeHostLifecycle();
+    host.identityEnrollmentFile = await writeEnrollment(dir, "local-host");
+    const authSession = new DesktopAuthSession();
+    setVerifiedSession(authSession, signedInSnapshot("user-a", "token-1"));
+    const fleet = buildFleetSource({
+      identity: new FakeIdentitySource("user-a", 0),
+      authSession,
+      host,
+      listRegisteredHosts: async () => ({
+        kind: "ok",
+        response: {
+          hosts: [
+            buildHostListItem("local-host"),
+            buildHostListItem("remote-host"),
+          ],
+        },
+      }),
+    });
+    try {
+      await fleet.refresh();
+      expect(fleet.snapshot()).toMatchObject({
+        localHostId: null,
+        hosts: [
+          { hostId: "local-host", kind: "remote" },
+          { hostId: "remote-host", kind: "remote" },
+        ],
+      });
+      expect(
+        localHostIdentityTestDoubles.readLastKnownLocalHostId,
+      ).not.toHaveBeenCalled();
+    } finally {
+      fleet.dispose();
+    }
+  });
+
   /**
    * A revoked bearer must not keep polling the ACCOUNT REGISTRY.
    *
@@ -1800,6 +1847,19 @@ class FakeHostController implements IpcHostController {
 }
 
 describe("createDesktopLocalHostEnsurePort", () => {
+  it("SSH ensure refuses local provisioning without calling the controller", async () => {
+    desktopEdition.SSH_DESKTOP_ONLY = true;
+    const controller = new FakeHostController();
+    const port = createDesktopLocalHostEnsurePort(controller);
+
+    await expect(port.ensureReady()).resolves.toEqual({
+      ok: false,
+      reason: "remote-only-desktop",
+      deferred: true,
+    });
+    expect(controller.convergeReadyCalls).toEqual([]);
+  });
+
   // Ticket 4: the ensure port is background/liveness-only - it must never
   // move the installed version as a side effect of proving the host alive,
   // so it always requests `"keep-installed"`. Target-independent by design

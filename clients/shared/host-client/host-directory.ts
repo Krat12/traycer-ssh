@@ -18,7 +18,7 @@
  *   `remote-path.ts` for the committed invariants.
  */
 
-export type HostKind = "local" | "remote" | "mock";
+export type HostKind = "local" | "remote" | "ssh" | "mock";
 
 /**
  * How well the SHELL's own probe says a local host is answering right now.

@@ -15,6 +15,10 @@ import type {
 } from "./selection-authority-ipc";
 
 export const RunnerHostInvoke = {
+  sshHostsList: "runnerHost:sshHosts:list",
+  sshHostsSave: "runnerHost:sshHosts:save",
+  sshHostsRemove: "runnerHost:sshHosts:remove",
+  sshHostsReconnect: "runnerHost:sshHosts:reconnect",
   validateAuthTokenIdentity: "runnerHost:auth:validateTokenIdentity",
   // Device Authorization Grant (RFC 8628) - the only interactive login. `start`
   // runs `/device/authorize` + the `/device/token` poll loop in main (CORS-safe,
@@ -394,6 +398,7 @@ export const RunnerHostInvoke = {
 } as const;
 
 export const RunnerHostEvent = {
+  sshHostsChanged: "runnerHost:sshHosts:changed",
   authCallback: "runnerHost:event:authCallback",
   // Credentials-file change broadcast (tech plan §3/§4). Fired by the main
   // `FileTokenStore`'s owned watcher on every observed change (external writes

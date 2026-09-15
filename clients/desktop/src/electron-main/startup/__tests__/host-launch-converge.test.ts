@@ -14,6 +14,14 @@ import type { HostRegistryUpdateState } from "../../../ipc-contracts/host-manage
 import type { DesktopStartupTestHooks } from "../desktop-startup";
 import type { SignedInGate } from "../host-launch-converge";
 
+// Retain the upstream lifecycle contract; the SSH composition case below
+// explicitly switches editions without replacing the production orchestrator.
+const desktopEdition = vi.hoisted(() => ({ SSH_DESKTOP_ONLY: false }));
+vi.mock(
+  "@traycer-clients/shared/platform/desktop-edition",
+  () => desktopEdition,
+);
+
 const electronMock = vi.hoisted(() => ({
   app: {
     getPath: vi.fn(() => "/tmp"),
@@ -728,6 +736,58 @@ describe("runLaunchHostConvergeReconcile (fixup B1 + B2)", () => {
       });
     } finally {
       __setDesktopStartupTestHooks(null);
+    }
+  });
+
+  it("SSH startup leaves local activation debt untouched and never arms sign-in provisioning", async () => {
+    desktopEdition.SSH_DESKTOP_ONLY = true;
+    const controller = fakeHostController(
+      fakeStatus(false, "pendingActivation", false),
+      {
+        kind: "ok",
+        value: {
+          appliedVersion: "1.4.1",
+          runningActivated: true,
+          applied: true,
+        },
+      },
+      { kind: "ok", value: { activated: true } },
+    );
+    const signedIn = fakeSignedInGate(true);
+    const background = vi.fn();
+    try {
+      __setDesktopStartupTestHooks({
+        config: {
+          environment: "production",
+          isDev: false,
+          preloadPath: "/tmp/preload.js",
+          iconPath: "/tmp/icon.png",
+          authnBaseUrl: "https://auth.example.test",
+        },
+        runPreReady: () => undefined,
+        whenReady: async () => undefined,
+        runOnReady: async () => undefined,
+        runWindowPhase: async () => ({
+          hostController: controller,
+          menu: fakeMenu(),
+          signedIn,
+        }),
+        runDeferredBackground: background,
+      });
+
+      await runDesktopStartup();
+      expect(background).toHaveBeenCalledOnce();
+      expect(signedIn.listenerCount()).toBe(0);
+      signedIn.signOut();
+      signedIn.signIn();
+      expect(controller.getStatusCalls).toBe(0);
+      expect(controller.stageLatestCalls).toBe(0);
+      expect(controller.applyStagedCalls).toEqual([]);
+      expect(controller.activateInstalledCalls).toEqual([]);
+      expect(controller.convergeReadyCalls).toEqual([]);
+    } finally {
+      __setDesktopStartupTestHooks(null);
+      desktopEdition.SSH_DESKTOP_ONLY = false;
     }
   });
 

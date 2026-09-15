@@ -24,8 +24,8 @@ import {
 } from "@/lib/perf/terminal-load-perf";
 import { useTerminalCreate } from "@/hooks/terminal/use-terminal-create-mutation";
 import { useTerminalList } from "@/hooks/terminal/use-terminal-list-query";
-import { useHostClientFor } from "@/hooks/host/use-host-client-for";
-import { useHostDirectoryEntry } from "@/hooks/host/use-host-directory-entry";
+import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
+import { useReactiveHostReadiness } from "@/hooks/host/use-reactive-host-readiness";
 import { useTerminalSessionHandle } from "@/lib/registries/terminal-session-registry";
 // Type-only for @xterm; importing it here does not pull the lazy `@xterm/*`
 // chunk into the eager bundle.
@@ -165,8 +165,11 @@ export interface TerminalTileBootstrapResult {
 export function useTerminalTileBootstrap(
   input: UseTerminalTileBootstrapInput,
 ): TerminalTileBootstrapResult {
-  const hostEntry = useHostDirectoryEntry(input.hostId);
-  const hostClient = useHostClientFor(hostEntry);
+  // The list cache belongs to the bound Host even while its SSH tunnel has no
+  // endpoint. Dropping the requester would lose the cached running-session
+  // verdict and release a live terminal. Readiness gates RPCs separately.
+  const hostClient = useHostClientForHostId(input.hostId);
+  const canExecute = useReactiveHostReadiness(hostClient).canExecute;
   const list = useTerminalList(input.scope, hostClient);
   const create = useTerminalCreate(hostClient);
   const [createRetryError, setCreateRetryError] = useState<{
@@ -304,7 +307,7 @@ export function useTerminalTileBootstrap(
   const createIsIdle = create.isIdle;
   const preparePayload = input.preparePayload;
   useEffect(() => {
-    if (hostClient === null) return;
+    if (!canExecute) return;
     if (hostHasSession === true) return; // session already live
     if (hostSessionExited) return; // PTY exited - close, do not respawn
     if (!enabled) return;
@@ -371,7 +374,7 @@ export function useTerminalTileBootstrap(
     adoptOnly,
     hostHasSession,
     hostSessionExited,
-    hostClient,
+    canExecute,
     createIsIdle,
     gridReady,
     measuredGrid,

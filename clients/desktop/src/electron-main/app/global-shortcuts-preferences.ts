@@ -1,4 +1,5 @@
 import { app } from "electron";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
 import { join } from "node:path";
 import { isValidChordString } from "@traycer-clients/shared/keybindings/chord-core";
 import {
@@ -43,7 +44,10 @@ export function isGlobalShortcutPersistenceError(
 
 // `chord: null` means "use the definition's default chord" - see
 // `GlobalShortcutIntent`.
-const DEFAULT_INTENT: GlobalShortcutIntent = { enabled: true, chord: null };
+const DEFAULT_INTENT: GlobalShortcutIntent = {
+  enabled: !SSH_DESKTOP_ONLY,
+  chord: null,
+};
 const DEFAULT_INTENTS: GlobalShortcutIntents = Object.fromEntries(
   GLOBAL_SHORTCUT_IDS.map((id) => [id, DEFAULT_INTENT]),
 ) as GlobalShortcutIntents;

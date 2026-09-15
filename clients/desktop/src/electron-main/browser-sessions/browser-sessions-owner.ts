@@ -205,6 +205,8 @@ export interface BrowserSessionsRegistryDeps {
   readonly userId: () => string | null;
   /** THIS machine's host id, or null while none is published. */
   readonly localHostId: () => string | null;
+  /** A remote-only shell declares null locality immediately; no local Host will arrive. */
+  readonly hasLocalHost?: boolean;
   /**
    * Fires when that id changes.
    *
@@ -331,6 +333,14 @@ export class BrowserSessionsRegistry {
     if (stream === undefined) return;
     this.streams.delete(id);
     stream.dispose();
+  }
+
+  /** A user changed this Host's route, or its SSH tunnel acquired a new port. */
+  notifyHostRouteChanged(hostId: string): void {
+    if (this.disposed) return;
+    for (const stream of this.streams.values()) {
+      if (stream.hostId === hostId) stream.notifyRouteChanged();
+    }
   }
 
   send(
@@ -619,6 +629,14 @@ class BrowserSessionsStream {
           this.failToOpen("This host is not in the directory.");
           return;
         }
+        if (target.kind === "ssh" && target.websocketUrl === null) {
+          // The native SSH manager still owns this route. Keep the stream in
+          // the registry so its next route notification can attach it again;
+          // failToOpen would delete the owner and leave the renderer's stable
+          // SSH coordinator waiting for a manual Retry forever.
+          this.emitStatus("reconnecting", null);
+          return;
+        }
         const transport = this.deps.openTransport(target, userId);
         if (transport === null) {
           this.failToOpen("This host cannot be dialed.");
@@ -744,6 +762,15 @@ class BrowserSessionsStream {
   /** Re-drives the attach burst once this machine has a host id to declare. */
   retryLifecycleReady(): void {
     this.sendLifecycleReadyIfReady();
+  }
+
+  notifyRouteChanged(): void {
+    if (this.disposed) return;
+    // Re-resolve the transport kind too: reconnectAll on a relay client would
+    // keep using its captured relay even after SSH replaced that route.
+    this.teardown();
+    this.terminal = false;
+    this.start();
   }
 
   /**
@@ -1093,7 +1120,7 @@ class BrowserSessionsStream {
       // Wait for the local host id rather than advertising a null locality
       // that can never be elected: readiness is sent once per connection, so
       // a null sent now would stick for the whole connection.
-      localHostId === null ||
+      (localHostId === null && this.deps.hasLocalHost !== false) ||
       this.connectionStatus !== "open" ||
       !this.snapshotReady ||
       this.lifecycleReadySent

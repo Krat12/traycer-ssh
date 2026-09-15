@@ -67,6 +67,11 @@ vi.mock("@/hooks/host/use-host-client-for", () => ({
   }),
 }));
 
+vi.mock("@/hooks/host/use-host-client-for-host-id", async () => {
+  const { useHostClientFor } = await import("@/hooks/host/use-host-client-for");
+  return { useHostClientForHostId: useHostClientFor };
+});
+
 vi.mock("@/lib/host-error-toast", () => ({
   toastFromHostError: vi.fn(),
 }));

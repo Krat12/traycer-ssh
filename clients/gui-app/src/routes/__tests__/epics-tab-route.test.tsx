@@ -246,6 +246,17 @@ describe("/epics/$epicId/$tabId route", () => {
     expect(router.state.location.pathname).toBe("/onboarding");
     expect(useOnboardingStore.getState().completedAt).toBe(1_700_000_000_000);
   });
+
+  it("opens SSH host settings before first-run onboarding is complete", async () => {
+    useOnboardingStore.setState({ completedAt: null });
+
+    const router = renderAt("/settings/host");
+
+    await screen.findByTestId("app-shell");
+    expect(screen.queryByTestId("onboarding-page-stub")).toBeNull();
+    expect(router.state.location.pathname).toBe("/settings/host");
+    expect(useOnboardingStore.getState().completedAt).toBeNull();
+  });
 });
 
 /**

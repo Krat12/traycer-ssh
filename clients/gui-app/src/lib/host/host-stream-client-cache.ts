@@ -158,7 +158,7 @@ export interface HostStreamClientIdentity {
   readonly userId: string;
   /** Captured by the local branch's endpoint provider at build time. */
   readonly websocketUrl: string;
-  /** The remote host's static key; `""` for a non-remote target. */
+  /** Registry incarnation key for relay/SSH; `""` for a local target. */
   readonly publicKey: string;
   /** Captured by the remote branch's attach-grant provider. */
   readonly authnBaseUrl: string;

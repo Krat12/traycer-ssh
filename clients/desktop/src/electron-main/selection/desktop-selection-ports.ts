@@ -15,6 +15,7 @@
  * None of them is wire surface: they are constructor inputs to the engine.
  */
 import type { HostListFetchResult } from "@traycer-clients/shared/host-client/remote-fetcher";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
 import type {
   AuthorityIdentitySource,
   HostFleetEntry,
@@ -501,6 +502,7 @@ export class DesktopHostFleetSource implements HostFleetSource {
   }
 
   private readLocalHostId(): Promise<string | null> {
+    if (SSH_DESKTOP_ONLY) return Promise.resolve(null);
     return readLastKnownLocalHostId({
       identityEnrollmentFile: this.options.host.identityEnrollmentFile,
       pidMetadataFile: this.options.host.pidMetadataFile,
@@ -718,6 +720,9 @@ export function createDesktopLocalHostEnsurePort(
 ): LocalHostEnsurePort {
   return {
     ensureReady: async () => {
+      if (SSH_DESKTOP_ONLY) {
+        return { ok: false, reason: "remote-only-desktop", deferred: true };
+      }
       const outcome = await hostController.convergeReady(
         false,
         { kind: "background" },

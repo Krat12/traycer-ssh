@@ -1,7 +1,8 @@
-import { app, nativeImage } from "electron";
+import { app, dialog, nativeImage } from "electron";
 import type { Event as ElectronEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { initLogger, log } from "../app/logger";
 import { configureNativeAboutPanel } from "../app/about";
 import {
@@ -179,6 +180,8 @@ import { startPendingLoginItemRevisionMonitor } from "../host/pending-login-item
 import { hostManagesHostLoginItem } from "../app/host-login-item";
 import { retireCompetingCliRegistrationWithContender } from "../host/launch-repair-contender";
 import { DESKTOP_APP_NAME } from "../../config";
+import { SSH_DESKTOP_ONLY } from "@traycer-clients/shared/platform/desktop-edition";
+import { getSshHostManager } from "../ssh/ssh-host-service";
 
 // Per-window fresh-snapshot query budget during `before-quit`. Each renderer,
 // on receiving `getFreshUnsyncedSnapshot`, first AWAITS its debounced per-window
@@ -386,6 +389,16 @@ export function runPreReady(state: BootState): void {
 // Post-ready configuration. These steps are independent of one another, so
 // they run concurrently - each individually timed.
 async function runOnReady(state: BootState): Promise<void> {
+  try {
+    await getSshHostManager().start();
+  } catch {
+    dialog.showErrorBox(
+      "Traycer SSH could not start",
+      `The saved SSH profiles could not be read. Check ${join(app.getPath("userData"), "ssh-hosts.json")} and restart the application.`,
+    );
+    app.quit();
+    throw new Error("SSH profile restoration failed.");
+  }
   // Pin the active host environment before the bridge (and its
   // host-management / ensure handlers) is installed in the window phase.
   // Synchronous and ordering-sensitive, so done first.
@@ -573,9 +586,10 @@ async function runWindowPhase(state: BootState): Promise<AppServices> {
   const ownership = new EpicWindowOwnership(desktopStateStore);
   const perWindowState = new PerWindowState(desktopStateStore);
   const authSession = new DesktopAuthSession();
-  // Owner of the single machine-local credentials file (tech plan §3). ENV-scoped
-  // (shared across dev slots + the CLI), never slot-scoped. The bridge disposes it.
+  // A separate login family: signing out of this fork never rotates or deletes
+  // the official desktop/CLI credentials. The bridge disposes the store.
   const authTokenStore = new FileTokenStore({
+    credentialsPath: join(app.getPath("userData"), "auth", "credentials"),
     environment: config.environment,
     authnBaseUrl: config.authnBaseUrl,
     watchImpl: undefined,
@@ -780,6 +794,14 @@ let lastHostRegistryResumeCheckMs = 0;
 // point. The generic boundary keeps the production types intact while letting
 // the startup composition test drive the entry point with a focused fake.
 function runDeferredBackground(state: BootState, services: AppServices): void {
+  if (SSH_DESKTOP_ONLY) {
+    startRendererMemorySampler();
+    const resume = (): void => {
+      state.bridge?.fanOut(RunnerHostEvent.systemResumed, undefined);
+    };
+    installPowerMonitorListeners({ onResume: resume, onUnlockScreen: resume });
+    return;
+  }
   startRendererMemorySampler();
   if (state.bridge !== null) {
     const bridge = state.bridge;
@@ -1075,6 +1097,7 @@ export function runDeferred<
   runBackground: (state: TState, services: TServices) => void,
 ): void {
   runBackground(state, services);
+  if (SSH_DESKTOP_ONLY) return;
   // Two DIFFERENT actions, deliberately not merged. The reconciler settles the
   // debt of a host that exists, once; the boot actor gets a host RUNNING -
   // installing one that never existed if need be - only for a signed-in user,

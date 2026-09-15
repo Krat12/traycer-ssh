@@ -1,11 +1,11 @@
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
-import { isRemoteHostDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
+import { hostRegistryPublicKey } from "@traycer-clients/shared/host-client/ssh-host-directory";
 
 /**
- * R-1: a remote host that rotated its public key under the SAME host id was
+ * R-1: a registered host that rotated its public key under the SAME host id was
  * rebuilt, and everything cached under that id describes a machine that no
  * longer exists. This turns each directory emit into "which hosts rotated",
- * and hands those ids to a host-scope sweep.
+ * and hands those ids to a host-scope sweep, through either relay or SSH.
  *
  * ## Why this exists again
  *
@@ -78,15 +78,16 @@ export function buildHostKeyRotationSweep(deps: {
   const lastKeyByHost = new Map<string, string>();
   return (entries) => {
     for (const entry of entries) {
-      if (!isRemoteHostDirectoryEntry(entry)) {
+      const publicKey = hostRegistryPublicKey(entry);
+      if (publicKey === null) {
         continue;
       }
       const previous = lastKeyByHost.get(entry.hostId);
-      lastKeyByHost.set(entry.hostId, entry.publicKey);
+      lastKeyByHost.set(entry.hostId, publicKey);
       // A host seen for the FIRST time is an arrival, not a rotation: there is
       // no previous key, and nothing cached under an id the window has never
       // addressed.
-      if (previous === undefined || previous === entry.publicKey) {
+      if (previous === undefined || previous === publicKey) {
         continue;
       }
       deps.sweepHostScope(entry.hostId);

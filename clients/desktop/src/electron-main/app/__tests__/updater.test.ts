@@ -7,6 +7,12 @@ import type {
   DesktopCompatRecoveryPlan,
 } from "../../../ipc-contracts/app-update-types";
 
+// Keep the inherited updater's behavior covered separately from the fork's
+// disabled updater, whose boundary is exercised in ssh-updater.test.ts.
+vi.mock("@traycer-clients/shared/platform/desktop-edition", () => ({
+  SSH_DESKTOP_ONLY: false,
+}));
+
 type UpdaterModule = typeof import("../updater");
 
 class FakeAutoUpdater extends EventEmitter {

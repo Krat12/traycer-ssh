@@ -255,7 +255,8 @@ export function TuiAgentTile(props: TuiAgentTileProps) {
     // a host the directory cannot classify keeps today's behaviour, because
     // inferring "someone else's machine" from "not in the directory" is the
     // kind of guess this whole chain of gates exists to refuse.
-    if (reachability.hostKind === "remote") return;
+    if (reachability.hostKind === "remote" || reachability.hostKind === "ssh")
+      return;
     emitTerminalClosedNotification({
       instanceId: props.node.instanceId,
       hostId,

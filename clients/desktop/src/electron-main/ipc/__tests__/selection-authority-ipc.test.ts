@@ -35,6 +35,12 @@ import { EpicWindowOwnership } from "../../windows/epic-window-ownership";
 import { PerWindowState } from "../../windows/per-window-state";
 import type { WindowSummary } from "../../../ipc-contracts/window-types";
 
+// Keep this IPC choreography suite on the upstream local-host contract. The
+// SSH fleet/ensure boundary is exercised in desktop-selection-ports.test.ts.
+vi.mock("@traycer-clients/shared/platform/desktop-edition", () => ({
+  SSH_DESKTOP_ONLY: false,
+}));
+
 /**
  * Main-process binding tests for the selection authority (P1.1). Harness
  * style copied from `runner-ipc.test.ts`: a plain-JS `ipcMain` double behind
@@ -137,7 +143,10 @@ vi.mock("electron", () => ({
     off: (event: string, listener: AppEventListener): void => {
       appState.listeners.get(event)?.delete(listener);
     },
+    once: vi.fn(),
+    removeListener: vi.fn(),
   },
+  powerMonitor: { on: vi.fn(), removeListener: vi.fn() },
   safeStorage: {
     isEncryptionAvailable: (): boolean => false,
     encryptString: (_value: string): Buffer => Buffer.from("", "utf8"),
