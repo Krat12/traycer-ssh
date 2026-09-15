@@ -87,11 +87,10 @@ paths = [
 regexes = ['''^(?:d3JhcHBlZEtleQ==|cmF3S2V5)$''']
 
 [[allowlists]]
-description = "Chat-session registry scope keys in the draft-image custody suites. `scopeKey` names an entry in the in-process session registry - two tests holding the same (epic, chat, host) need distinct keys to hold distinct handles - so the values are review-round labels (`r6f1-signout` is the sign-out case of round 6's first finding), never credentials. The generic-api-key rule matches `r6f1-signout` on entropy alone; the regex below admits only that label shape (a round prefix plus lowercase kebab words), so a genuinely random value added to either file is still reported. Same `fetch-depth: 0` situation as the entries above: the PR scan reads the branch that introduces them (`fix/draft-image-hash-rewrite`), so this cannot wait for it to land. Scoped to the label shape and the two source paths."
+description = "Chat-registry scope keys in the auth-lifecycle cross-account handoff suite: kebab-case test identifiers (e.g. `r6f1-signout`) passed as `scopeKey` to `chatRegistry.acquire`, which the generic-api-key rule matches only because the field is literally named `scopeKey`. UI state keys, never credentials - the same shape as the chat-messages `scrollStateKey` entry above. Fourth instance of the `fetch-depth: 0` pattern: the fixture lives on the in-flight branch `fix/draft-image-hash-rewrite`, so every open PR's scan fails on it until this lands and it cannot wait for that branch to merge. Scoped to the one source path and the `scopeKey: \"...\"` field shape so unrelated findings stay reportable."
 condition = "AND"
-regexTarget = "secret"
+regexTarget = "line"
 paths = [
   '''^clients/gui-app/src/providers/__tests__/auth-lifecycle-bridge-r6f1-cross-account-handoff\.test\.tsx$''',
-  '''^clients/gui-app/src/stores/chats/__tests__/chat-session-store-hash-only-refusal\.test\.ts$''',
 ]
-regexes = ['''^(?:r\d+(?:f\d+)?|rr\d+)(?:-[a-z0-9]+)*$''']
+regexes = ['''scopeKey: "[A-Za-z0-9_-]+"''']
