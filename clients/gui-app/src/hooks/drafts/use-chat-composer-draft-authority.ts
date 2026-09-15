@@ -1,5 +1,8 @@
 import { useCallback } from "react";
-import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
+import {
+  composerDraftRowIsForeign,
+  useComposerDraftStore,
+} from "@/stores/composer/composer-draft-store";
 import {
   useDraftAuthorityControl,
   type DraftAuthorityControl,
@@ -21,10 +24,7 @@ export function useChatComposerDraftAuthority(args: {
   const isForeign = useCallback((): boolean => {
     const row = useComposerDraftStore.getState().drafts[chatId];
     if (row === undefined || row.draftId === null) return false;
-    return (
-      row.origin === "replica" ||
-      (row.ownerHostId !== null && row.ownerHostId !== tabHostId)
-    );
+    return composerDraftRowIsForeign(row, tabHostId);
   }, [chatId, tabHostId]);
   const fork = useCallback((): void => {
     useComposerDraftStore.getState().detachDraftIdentity(chatId);

@@ -334,7 +334,9 @@ describe("composer draft store revision (prompt-stash CAS)", () => {
 
     // Caret-only: goes through setSelection under the event-driven contract.
     // setSnapshot is reserved for real document mutations and always bumps.
-    useComposerDraftStore.getState().setSelection(taskId, { from: 3, to: 3 });
+    useComposerDraftStore
+      .getState()
+      .setSelection(taskId, { from: 3, to: 3 }, "host-a");
     const afterSelection = useComposerDraftStore.getState().drafts[taskId];
     expect(afterSelection?.revision).toBe(1);
     expect(afterSelection?.selection).toEqual({ from: 3, to: 3 });

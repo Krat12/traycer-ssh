@@ -151,7 +151,12 @@ export interface ReplaceDraftWithDocumentCommand {
    * Runs inside the transaction, after the strip item has been re-keyed
    * and before the previous row is retired.
    */
-  readonly installNext: () => void;
+  /**
+   * Puts the successor row in the landing store. Returns whether it did: a
+   * `false` aborts the transaction before the layout moves, so the strip
+   * item is never re-keyed onto a row that does not exist.
+   */
+  readonly installNext: () => boolean;
 }
 
 export interface CompletePhaseMigrationCommand {
@@ -1364,7 +1369,17 @@ export class TabCommandCoordinator {
       pendingRemovals: [previous],
       projectSourceCompatibility: true,
       applySources: () => {
-        this.applyExpectedSourceMutation(command.installNext);
+        this.applyExpectedSourceMutation(() => {
+          // A successor that did not materialise must not have the strip
+          // item re-keyed onto it: throwing here rides `execute`'s
+          // catch/record/rethrow path before `replaceLayoutForTransaction`
+          // runs, so the layout and the previous draft stay untouched.
+          if (!command.installNext()) {
+            throw new Error(
+              "Tab command draft re-key could not install the successor",
+            );
+          }
+        });
       },
       applyRemovals: () => {
         this.applyExpectedSourceMutation(() => {
@@ -1402,9 +1417,21 @@ export class TabCommandCoordinator {
       projectSourceCompatibility: true,
       applySources: () => {
         this.applyExpectedSourceMutation(() => {
-          useLandingDraftStore
+          // The pre-checks above ran before `execute`'s first `notify()`; a
+          // synchronous listener re-entering during it can still make the
+          // fork refuse (source removed, successor id taken). A silent
+          // `false` here would re-key the layout onto a row that does not
+          // exist and retire the source underneath it, so the refusal
+          // throws, riding `execute`'s catch/record/rethrow path before
+          // `replaceLayoutForTransaction` runs: layout and source untouched.
+          const forked = useLandingDraftStore
             .getState()
             .forkDraft(command.previousDraftId, command.nextDraftId);
+          if (!forked) {
+            throw new Error(
+              "Tab command draft fork was refused by the landing store",
+            );
+          }
         });
       },
       applyRemovals: () => {

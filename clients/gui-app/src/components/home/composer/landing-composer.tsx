@@ -901,7 +901,9 @@ export function LandingComposer(props: LandingComposerProps) {
     (launch: TerminalAgentLaunch, assembledFor: string | null): boolean => {
       if (!workspaceCanStart || isSubmitting) return false;
       // A launch names a harness, model and profile out of the host's own
-      // catalog. One assembled for a host the placement has since left is
+      // catalog. `assembledFor` is the host the terminal panel held when it
+      // assembled the launch (the one its picker resolved against), so a
+      // launch put together for a host the placement has since left is
       // dropped rather than forwarded to a host whose catalog may not hold
       // them.
       if (assembledFor !== null && assembledFor !== resolvedHostId) {
@@ -910,13 +912,6 @@ export function LandingComposer(props: LandingComposerProps) {
       return dispatchStartTerminal(launch);
     },
     [dispatchStartTerminal, isSubmitting, resolvedHostId, workspaceCanStart],
-  );
-  // The toolbar assembles the launch from the host the composer shows now.
-  const startTerminalFromToolbar = useCallback(
-    (launch: TerminalAgentLaunch) => {
-      handleStartTerminal(launch, resolvedHostId);
-    },
-    [handleStartTerminal, resolvedHostId],
   );
 
   const handleRemoveImage = useCallback(
@@ -1031,7 +1026,7 @@ export function LandingComposer(props: LandingComposerProps) {
       hostId={resolvedHostId}
       terminalLoginSurface={terminalLoginSurface}
       onSubmit={handleSubmit}
-      onStartTerminal={startTerminalFromToolbar}
+      onStartTerminal={handleStartTerminal}
       onDocumentChange={handleDocumentChange}
       onSelectionChange={handleSelectionChange}
     />

@@ -4,7 +4,9 @@ import {
   applyComposerHostDocument,
   collectComposerDirtyWrites,
   composerDraftRememberSynced,
+  composerDraftRowIsForeign,
   composerSubmittedDraftDeleteIsPending,
+  EMPTY_COMPOSER_DRAFT,
   useComposerDraftStore,
 } from "@/stores/composer/composer-draft-store";
 import {
@@ -246,7 +248,9 @@ describe("composer draft store: setSelection on a replica row", () => {
     const notified: string[] = [];
     setDraftLocalEditListener((draftId) => notified.push(draftId));
 
-    useComposerDraftStore.getState().setSelection(chatId, { from: 2, to: 4 });
+    useComposerDraftStore
+      .getState()
+      .setSelection(chatId, { from: 2, to: 4 }, "host-a");
 
     const afterSelection = useComposerDraftStore.getState().drafts[chatId];
     expect(afterSelection?.selection).toEqual({ from: 2, to: 4 });
@@ -264,5 +268,119 @@ describe("composer draft store: setSelection on a replica row", () => {
       (entry) => entry.chatId,
     );
     expect(dirtyAfterFork).toContain(chatId);
+  });
+});
+
+/** Seeds an OWN row (not a replica) adopted by another host, and clean. */
+function seedOwnRowAdoptedElsewhere(chatId: string): void {
+  useComposerDraftStore.getState().setSnapshot(chatId, DOC, { from: 1, to: 3 });
+  useComposerDraftStore.setState((state) => {
+    const current = state.drafts[chatId];
+    if (current === undefined) return state;
+    return {
+      drafts: {
+        ...state.drafts,
+        [chatId]: {
+          ...current,
+          ownerHostId: "host-b",
+          origin: null,
+          syncedGeneration: current.generation,
+          hostRevision: 5,
+          publication: {
+            status: "current",
+            lastPublishedAt: 1,
+            publishedRevision: 5,
+            halted: null,
+          },
+        },
+      },
+    };
+  });
+}
+
+describe("composer draft store: setSelection on an own row adopted by another host", () => {
+  it("keeps the caret write local when the tab's host does not own the row", () => {
+    const chatId = "chat-own-adopted-elsewhere";
+    seedOwnRowAdoptedElsewhere(chatId);
+
+    const before = useComposerDraftStore.getState().drafts[chatId];
+    if (before === undefined) throw new Error("expected a seeded row");
+    expect(before.generation).toBe(before.syncedGeneration);
+    const draftIdBefore = before.draftId;
+
+    const notified: string[] = [];
+    setDraftLocalEditListener((draftId) => notified.push(draftId));
+
+    useComposerDraftStore
+      .getState()
+      .setSelection(chatId, { from: 2, to: 4 }, "host-a");
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    if (after === undefined) throw new Error("expected the row to remain");
+    expect(after.selection).toEqual({ from: 2, to: 4 });
+    expect(after.generation).toBe(before.generation);
+    expect(notified).toEqual([]);
+    expect(
+      collectComposerDirtyWrites().map((entry) => entry.chatId),
+    ).not.toContain(chatId);
+    expect(after.draftId).toBe(draftIdBefore);
+  });
+
+  it("goes through the normal local-edit path when the tab's host is the row's own host", () => {
+    const chatId = "chat-own-adopted-elsewhere-own-host";
+    seedOwnRowAdoptedElsewhere(chatId);
+
+    const before = useComposerDraftStore.getState().drafts[chatId];
+    if (before === undefined) throw new Error("expected a seeded row");
+
+    useComposerDraftStore
+      .getState()
+      .setSelection(chatId, { from: 2, to: 4 }, "host-b");
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    if (after === undefined) throw new Error("expected the row to remain");
+    expect(after.selection).toEqual({ from: 2, to: 4 });
+    expect(after.generation).toBe(before.generation + 1);
+    expect(collectComposerDirtyWrites().map((entry) => entry.chatId)).toContain(
+      chatId,
+    );
+  });
+});
+
+describe("composerDraftRowIsForeign", () => {
+  it("is true for a replica row regardless of ownerHostId", () => {
+    expect(
+      composerDraftRowIsForeign(
+        { ...EMPTY_COMPOSER_DRAFT, origin: "replica", ownerHostId: "host-a" },
+        "host-a",
+      ),
+    ).toBe(true);
+  });
+
+  it("is true for an own row owned by a different host", () => {
+    expect(
+      composerDraftRowIsForeign(
+        { ...EMPTY_COMPOSER_DRAFT, origin: null, ownerHostId: "host-b" },
+        "host-a",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for an own row owned by the tab's own host", () => {
+    expect(
+      composerDraftRowIsForeign(
+        { ...EMPTY_COMPOSER_DRAFT, origin: null, ownerHostId: "host-a" },
+        "host-a",
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when ownerHostId is null", () => {
+    expect(
+      composerDraftRowIsForeign(
+        { ...EMPTY_COMPOSER_DRAFT, origin: null, ownerHostId: null },
+        "host-a",
+      ),
+    ).toBe(false);
   });
 });

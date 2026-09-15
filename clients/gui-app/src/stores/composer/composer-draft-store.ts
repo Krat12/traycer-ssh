@@ -100,10 +100,15 @@ interface ComposerDraftStore {
   /**
    * Persists a caret move alone. Never touches `revision` - a selection-only
    * change is not a content edit - and never compares/serializes `content`.
+   * `tabHostId` is the host the composer's tab is bound to: on a row that
+   * host does not own (`composerDraftRowIsForeign`) the caret stays local,
+   * since a caret move is not an edit and must neither fork the row nor
+   * queue an upsert through the old identity.
    */
   readonly setSelection: (
     chatId: string,
     selection: DraftSelection | null,
+    tabHostId: string,
   ) => void;
   readonly replaceDraft: (
     chatId: string,
@@ -206,6 +211,22 @@ function ensureDraft(
   return drafts[chatId] ?? EMPTY_COMPOSER_DRAFT;
 }
 
+/**
+ * A chat row the tab's host does not own: a replica, or an own row adopted
+ * on another host. The one predicate behind every chat-side decision that
+ * must not act under the row's current identity - the caret write, the
+ * fork rule on the first edit, and submit's retract-not-delete.
+ */
+export function composerDraftRowIsForeign(
+  row: DraftState,
+  tabHostId: string,
+): boolean {
+  return (
+    row.origin === "replica" ||
+    (row.ownerHostId !== null && row.ownerHostId !== tabHostId)
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -240,7 +261,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         });
         notifyDraftLocalEdit(draftId);
       },
-      setSelection: (chatId, selection) => {
+      setSelection: (chatId, selection, tabHostId) => {
         const current = ensureDraft(get().drafts, chatId);
         if (
           current.selection?.from === selection?.from &&
@@ -248,10 +269,12 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         ) {
           return;
         }
-        // A caret move on a row this host does not own stays local: it is
-        // not an edit, must not fork, and must not queue an upsert through
-        // the stale identity.
-        if (current.origin === "replica") {
+        // A caret move on a row the tab's host does not own stays local: it
+        // is not an edit, must not fork, and must not queue an upsert through
+        // the stale identity - the same predicate the fork rule reads, so an
+        // own row adopted on another host is not bumped dirty and collected
+        // under its old id before any edit forks it.
+        if (composerDraftRowIsForeign(current, tabHostId)) {
           set((state) => ({
             drafts: { ...state.drafts, [chatId]: { ...current, selection } },
           }));

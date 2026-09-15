@@ -516,6 +516,53 @@ describe("tab command coordinator transactions", () => {
     ).toBe(true);
   });
 
+  it("replaceDraftWithDraft throws and leaves layout and store untouched when a listener makes the fork refuse during notify", () => {
+    const draftRef = openDraftSource();
+    const content = {
+      type: "doc" as const,
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "source" }] },
+      ],
+    };
+    useLandingDraftStore.getState().setDraftContent(draftRef.id, content, null);
+
+    const previousDraftId = draftRef.id;
+    const nextDraftId = "fork-refused-by-listener";
+    let fired = false;
+    const unsubscribe = tabCommandCoordinator.subscribe(() => {
+      if (fired) return;
+      if (getTabCommandLedger().suppressionDepth === 0) return;
+      fired = true;
+      // The pre-checks in `replaceDraftWithDraft` ran before this, the
+      // transaction's first notify - only this re-entrant path can make the
+      // successor id taken in time to refuse the fork.
+      useLandingDraftStore.getState().createDraftWithId(nextDraftId, null);
+    });
+
+    expect(() =>
+      tabCommandCoordinator.replaceDraftWithDraft({
+        previousDraftId,
+        nextDraftId,
+      }),
+    ).toThrow();
+
+    unsubscribe();
+
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+    expect(landingDraftIsRetired(previousDraftId)).toBe(false);
+    const previous = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === previousDraftId);
+    expect(previous?.content).toEqual(content);
+    const successor = useLandingDraftStore
+      .getState()
+      .drafts.find((draft) => draft.id === nextDraftId);
+    expect(successor).toBeDefined();
+    expect(successor?.content).not.toEqual(content);
+  });
+
   it("replaceDraftWithDocument re-keys the strip item onto a host-supplied successor, runs installNext, and retires the previous draft", () => {
     const draftRef = openDraftSource();
     expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
@@ -530,6 +577,7 @@ describe("tab command coordinator transactions", () => {
       installNext: () => {
         installNextRan = true;
         useLandingDraftStore.getState().createDraftWithId(nextDraftId, null);
+        return true;
       },
     });
 
@@ -553,6 +601,7 @@ describe("tab command coordinator transactions", () => {
       nextDraftId: "document-unused-next",
       installNext: () => {
         installNextRan = true;
+        return true;
       },
     });
 
@@ -572,6 +621,7 @@ describe("tab command coordinator transactions", () => {
       nextDraftId: "document-already-exists",
       installNext: () => {
         installNextRan = true;
+        return true;
       },
     });
 
@@ -593,6 +643,7 @@ describe("tab command coordinator transactions", () => {
       nextDraftId: "document-retired-next",
       installNext: () => {
         installNextRan = true;
+        return true;
       },
     });
 
@@ -602,6 +653,32 @@ describe("tab command coordinator transactions", () => {
       tabRefKey(draftRef),
     );
     expect(landingDraftIsRetired(draftRef.id)).toBe(false);
+  });
+
+  it("replaceDraftWithDocument throws and leaves layout and store untouched when installNext returns false", () => {
+    const draftRef = openDraftSource();
+    const previousDraftId = draftRef.id;
+    const nextDraftId = "document-install-refused";
+
+    expect(() =>
+      tabCommandCoordinator.replaceDraftWithDocument({
+        previousDraftId,
+        nextDraftId,
+        installNext: () => false,
+      }),
+    ).toThrow();
+
+    const layoutKeys = flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey);
+    expect(layoutKeys).toContain(tabRefKey(draftRef));
+    expect(layoutKeys).not.toContain(
+      tabRefKey({ kind: "draft", id: nextDraftId }),
+    );
+    expect(landingDraftIsRetired(previousDraftId)).toBe(false);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === nextDraftId),
+    ).toBe(false);
   });
 
   it("closeRef keeps the closed source under pendingRemovals until removal settles", () => {

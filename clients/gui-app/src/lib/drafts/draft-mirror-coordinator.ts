@@ -45,6 +45,7 @@ import {
   collectComposerDirtyWrites,
   composerDraftIsDirty,
   composerDraftRememberSynced,
+  composerDraftRowIsForeign,
   composerSubmittedDraftDeleteIsPending,
   dropComposerAbsentFromList,
   findComposerChatIdByDraftId,
@@ -53,6 +54,7 @@ import {
   readComposerDraftSnapshot,
   useComposerDraftStore,
 } from "@/stores/composer/composer-draft-store";
+import type { TabRef } from "@/stores/tabs/types";
 import {
   applyInterviewHostDelete,
   applyInterviewHostDocument,
@@ -494,17 +496,37 @@ function rekeyLandingTabInPlace(
     .getState()
     .drafts.find((draft) => draft.id === document.supersedes);
   if (ancestor === undefined || ancestor.closed) return false;
-  const replaced = tabCommandCoordinator.replaceDraftWithDocument({
-    previousDraftId: ancestor.id,
-    nextDraftId: document.draftId,
-    installNext: () => {
-      applyLandingHostDocument(document, document.portable.content);
-      // The strip item now names the successor, which must be open: a
-      // foreign row's `closed` is this device's view (the ancestor's was
-      // open), an own row on the placement follows the host's value.
-      reopenLandingDraftView(document.draftId);
-    },
-  });
+  let replaced: TabRef | null;
+  try {
+    replaced = tabCommandCoordinator.replaceDraftWithDocument({
+      previousDraftId: ancestor.id,
+      nextDraftId: document.draftId,
+      installNext: () => {
+        // A document the store rejects (retired, or older than the row's
+        // current revision) installs nothing, and the command must not
+        // re-key the tab onto a row that never materialised.
+        if (!applyLandingHostDocument(document, document.portable.content)) {
+          return false;
+        }
+        // The strip item now names the successor, which must be open: a
+        // foreign row's `closed` is this device's view (the ancestor's was
+        // open), an own row on the placement follows the host's value.
+        reopenLandingDraftView(document.draftId);
+        return true;
+      },
+    });
+  } catch (error: unknown) {
+    // The transaction refused mid-flight (the successor could not be
+    // installed, or a listener moved the ancestor underneath it): the
+    // layout and the ancestor are untouched, and the document falls to
+    // the plain apply + inherit path below.
+    appLogger.warn("[draft-mirror] landing re-key refused", {
+      draftId: document.draftId,
+      supersedes: document.supersedes,
+      error: describeLogError(error),
+    });
+    return false;
+  }
   if (replaced === null) return false;
   inheritableLandingTabs.delete(document.supersedes);
   return true;
@@ -1020,10 +1042,7 @@ export async function submitComposerDraft(chatId: string): Promise<void> {
   // The id is dropped with no pending delete, and the cloud row is
   // retracted on the user's authority through the tab host instead - the
   // same rule the landing path applies to a foreign row.
-  const foreign =
-    before.origin === "replica" ||
-    (before.ownerHostId !== null && before.ownerHostId !== hostId);
-  if (foreign) {
+  if (composerDraftRowIsForeign(before, hostId)) {
     store.fenceAndDetachSubmittedDraft(chatId, before.draftId, null);
     retractDraftThroughHost(hostId, before.draftId);
     return;

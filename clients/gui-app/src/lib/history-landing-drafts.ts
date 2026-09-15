@@ -13,8 +13,11 @@ export interface HistoryLandingDraft {
 /**
  * Landing drafts this history facet may list: every retained draft with
  * content, whichever host owns it. Drafts are one account-wide set; a row
- * another host owns opens like any other and is claimed underneath on the
- * first edit, and a delete claims before it destroys
+ * another host owns opens like any other and FORKS underneath on the first
+ * edit (the content moves into a fresh row of this host's own, and the
+ * original's cloud row is retracted by the host that takes the fork), and
+ * a delete of such a row retracts the owner's cloud row on the user's
+ * authority rather than deleting it on a host that does not hold it
  * (`HistoryDraftsList`). Ownership is never a bucket the user sees.
  */
 export function isHistoryListedLandingDraft(draft: LandingDraftTab): boolean {
