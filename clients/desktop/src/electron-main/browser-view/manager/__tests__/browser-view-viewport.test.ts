@@ -70,7 +70,8 @@ function createEntry(webContents: BrowserViewWebContents): BrowserViewEntry {
     status: "ready",
     statusReason: null,
     navigationAttempt: 0,
-    pendingNavigationUrl: null,
+    pendingMainFrameNavigations: 0,
+    attemptAwaitingStart: false,
     findState: {
       appRequestId: 0,
       query: "",

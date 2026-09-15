@@ -125,30 +125,28 @@ export class BrowserViewEntryFactory {
         ),
         "did-start-navigation": (
           _event: Event,
-          url: string,
+          _url: string,
           isInPlace: boolean,
           isMainFrame: boolean,
         ): void => {
-          this.handleViewStartNavigation(entry, url, isInPlace, isMainFrame);
+          this.handleViewStartNavigation(entry, isInPlace, isMainFrame);
         },
         // Both fire for a main-frame navigation that will never commit: the
         // provisional one when it is cancelled (stop, a superseding
         // navigation, a download), the plain one for a network or server
-        // failure. The handler is idempotent, so hearing a failure twice is
-        // fine; hearing it for the wrong navigation is not, and the url check
-        // in `handleFailedLoad` is what tells them apart.
+        // failure. Chromium emits exactly one of them per navigation, which
+        // is what lets `handleFailedLoad` count in-flight navigations down.
         "did-fail-load": (
           _event: Event,
           errorCode: number,
           errorDescription: string,
-          validatedUrl: string,
+          _validatedUrl: string,
           isMainFrame: boolean,
         ): void => {
           this.handleFailedLoad(
             entry,
             errorCode,
             errorDescription,
-            validatedUrl,
             isMainFrame,
           );
         },
@@ -156,14 +154,13 @@ export class BrowserViewEntryFactory {
           _event: Event,
           errorCode: number,
           errorDescription: string,
-          validatedUrl: string,
+          _validatedUrl: string,
           isMainFrame: boolean,
         ): void => {
           this.handleFailedLoad(
             entry,
             errorCode,
             errorDescription,
-            validatedUrl,
             isMainFrame,
           );
         },
@@ -202,7 +199,8 @@ export class BrowserViewEntryFactory {
       status: "loading",
       statusReason: null,
       navigationAttempt: 0,
-      pendingNavigationUrl: null,
+      pendingMainFrameNavigations: 0,
+      attemptAwaitingStart: false,
       findState: {
         appRequestId: 0,
         query: "",
@@ -243,15 +241,13 @@ export class BrowserViewEntryFactory {
 
   private handleViewStartNavigation(
     entry: BrowserViewEntry,
-    url: string,
     isInPlace: boolean,
     isMainFrame: boolean,
   ): void {
     if (entry.internalNavigation) return;
     if (!isMainFrame || isInPlace) return;
-    // The newest cross-document navigation is the only one whose failure can
-    // still settle the tab; anything started before it is superseded.
-    entry.pendingNavigationUrl = url;
+    entry.pendingMainFrameNavigations += 1;
+    entry.attemptAwaitingStart = false;
     this.annotations.end(entry, "navigation");
   }
 
@@ -261,27 +257,33 @@ export class BrowserViewEntryFactory {
    * cancelled provisional load) left the entry at `loading` for good - the
    * `did-navigate` settle only fires for a commit.
    *
-   * Correlated by url, not by "we are loading": a superseded navigation
-   * fails with `ERR_ABORTED` naming ITS url while the superseder is still in
-   * flight, and settling on that would report `ready` for a page that has
-   * not arrived. Only a failure for the latest started navigation counts.
-   * `ERR_ABORTED` for that latest one is the user's stop (or a download that
-   * took the navigation's place): the previous page stays, so it settles with
-   * no reason.
+   * Correlated by count, not by "we are loading" and not by url: a
+   * superseded navigation fails with `ERR_ABORTED` while the superseder is
+   * still in flight - under the same url, when a reload interrupts a page
+   * still loading - and settling on that would report `ready` for a page
+   * that has not arrived. A failure settles only when it is the last
+   * in-flight navigation AND no host attempt is still waiting for its own
+   * start (the abort of the old navigation can arrive before the new one's
+   * `did-start-navigation`). `ERR_ABORTED` for a genuinely last navigation
+   * is the user's stop (or a download that took the navigation's place):
+   * the previous page stays, so it settles with no reason.
    */
   private handleFailedLoad(
     entry: BrowserViewEntry,
     errorCode: number,
     errorDescription: string,
-    validatedUrl: string,
     isMainFrame: boolean,
   ): void {
     if (entry.internalNavigation) return;
     if (!isMainFrame) return;
     if (!entry.identity.lifecycle.accepted) return;
+    entry.pendingMainFrameNavigations = Math.max(
+      0,
+      entry.pendingMainFrameNavigations - 1,
+    );
     if (entry.status !== "loading") return;
-    if (entry.pendingNavigationUrl !== validatedUrl) return;
-    entry.pendingNavigationUrl = null;
+    if (entry.pendingMainFrameNavigations > 0) return;
+    if (entry.attemptAwaitingStart) return;
     this.setStatus(
       entry,
       "ready",
@@ -304,7 +306,11 @@ export class BrowserViewEntryFactory {
     if (!entry.identity.lifecycle.accepted) return;
     entry.currentUrl = url;
     entry.requestedUrl = url;
-    entry.pendingNavigationUrl = null;
+    // A commit ends every navigation that was in flight: Chromium cancels
+    // the older ones on the way, and a straggling failure for one of them
+    // meets a `ready` entry and is ignored.
+    entry.pendingMainFrameNavigations = 0;
+    entry.attemptAwaitingStart = false;
     entry.currentTitle = entry.webContents.getTitle();
     this.observePrimaryProfileOrigin(url, entry.webContents, entry.profile);
     entry.certificateError = null;

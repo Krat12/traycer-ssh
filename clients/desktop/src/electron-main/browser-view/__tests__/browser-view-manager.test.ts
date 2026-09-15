@@ -5019,6 +5019,74 @@ describe("reserved chords are matched against the guest's own window", () => {
 });
 
 describe("BrowserViewManager navigation attempts and failure settles", () => {
+  it.each([
+    ["the abort arrives before the new navigation starts", "abort-first"],
+    ["the new navigation starts before the abort arrives", "start-first"],
+  ])(
+    "keeps loading when a reload interrupts the same url mid-load and %s",
+    async (_label, order) => {
+      const harness = createHarness();
+      const { view, capability } = await attachNativeTab(
+        harness,
+        "window-1",
+        BASE_TILE_KEY,
+        "https://example.com/first",
+      );
+      await harness.manager.controlElectronTab("window-1", {
+        ...capability,
+        action: { kind: "reload" },
+      });
+      view.emit(
+        "did-start-navigation",
+        {},
+        "https://example.com/first",
+        false,
+        true,
+      );
+      // Second reload while the first is still in flight: Chromium tears the
+      // first navigation down with ERR_ABORTED under the SAME url as the one
+      // the second starts with.
+      await harness.manager.controlElectronTab("window-1", {
+        ...capability,
+        action: { kind: "reload" },
+      });
+      harness.nativeTabStatuses.length = 0;
+      const abort = (): boolean =>
+        view.emit(
+          "did-fail-provisional-load",
+          {},
+          -3,
+          "ERR_ABORTED",
+          "https://example.com/first",
+          true,
+        );
+      const start = (): boolean =>
+        view.emit(
+          "did-start-navigation",
+          {},
+          "https://example.com/first",
+          false,
+          true,
+        );
+      if (order === "abort-first") {
+        abort();
+        start();
+      } else {
+        start();
+        abort();
+      }
+      expect(
+        harness.nativeTabStatuses.filter((s) => s.status === "ready"),
+      ).toEqual([]);
+
+      view.emit("did-navigate", {}, "https://example.com/first", 200, "OK");
+      expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+        status: "ready",
+        reason: null,
+      });
+    },
+  );
+
   it("reports a new attempt for a reload issued while already loading", async () => {
     const harness = createHarness();
     const { capability } = await attachNativeTab(

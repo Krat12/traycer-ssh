@@ -760,6 +760,7 @@ export class BrowserViewManager {
     this.annotations.end(entry, "navigation");
     entry.requestedUrl = url;
     entry.navigationAttempt += 1;
+    entry.attemptAwaitingStart = true;
     const attempt = entry.navigationAttempt;
     entry.status = "loading";
     entry.statusReason = null;
@@ -800,6 +801,7 @@ export class BrowserViewManager {
    */
   private startNavigationAttempt(entry: BrowserViewEntry): void {
     entry.navigationAttempt += 1;
+    entry.attemptAwaitingStart = true;
     if (entry.status !== "loading" || entry.statusReason !== null) {
       this.setStatus(entry, "loading", null);
       return;
