@@ -9,7 +9,11 @@ import type {
 } from "../host-stream-client";
 import type { IStreamSession } from "../i-stream-session";
 import type { StreamParamsProvider } from "../i-stream-client";
-import type { ParamsOf, StreamMethodSupport } from "../ws-stream-client";
+import {
+  createInertStreamSession,
+  type ParamsOf,
+  type StreamMethodSupport,
+} from "../ws-stream-client";
 import {
   PLAN_RESTRICTED_FATAL_CODE,
   planRestrictedClosedReason,
@@ -36,6 +40,12 @@ export class RemoteStreamClient<
 > implements IHostStreamClient<StreamRegistry> {
   private readonly session: IRemoteSession<RpcRegistry, StreamRegistry>;
   private readonly planRestrictedReprobeAt: () => number | null;
+  private readonly ownedStreams = new Set<IStreamSession>();
+  private readonly subscriptions = new Set<() => void>();
+  private readonly closedListeners = new Set<() => void>();
+  private closed = false;
+  private closedReason: string | null = null;
+  private sessionCloseWired = false;
   readonly instanceId = `remote-stream-client-${nextRemoteStreamClientId++}`;
 
   constructor(
@@ -58,54 +68,137 @@ export class RemoteStreamClient<
     schemaVersion: SchemaVersion,
     params: ParamsOf<StreamRegistry, Method>,
   ): IStreamSession {
-    return this.session.subscribeAtVersion(method, schemaVersion, params);
+    return this.openOwnedStream(() =>
+      this.session.subscribeAtVersion(method, schemaVersion, params),
+    );
   }
 
   subscribeWithParamsProvider<Method extends keyof StreamRegistry & string>(
     method: Method,
     paramsProvider: StreamParamsProvider<StreamRegistry, Method>,
   ): IStreamSession {
-    return this.session.subscribeWithParamsProvider(method, paramsProvider);
+    return this.openOwnedStream(() =>
+      this.session.subscribeWithParamsProvider(method, paramsProvider),
+    );
   }
 
   /** Pushes a rotated bearer in place (no reconnect) if the host supports it. */
   notifyBearerRotated(): void {
-    this.session.notifyBearerRotated();
+    if (!this.isClosed()) this.session.notifyBearerRotated();
   }
 
   /** Pushes the current cloud verdict in place if the host supports it. */
   notifyCloudVerdictChanged(): void {
-    this.session.notifyCloudVerdictChanged();
+    if (!this.isClosed()) this.session.notifyCloudVerdictChanged();
   }
 
   isClosed(): boolean {
-    return this.session.isClosed();
+    return this.closed || this.session.isClosed();
   }
 
   getClosedReason(): string | null {
     if (this.session.terminalFatal()?.code !== PLAN_RESTRICTED_FATAL_CODE) {
-      return null;
+      return this.closedReason;
     }
     const reprobeAt = this.planRestrictedReprobeAt();
     return reprobeAt === null ? null : planRestrictedClosedReason(reprobeAt);
   }
 
   /**
-   * Fires when the shared session reaches terminal close - a session-level
-   * fatal (e.g. `INCOMPATIBLE`, or a bounded/rejected `UNAUTHORIZED`
-   * recovery), or the keep-warm linger expiring after the last consumer's
-   * release closing it for real. This is
-   * what lets the owner-side liveness guard rebuild the transport instead of
-   * serving a permanently-dead client (`start()` no-ops once the session is
-   * closed). NOT retro-fired for an already-closed session - callers pair
-   * this with `isClosed()`, exactly as with `WsStreamClient.onClosed`.
+   * Fires once when THIS client closes, including a shared-session terminal
+   * close. Releasing a client must be visible immediately even while another
+   * holder (or the cache's linger) keeps the underlying socket alive.
+   * Not retro-fired; late callers pair this with `isClosed()`.
    */
   onClosed(listener: () => void): () => void {
-    return this.session.onClosed(listener);
+    if (this.isClosed()) return () => undefined;
+    this.observeSessionClose();
+    this.closedListeners.add(listener);
+    return () => {
+      this.closedListeners.delete(listener);
+    };
   }
 
-  close(_reason: string): void {
-    this.session.close();
+  close(reason: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closedReason = reason;
+    // The acquired session's close only releases a reference. Cancel our own
+    // logical subscriptions BEFORE release; forcing the shared socket closed
+    // would interrupt unrelated holders, while release alone leaks streams.
+    const cleanup = [
+      ...this.subscriptions,
+      ...Array.from(this.ownedStreams, (stream) => () => stream.close()),
+      () => this.session.close(),
+      ...this.closedListeners,
+    ];
+    this.ownedStreams.clear();
+    this.closedListeners.clear();
+    for (const dispose of cleanup) {
+      try {
+        dispose();
+      } catch (error) {
+        console.error("RemoteStreamClient close listener failed", error);
+      }
+    }
+    this.subscriptions.clear();
+  }
+
+  private openOwnedStream(open: () => IStreamSession): IStreamSession {
+    if (this.isClosed()) {
+      return createInertStreamSession(
+        this.getClosedReason() ?? "remote-session-closed",
+      );
+    }
+    this.observeSessionClose();
+    const stream = open();
+    this.ownedStreams.add(stream);
+    // Observe terminal streams even before a typed wrapper installs a handler.
+    // The wrapper below preserves the single-handler/replayed-close contract.
+    stream.onStatusChange((status) => {
+      if (status === "closed") this.ownedStreams.delete(stream);
+    });
+    return {
+      sendClientFrame: (frame, binary) => stream.sendClientFrame(frame, binary),
+      onServerFrame: (handler) => stream.onServerFrame(handler),
+      onStatusChange: (handler) =>
+        stream.onStatusChange((status, reason, cause) => {
+          if (status === "closed") this.ownedStreams.delete(stream);
+          handler(status, reason, cause);
+        }),
+      getNegotiatedSchemaVersion: () => stream.getNegotiatedSchemaVersion(),
+      requestReconnect: () => stream.requestReconnect(),
+      close: () => {
+        this.ownedStreams.delete(stream);
+        stream.close();
+      },
+    };
+  }
+
+  private trackSubscription(subscribe: () => () => void): () => void {
+    if (this.isClosed()) return () => undefined;
+    this.observeSessionClose();
+    const unsubscribe = subscribe();
+    if (this.isClosed()) {
+      unsubscribe();
+      return () => undefined;
+    }
+    const dispose = () => {
+      if (this.subscriptions.delete(dispose)) unsubscribe();
+    };
+    this.subscriptions.add(dispose);
+    return dispose;
+  }
+
+  private observeSessionClose(): void {
+    if (this.sessionCloseWired) return;
+    this.sessionCloseWired = true;
+    // Unary-only transport factories also construct a stream client, then
+    // release their acquired session directly. Do not retain those unused
+    // wrappers in the shared session's listeners.
+    this.trackSubscription(() =>
+      this.session.onClosed(() => this.close("remote-session-closed")),
+    );
   }
 
   /**
@@ -136,6 +229,7 @@ export class RemoteStreamClient<
    * rather than hurrying a session nobody holds.
    */
   reconnectAll(reason: string, options: ReconnectAllOptions): void {
+    if (this.isClosed()) return;
     if (options.probeFirst) {
       this.session.wake(reason, options.wakeProbe);
     } else {
@@ -156,7 +250,7 @@ export class RemoteStreamClient<
    * connection must ask its client rather than scan the cache.
    */
   isReady(): boolean {
-    return this.session.isReady();
+    return !this.isClosed() && this.session.isReady();
   }
 
   /**
@@ -169,7 +263,7 @@ export class RemoteStreamClient<
    * has released inherits that view's ownership guard and answers false too.
    */
   isSilentFor(ms: number): boolean {
-    return this.session.isSilentFor(ms);
+    return !this.isClosed() && this.session.isSilentFor(ms);
   }
 
   /**
@@ -194,24 +288,33 @@ export class RemoteStreamClient<
   subscribeAvailabilityRecovered(
     listener: (kind: AvailabilityRecoveryKind) => void,
   ): () => void {
-    return this.session.subscribeAvailabilityRecovered(() => {
-      listener("reconnect");
-    });
+    return this.trackSubscription(() =>
+      this.session.subscribeAvailabilityRecovered(() => {
+        if (!this.isClosed()) listener("reconnect");
+      }),
+    );
   }
 
   getMethodSupport<Method extends keyof StreamRegistry & string>(
     method: Method,
   ): StreamMethodSupport {
-    return this.session.getMethodSupport(method);
+    return this.isClosed() ? "unknown" : this.session.getMethodSupport(method);
   }
 
   subscribeMethodSupport(listener: () => void): () => void {
-    return this.session.subscribeMethodSupport(listener);
+    return this.trackSubscription(() =>
+      this.session.subscribeMethodSupport(() => {
+        // The shared session retracts its manifest after marking itself
+        // closed, before onClosed retires our observers. Deliver that final
+        // "unknown" while this client still owns the subscription.
+        if (!this.closed) listener();
+      }),
+    );
   }
 
   getMethodSchemaVersion<Method extends keyof StreamRegistry & string>(
     method: Method,
   ): SchemaVersion | null {
-    return this.session.getMethodSchemaVersion(method);
+    return this.isClosed() ? null : this.session.getMethodSchemaVersion(method);
   }
 }

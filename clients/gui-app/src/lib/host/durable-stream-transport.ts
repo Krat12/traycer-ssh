@@ -14,6 +14,10 @@ import {
 } from "@/lib/host/availability-recovery";
 import { appLogger } from "@/lib/logger";
 import {
+  remoteAwareOwnerIdentity,
+  remoteAwareOwnerIdentityKey,
+} from "@/lib/host/transport-key";
+import {
   authorizesCloudCapability,
   useAuthStore,
 } from "@/stores/auth/auth-store";
@@ -54,6 +58,10 @@ export interface AttributableDurableStreamTransport extends DurableStreamTranspo
  *  - `endpoint` is read LIVE on every (re)dial, so a host that respawns on a
  *    new `websocketUrl` while the session is warm (no tile mounted to recompute
  *    a memo) reconnects to the new address instead of retrying the dead one.
+ *  - `readTarget` preserves the owner's route and registry identity boundary:
+ *    switching relay/SSH or replacing the registered Host closes the former
+ *    transport, even without a mounted tile. A later acquire builds its owner
+ *    against the new identity. SSH endpoint loss/port moves keep that identity.
  *  - `bearer` + `auth` provide UNAUTHORIZED revalidate+reconnect.
  *  - bearer-rotation forwarding pushes `credentialUpdate` frames to already-open
  *    sessions after same-user token refresh, so long-lived streams do not keep
@@ -74,6 +82,8 @@ export interface AttributableDurableStreamTransport extends DurableStreamTranspo
  */
 export function openDurableStreamTransport(params: {
   readonly target: HostDirectoryEntry;
+  /** Re-read the route and registered incarnation even while no React owner is mounted. */
+  readonly readTarget: () => HostDirectoryEntry | null;
   /** The signed-in user this transport is built for (Architecture §4 / S1 cache key). */
   readonly userId: string;
   readonly endpoint: HostEndpointProvider;
@@ -98,7 +108,7 @@ export function openDurableStreamTransport(params: {
   /**
    * Subscribes to host-directory changes for the bound host, returning a
    * disposer. The callback fires on ANY directory change; this module filters it
-   * down to a genuine dialable-endpoint move before re-dialing.
+   * down to an owner identity change or a genuine dialable-endpoint move.
    */
   readonly subscribeEndpointChange: (onChange: () => void) => () => void;
   /**
@@ -116,6 +126,18 @@ export function openDurableStreamTransport(params: {
     kind: AvailabilityRecoveryKind,
   ) => void;
 }): AttributableDurableStreamTransport {
+  const ownerIdentity = remoteAwareOwnerIdentity(params.target, params.userId);
+  const identityIsCurrent = (): boolean =>
+    remoteAwareOwnerIdentityKey(params.readTarget(), params.userId) ===
+    ownerIdentity;
+  // A retry must not reopen a transport captured before a route change. The
+  // normal factory reads the target live; this guard also covers stale callers
+  // before they can acquire a relay session or create any subscriptions.
+  if (!identityIsCurrent()) {
+    throw new Error(
+      `Host ${params.target.hostId} changed identity before its durable stream opened`,
+    );
+  }
   const wsStreamClient = buildHostStreamClient({
     target: params.target,
     endpoint: params.endpoint,
@@ -143,28 +165,46 @@ export function openDurableStreamTransport(params: {
     hasEndpoint: params.endpoint() !== null,
   });
   const disposers: Array<() => void> = [];
+  let closed = false;
+  const closeWithReason = (reason: string): void => {
+    if (closed) return;
+    closed = true;
+    // Remove all reconnect sources before notifying the typed session that its
+    // socket closed. Warm owners may still hold that session until reacquire.
+    disposers.splice(0).forEach((dispose) => dispose());
+    wsStreamClient.close(reason);
+  };
+  const registerDisposer = (dispose: () => void): void => {
+    // A source may notify synchronously while being subscribed. If that closes
+    // this transport, neither this nor later subscriptions may outlive it.
+    if (closed) dispose();
+    else disposers.push(dispose);
+  };
   try {
-    disposers.push(
+    registerDisposer(
       params.subscribeBearerRotation(() => {
         wsStreamClient.notifyBearerRotated();
       }),
     );
-    disposers.push(
+    registerDisposer(
       params.subscribeCloudVerdictChange(() => {
         wsStreamClient.notifyCloudVerdictChanged();
       }),
     );
-    disposers.push(
+    registerDisposer(
       subscribeStreamWakeReconnect(wsStreamClient, params.runnerHost),
     );
-    disposers.push(
-      subscribeEndpointRedial(
-        wsStreamClient,
-        params.endpoint,
-        params.subscribeEndpointChange,
-      ),
+    registerDisposer(
+      subscribeEndpointRedial({
+        client: wsStreamClient,
+        endpoint: params.endpoint,
+        subscribeEndpointChange: params.subscribeEndpointChange,
+        identityIsCurrent,
+        closeObsoleteTransport: () =>
+          closeWithReason("durable-host-identity-changed"),
+      }),
     );
-    disposers.push(
+    registerDisposer(
       wireAvailabilityRecovery({
         wsStreamClient,
         target: {
@@ -178,16 +218,9 @@ export function openDurableStreamTransport(params: {
     appLogger.error("[stream] durable transport wiring failed", {}, cause);
     // Roll back every subscription wired so far, then close the socket, so a
     // throw mid-wiring leaves nothing dangling.
-    disposers.forEach((dispose) => dispose());
-    wsStreamClient.close("durable-transport-wiring-failed");
+    closeWithReason("durable-transport-wiring-failed");
     throw cause;
   }
-  const closeWithReason = (reason: string): void => {
-    // Dispose wake + endpoint-change wiring BEFORE the socket, so neither can
-    // fire `reconnectAll` on a socket that is being torn down.
-    disposers.forEach((dispose) => dispose());
-    wsStreamClient.close(reason);
-  };
   return {
     wsStreamClient,
     close: () => {
@@ -205,20 +238,30 @@ export function openDurableStreamTransport(params: {
  * socket would re-dial the live `endpoint()` on its own eventually; nudging
  * skips that wait so recovery is instant, matching the app-wide stream.
  *
- * Only fires when the dialable `websocketUrl` actually MOVES to a new non-null
- * value, so the high-frequency benign directory re-emits (every
+ * A different owner identity retires this transport instead of re-dialing it.
+ * For the same owner, re-dial only fires when the dialable `websocketUrl`
+ * MOVES to a new non-null value, so benign directory re-emits (every
  * `onLocalHostChange` rebuilds the entry, and on desktop it crosses the IPC
  * bridge as a fresh object) do NOT churn the socket. A move to `null` (host went
  * away) is recorded but not nudged - the next non-null move fires it.
  */
-function subscribeEndpointRedial(
-  client: IHostStreamClient<HostStreamRpcRegistry>,
-  endpoint: HostEndpointProvider,
-  subscribeEndpointChange: (onChange: () => void) => () => void,
-): () => void {
-  let lastWebsocketUrl = endpoint()?.websocketUrl ?? null;
-  return subscribeEndpointChange(() => {
-    const nextWebsocketUrl = endpoint()?.websocketUrl ?? null;
+function subscribeEndpointRedial(params: {
+  readonly client: IHostStreamClient<HostStreamRpcRegistry>;
+  readonly endpoint: HostEndpointProvider;
+  readonly subscribeEndpointChange: (onChange: () => void) => () => void;
+  readonly identityIsCurrent: () => boolean;
+  readonly closeObsoleteTransport: () => void;
+}): () => void {
+  let lastWebsocketUrl = params.endpoint()?.websocketUrl ?? null;
+  return params.subscribeEndpointChange(() => {
+    // Endpoint redial cannot turn a RemoteStreamClient into a direct SSH
+    // client. Retire the old owner even when the selected route has no URL;
+    // existing session acquisition replaces it using the new owner identity.
+    if (!params.identityIsCurrent()) {
+      params.closeObsoleteTransport();
+      return;
+    }
+    const nextWebsocketUrl = params.endpoint()?.websocketUrl ?? null;
     if (nextWebsocketUrl === lastWebsocketUrl) {
       return;
     }
@@ -228,7 +271,7 @@ function subscribeEndpointRedial(
       // The host moved to a new address: the current socket points somewhere
       // that no longer serves this host, so it must be dropped whether or not
       // it still answers. Not a wake - no probe.
-      client.reconnectAll("host-endpoint-change", {
+      params.client.reconnectAll("host-endpoint-change", {
         probeFirst: false,
         wakeProbe: null,
       });

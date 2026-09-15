@@ -27,7 +27,38 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: SSH transport tests
         working-directory: clients/desktop
-        run: bun x vitest run src/electron-main/ssh/__tests__ --maxWorkers=2
+        run: >-
+          bun x vitest run
+          src/electron-main/ssh/__tests__
+          src/electron-main/browser-sessions/__tests__/browser-sessions-transport.test.ts
+          src/electron-main/browser-sessions/__tests__/browser-sessions-owner.test.ts
+          src/electron-main/browser-sessions/__tests__/browser-sessions-host-directory.test.ts
+          --maxWorkers=2
+      - name: Shared remote session lifecycle tests
+        working-directory: clients/shared
+        run: >-
+          bun x vitest run
+          host-transport/remote/__tests__/remote-stream-client.test.ts
+          host-transport/remote/__tests__/create-remote-transport.test.ts
+          host-transport/remote/__tests__/active-remote-sessions.test.ts
+          host-transport/remote/__tests__/active-remote-sessions-readiness-events.test.ts
+          host-transport/remote/__tests__/active-remote-sessions-borrow.test.ts
+          host-transport/remote/__tests__/remote-session.test.ts
+          host-transport/__tests__/chat-stream-client.test.ts
+          --maxWorkers=2
+      - name: Durable route and session lifecycle tests
+        working-directory: clients/gui-app
+        run: >-
+          bun x vitest run
+          src/lib/host/__tests__/durable-stream-transport.test.ts
+          src/lib/host/__tests__/use-durable-stream-transport.test.ts
+          src/lib/host/__tests__/durable-stream-warm-route-change.test.ts
+          src/lib/registries/__tests__/chat-session-registry.test.tsx
+          src/lib/registries/__tests__/terminal-session-registry.test.tsx
+          src/lib/host/__tests__/owned-durable-stream-client.test.ts
+          src/lib/host/__tests__/plan-restricted-session-rebuild-backoff.test.ts
+          src/stores/chats/__tests__/chat-session-store-lifecycle-close.test.ts
+          --maxWorkers=2
       - name: Build independent installer
         working-directory: clients/desktop
         env:

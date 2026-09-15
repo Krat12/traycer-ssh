@@ -316,7 +316,7 @@ export function openBrowserSessionsTransport(
     return {
       wsStreamClient: remote.streamClient,
       close: () => {
-        remote.session.close();
+        remote.streamClient.close("browser-sessions-stream-closed");
       },
     };
   }

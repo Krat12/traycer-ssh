@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MockRunnerHost } from "@traycer-clients/shared/host-client/mock/mock-runner-host";
 import type { StreamAuthRevalidator } from "@traycer-clients/shared/auth/bearer-revalidator";
 import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
+import type { RemoteHostDirectoryEntry } from "@traycer-clients/shared/host-client/remote-fetcher";
+import type { SshHostDirectoryEntry } from "@traycer-clients/shared/host-client/ssh-host-directory";
 import type { AvailabilityRecoveryKind } from "@traycer-clients/shared/host-transport/availability-recovery-kind";
 
 // `openDurableStreamTransport` is the single place "durable stream = transport +
@@ -49,6 +51,28 @@ const FAKE_TARGET: HostDirectoryEntry = {
   transportDialability: "dialable",
 };
 
+const REMOTE_TARGET: RemoteHostDirectoryEntry = {
+  ...FAKE_TARGET,
+  kind: "remote",
+  publicKey: "registered-key",
+  relayFuseGrace: false,
+  recentHostCheckIn: false,
+  planAllowsRemote: true,
+  remoteStatus: {
+    connectivity: "connectable",
+    viewerReachability: "ok",
+    clientCloud: "ok",
+    updateState: "current",
+    appVersion: null,
+    lastSeenAt: null,
+  },
+};
+const SSH_TARGET: SshHostDirectoryEntry = {
+  ...FAKE_TARGET,
+  kind: "ssh",
+  publicKey: "registered-key",
+};
+
 function buildParams(closeWs: () => void) {
   const order: string[] = [];
   let availabilityListener: ((kind: AvailabilityRecoveryKind) => void) | null =
@@ -81,6 +105,7 @@ function buildParams(closeWs: () => void) {
     },
     params: {
       target: FAKE_TARGET,
+      readTarget: (): HostDirectoryEntry | null => FAKE_TARGET,
       userId: "user-a",
       endpoint: () => null,
       bearer: () => null,
@@ -229,6 +254,7 @@ describe("openDurableStreamTransport", () => {
     let fireDirectoryChange: () => void = () => undefined;
     const params = {
       target: FAKE_TARGET,
+      readTarget: () => FAKE_TARGET,
       userId: "user-a",
       endpoint: () =>
         websocketUrl === null ? null : { hostId: "host-a", websocketUrl },
@@ -272,5 +298,99 @@ describe("openDurableStreamTransport", () => {
     expect(reconnectAll).toHaveBeenCalledTimes(2);
 
     transport.close();
+  });
+
+  it.each([null, "ws://127.0.0.1:44001/rpc"])(
+    "retires the previous route before redial even when the new SSH endpoint is %s",
+    (websocketUrl) => {
+      const built = buildParams(() => undefined);
+      const disposeWake = vi.fn();
+      mocks.subscribeStreamWakeReconnect.mockReturnValue(disposeWake);
+      let current: HostDirectoryEntry = REMOTE_TARGET;
+      let fireDirectoryChange: () => void = () => undefined;
+      const disposeDirectory = vi.fn(() => {
+        fireDirectoryChange = () => undefined;
+      });
+      const params = {
+        ...built.params,
+        target: current,
+        readTarget: () => current,
+        subscribeEndpointChange: (listener: () => void) => {
+          fireDirectoryChange = listener;
+          return disposeDirectory;
+        },
+      };
+      const transport = openDurableStreamTransport(params);
+      current = { ...SSH_TARGET, websocketUrl };
+      fireDirectoryChange();
+      expect(built.fakeWs.close).toHaveBeenCalledExactlyOnceWith(
+        "durable-host-identity-changed",
+      );
+      expect(built.fakeWs.reconnectAll).not.toHaveBeenCalled();
+      expect(disposeDirectory).toHaveBeenCalledTimes(1);
+      expect(disposeWake).toHaveBeenCalledTimes(1);
+
+      // A stale retry cannot revive the former route without another event.
+      expect(() => openDurableStreamTransport(params)).toThrow(
+        "changed identity",
+      );
+      expect(mocks.buildHostStreamClient).toHaveBeenCalledTimes(1);
+      transport.close();
+      expect(built.fakeWs.close).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retains an SSH transport through endpoint loss and a port change", () => {
+    const built = buildParams(() => undefined);
+    mocks.subscribeStreamWakeReconnect.mockReturnValue(() => undefined);
+    let current: HostDirectoryEntry = SSH_TARGET;
+    let fireDirectoryChange: () => void = () => undefined;
+    const transport = openDurableStreamTransport({
+      ...built.params,
+      target: current,
+      readTarget: () => current,
+      endpoint: () =>
+        current.websocketUrl === null
+          ? null
+          : {
+              hostId: current.hostId,
+              websocketUrl: current.websocketUrl,
+            },
+      subscribeEndpointChange: (listener: () => void) => {
+        fireDirectoryChange = listener;
+        return () => undefined;
+      },
+    });
+    current = { ...current, websocketUrl: null };
+    fireDirectoryChange();
+    current = { ...current, websocketUrl: "ws://127.0.0.1:44002/rpc" };
+    fireDirectoryChange();
+    expect(built.fakeWs.close).not.toHaveBeenCalled();
+    expect(built.fakeWs.reconnectAll).toHaveBeenCalledTimes(1);
+    transport.close();
+  });
+
+  it("cleans all subscriptions when the route changes synchronously during wiring", () => {
+    const built = buildParams(() => undefined);
+    const disposeWake = vi.fn();
+    const disposeDirectory = vi.fn();
+    mocks.subscribeStreamWakeReconnect.mockReturnValue(disposeWake);
+    let current = FAKE_TARGET;
+    const transport = openDurableStreamTransport({
+      ...built.params,
+      readTarget: () => current,
+      subscribeEndpointChange: (listener: () => void) => {
+        current = { ...FAKE_TARGET, kind: "ssh" };
+        listener();
+        return disposeDirectory;
+      },
+    });
+    expect(disposeWake).toHaveBeenCalledTimes(1);
+    expect(disposeDirectory).toHaveBeenCalledTimes(1);
+    expect(built.fakeWs.close).toHaveBeenCalledTimes(1);
+    built.fireAvailabilityRecovered("reconnect");
+    expect(built.notifyRecoveredForNamedHost).not.toHaveBeenCalled();
+    transport.close();
+    expect(built.fakeWs.close).toHaveBeenCalledTimes(1);
   });
 });

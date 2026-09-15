@@ -247,7 +247,7 @@ export interface WsStreamClientOptions<
  * handlers first), because a consumer that never learns its session is dead
  * renders a pending state forever - the "stuck git-diff skeleton" incident.
  */
-function createInertStreamSession(closedReason: string): IStreamSession {
+export function createInertStreamSession(closedReason: string): IStreamSession {
   let closed = false;
   let statusHandler: StatusChangeHandler | null = null;
   let emissionScheduled = false;

@@ -6,6 +6,7 @@ import type { VersionedRpcRegistry } from "@traycer/protocol/framework/index";
 import type { VersionedStreamRpcRegistry } from "@traycer/protocol/framework/versioned-stream-rpc";
 import type { OpenFrameBearerSource } from "../../../auth/bearer-source";
 import { createRemoteHostTransport } from "../create-remote-transport";
+import { RemoteSession } from "../remote-session";
 import { retireAllRemoteSessions } from "../active-remote-sessions";
 import { TEST_CLIENT_IDENTITY } from "@traycer-clients/shared/test-fixtures/client-identity";
 import type {
@@ -61,6 +62,31 @@ function transportFor(bearerSource: OpenFrameBearerSource | null) {
 }
 
 describe("createRemoteHostTransport bearer gate", () => {
+  it("does not retain unused stream wrappers when unary-only consumers release shared sessions", () => {
+    const bearerSource: OpenFrameBearerSource = {
+      getBearerToken: () => "bearer-token",
+      identity: { userId: "user-null-bearer-test" },
+    };
+    const peer = transportFor(bearerSource);
+    if (peer === null) throw new Error("expected remote transport");
+    const onClosed = vi.spyOn(RemoteSession.prototype, "onClosed");
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        const unary = transportFor(bearerSource);
+        if (unary === null) throw new Error("expected remote transport");
+        // RuntimeHostMessenger releases session directly; the stream wrapper
+        // was never consumed and must not subscribe to shared-session events.
+        unary.session.close();
+      }
+      expect(onClosed).not.toHaveBeenCalled();
+      peer.streamClient.onClosed(() => undefined);
+      expect(onClosed).toHaveBeenCalledTimes(1);
+    } finally {
+      peer.streamClient.close("test-cleanup");
+      onClosed.mockRestore();
+    }
+  });
+
   it("refuses to build - and so to cache - a session with no auth context", () => {
     // The bearer thunk is a live read, so a session built while it is null
     // could later dial once a context appears, while keyed under an epoch

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { AvailabilityRecoveryKind } from "@traycer-clients/shared/host-transport/availability-recovery-kind";
+import type { HostDirectoryEntry } from "@traycer-clients/shared/host-client/host-directory";
 
 // The subject is the opener's own recovery closure: which host it names, and
 // that the kind the transport reported reaches `HostClient` untouched. Every
@@ -59,6 +60,53 @@ vi.mock("@/lib/host/durable-stream-transport", () => ({
 import { useDurableStreamTransportFactory } from "@/lib/host/use-durable-stream-transport";
 
 describe("useDurableStreamTransportFactory", () => {
+  it("re-resolves a warm owner's retry target after its React consumer unmounts", () => {
+    mocks.openDurableStreamTransport.mockReset();
+    let kind = "remote";
+    const find = vi
+      .spyOn(mocks.directory, "findById")
+      .mockImplementation((hostId) => ({
+        hostId,
+        label: hostId,
+        kind,
+        websocketUrl: `ws://${hostId}/rpc`,
+        version: null,
+        transportDialability: "dialable",
+      }));
+    const opened: Array<{
+      readonly target: HostDirectoryEntry;
+      readonly readTarget: () => HostDirectoryEntry | null;
+    }> = [];
+    mocks.openDurableStreamTransport.mockImplementation(
+      (params: {
+        readonly target: HostDirectoryEntry;
+        readonly readTarget: () => HostDirectoryEntry | null;
+      }) => {
+        opened.push(params);
+        return {
+          wsStreamClient: null,
+          close: () => undefined,
+          closeWithReason: () => undefined,
+        };
+      },
+    );
+    try {
+      const { result, unmount } = renderHook(() =>
+        useDurableStreamTransportFactory(),
+      );
+      const retryOpen = result.current;
+      retryOpen("host-a");
+      unmount();
+      kind = "ssh";
+      expect(opened[0].readTarget()?.kind).toBe("ssh");
+      retryOpen("host-a");
+      expect(opened[1].target.kind).toBe("ssh");
+    } finally {
+      find.mockRestore();
+      mocks.openDurableStreamTransport.mockReset();
+    }
+  });
+
   it("routes a transport's recovery to the host it was opened for, with the kind the transport reported", () => {
     const captured: {
       notify: ((kind: AvailabilityRecoveryKind) => void) | null;

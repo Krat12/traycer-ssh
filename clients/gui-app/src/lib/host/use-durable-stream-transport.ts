@@ -50,6 +50,7 @@ export function useDurableStreamTransportFactory(): (
     }
     return openDurableStreamTransport({
       target,
+      readTarget: () => liveRef.current.directory.findById(hostId),
       userId,
       endpoint: () =>
         dialableHostEndpoint(liveRef.current.directory.findById(hostId)),
@@ -62,9 +63,8 @@ export function useDurableStreamTransportFactory(): (
       subscribeCloudVerdictChange: (onChange) =>
         liveRef.current.globalClient.onCloudVerdictChanged(onChange),
       // Fires on any directory change; `openDurableStreamTransport` filters it
-      // down to a genuine endpoint MOVE for THIS `hostId` before re-dialing,
-      // so a host restart / re-provision reconnects the session at once
-      // instead of waiting out the pong timeout on a half-open socket.
+      // down to this host's owner identity or endpoint change. This remains
+      // live for warm sessions after the React consumer has unmounted.
       subscribeEndpointChange: (onChange) => {
         const subscription = liveRef.current.directory.onChange(onChange);
         return () => subscription.dispose();
