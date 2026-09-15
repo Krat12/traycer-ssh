@@ -47,6 +47,7 @@ const MENTION_DRAFT: DraftState = {
   syncedGeneration: 0,
   ownerHostId: null,
   origin: null,
+  supersedes: null,
   publication: null,
 };
 
@@ -58,7 +59,6 @@ afterEach(() => {
   useComposerDraftStore.setState({
     drafts: {},
     pendingSubmittedDraftDeletes: {},
-    retiredDraftIds: {},
   });
 });
 
@@ -202,6 +202,7 @@ describe("composer draft store hydration", () => {
       syncedGeneration: 0,
       ownerHostId: null,
       origin: null,
+      supersedes: null,
       publication: null,
     });
   });
@@ -233,37 +234,34 @@ describe("composer draft store hydration", () => {
     ).toEqual({ hostId: "host-a" });
   });
 
-  it("hydrates retiredDraftIds, dropping the empty-string key", async () => {
+  it("hydrates a persisted supersedes value, and treats an absent one as null", async () => {
     window.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         version: 1,
         state: {
-          drafts: {},
-          retiredDraftIds: { "d-old": true, "": true },
+          drafts: {
+            forked: {
+              content: MENTION_DRAFT.content,
+              selection: null,
+              draftId: "d-new",
+              supersedes: "d-old",
+            },
+            plain: {
+              content: MENTION_DRAFT.content,
+              selection: null,
+              draftId: "d-plain",
+            },
+          },
         },
       }),
     );
 
     await useComposerDraftStore.persist.rehydrate();
 
-    expect(useComposerDraftStore.getState().retiredDraftIds).toEqual({
-      "d-old": true,
-    });
-  });
-
-  it("hydrates an empty retiredDraftIds map when the persisted state carries none", async () => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        state: { drafts: {} },
-      }),
-    );
-
-    await useComposerDraftStore.persist.rehydrate();
-
-    expect(useComposerDraftStore.getState().retiredDraftIds).toEqual({});
+    const drafts = useComposerDraftStore.getState().drafts;
+    expect(drafts.forked?.supersedes).toBe("d-old");
+    expect(drafts.plain?.supersedes).toBeNull();
   });
 });
 

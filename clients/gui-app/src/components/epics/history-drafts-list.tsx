@@ -11,15 +11,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StartTruncatedText } from "@/components/ui/start-truncated-text";
-import { useDraftClaim } from "@/hooks/drafts/use-draft-claim";
+import { useDraftRetract } from "@/hooks/drafts/use-draft-retract";
 import { useHostClientForHostId } from "@/hooks/host/use-host-client-for-host-id";
 import { openLandingDraftFromHistory } from "@/lib/commands/actions/open-landing-draft-from-history";
-import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
-import {
-  applyIncomingDraftDocument,
-  deleteLandingDraftThroughHost,
-  draftOwnershipSeq,
-} from "@/lib/drafts/draft-mirror-coordinator";
+import { deleteLandingDraftThroughHost } from "@/lib/drafts/draft-mirror-coordinator";
 import {
   listHistoryLandingDrafts,
   type HistoryLandingDraft,
@@ -63,16 +58,17 @@ export function HistoryDraftsList(props: {
   const closeDeleteDialog = useCallback(() => {
     setPendingDelete(null);
   }, []);
-  // A delete is routed to the host that owns the row, so a draft another
-  // host owns is claimed for this one first - the same silent takeover the
-  // composer does on the first edit. Nothing is shown for any outcome: a
-  // claim the cloud settles as gone or never backed up retires the row
-  // locally (there is nothing remote left to delete), and an inconclusive
-  // one - this host offline, too old, not yet publishing - leaves the row
-  // where it is for the next attempt rather than hiding a draft that still
-  // exists.
+  // A delete is routed to the host that owns the row. Ownership never moves:
+  // a row another host owns is not deleted through it but RETRACTED - its
+  // cloud row removed on the user's authority through this History host -
+  // and the owning host tombstones its local row when it finds the cloud
+  // row gone. Nothing is shown for any outcome: a retract the cloud
+  // confirms (or finds already gone) drops the local mirror, and an
+  // inconclusive one - this host offline, or too old for `drafts.retract` -
+  // leaves the row where it is for the next attempt rather than hiding a
+  // draft that still exists.
   const hostClient = useHostClientForHostId(hostId);
-  const { claim } = useDraftClaim(hostClient);
+  const { retract } = useDraftRetract(hostClient);
   const confirmDelete = useCallback(() => {
     if (pendingDelete === null) return;
     const draftId = pendingDelete.id;
@@ -81,8 +77,8 @@ export function HistoryDraftsList(props: {
       .drafts.find((entry) => entry.id === draftId);
     setPendingDelete(null);
     if (draft === undefined) return;
-    // With no resolved host there is no way to tell whether this row needs a
-    // claim, and a local-only delete of one that does would leave the cloud
+    // With no resolved host there is nowhere to route a delete or a retract,
+    // and a local-only delete of a row with a cloud copy would leave that
     // copy to be ingested straight back. Only a row nobody else owns is safe.
     if (hostId === null) {
       if (draft.ownerHostId === null && draft.origin !== "replica") {
@@ -90,82 +86,26 @@ export function HistoryDraftsList(props: {
       }
       return;
     }
-    if (!draftRequiresClaim(draft.ownerHostId, draft.origin, hostId)) {
-      // A row this host already owns is deleted through it explicitly: the
-      // landing placement (which `deleteDraft` consults) can point elsewhere
-      // while History runs on the app-wide host. A row no host has adopted
-      // yet has nowhere to route and retires locally as before.
-      if (draft.ownerHostId === hostId) {
-        deleteLandingDraftThroughHost(draftId, hostId, hostClient);
-      } else {
-        useLandingDraftStore.getState().deleteDraft(draftId);
-      }
+    if (draft.origin !== "replica" && draft.ownerHostId === hostId) {
+      // A row this host owns is deleted through it explicitly: the landing
+      // placement (which `deleteDraft` consults) can point elsewhere while
+      // History runs on the app-wide host.
+      deleteLandingDraftThroughHost(draftId, hostId, hostClient);
       return;
     }
-    // The row's ownership generation when the claim set out: any ownership
-    // apply since (another device's claim moving the row on, even back to
-    // the owner it started from) outdates this claim's response.
-    const ownershipSeqAtClaim = draftOwnershipSeq(draftId);
-    void claim(draftId).then(
-      async (result) => {
-        if (result.status === "ok" || result.status === "already-owned") {
-          // The row may have moved AGAIN while this response was in flight:
-          // another device's claim, whose document already applied here.
-          // That newer ownership is kept - applying this stale response
-          // would erase it and delete through a host that no longer holds
-          // the row - and the delete is left pending on the current owner.
-          const current = useLandingDraftStore
-            .getState()
-            .drafts.find((entry) => entry.id === draftId);
-          if (
-            current !== undefined &&
-            draftOwnershipSeq(draftId) !== ownershipSeqAtClaim
-          ) {
-            if (current.ownerHostId !== null) {
-              deleteLandingDraftThroughHost(draftId, current.ownerHostId, null);
-            } else {
-              useLandingDraftStore.getState().deleteDraft(draftId);
-            }
-            return;
-          }
-          // The claim has committed on `hostId`; the delete below is routed
-          // there explicitly (History runs on the app-wide host, which the
-          // landing placement need not match). A failed local apply (a blob
-          // read that threw) changes nothing about that, and a row retired
-          // locally meanwhile is re-armed to delete there, not left hidden.
-          try {
-            await applyIncomingDraftDocument(result.draft, null);
-          } catch {
-            // Deleted through `hostId` regardless.
-          }
-          deleteLandingDraftThroughHost(draftId, hostId, hostClient);
-          return;
-        }
-        if (
-          result.status === "unavailable" &&
-          (result.reason === "not-found" || result.reason === "not-published")
-        ) {
-          // The cloud has no published row, but the host the row is adopted
-          // on may still store the (unpublished) draft: retire it through
-          // that host - pending until its session mounts - rather than
-          // completing a local-only retirement that leaves the copy there.
-          const current = useLandingDraftStore
-            .getState()
-            .drafts.find((entry) => entry.id === draftId);
-          if (current !== undefined && current.adoption.state === "adopted") {
-            deleteLandingDraftThroughHost(
-              draftId,
-              current.adoption.hostId,
-              null,
-            );
-          } else {
-            useLandingDraftStore.getState().applyHostDelete(draftId);
-          }
-        }
-      },
-      () => undefined,
-    );
-  }, [claim, hostClient, hostId, pendingDelete]);
+    if (draft.origin !== "replica" && draft.ownerHostId === null) {
+      // A row no host has adopted yet has nowhere to route and retires
+      // locally as before.
+      useLandingDraftStore.getState().deleteDraft(draftId);
+      return;
+    }
+    void retract(draftId).then((result) => {
+      if (result.status !== "retracted" && result.status !== "absent") return;
+      // The cloud row is gone; the local mirror goes with it, retired so a
+      // directory fetch already in flight cannot ingest it back.
+      useLandingDraftStore.getState().applyHostDelete(draftId);
+    });
+  }, [hostClient, hostId, pendingDelete, retract]);
 
   if (items.length === 0) return null;
 

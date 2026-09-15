@@ -1,6 +1,6 @@
 import "./stub-sweep-dialog-host-hooks";
 
-import type { DraftClaimResult } from "@/hooks/drafts/use-draft-claim";
+import type { DraftRetractResult } from "@/hooks/drafts/use-draft-retract";
 import type { ListTasksCompleteness } from "@traycer/protocol/host/epic/unary-schemas";
 
 vi.mock("@/hooks/notifications/use-host-notification-indicators-query", () => ({
@@ -277,37 +277,27 @@ vi.mock("@/hooks/epic/use-epic-activity-status", () => ({
       : (testState.activityByEpicId.get(epicId) ?? "idle"),
 }));
 
-const draftClaimTestState = vi.hoisted(() => ({
-  claim: vi.fn<(draftId: string) => Promise<DraftClaimResult>>(),
+const draftRetractTestState = vi.hoisted(() => ({
+  retract: vi.fn<(draftId: string) => Promise<DraftRetractResult>>(),
 }));
-vi.mock("@/hooks/drafts/use-draft-claim", () => ({
-  useDraftClaim: () => ({
+vi.mock("@/hooks/drafts/use-draft-retract", () => ({
+  useDraftRetract: () => ({
     mutation: { isPending: false },
-    claim: draftClaimTestState.claim,
+    retract: draftRetractTestState.retract,
   }),
 }));
 const applyIncomingDraftDocumentMock = vi.hoisted(() => ({
-  apply: vi.fn<(draft: unknown, admit: unknown) => Promise<void>>(() =>
-    Promise.resolve(),
-  ),
+  apply: vi.fn<(document: unknown) => Promise<void>>(() => Promise.resolve()),
 }));
 const deleteThroughHostMock = vi.hoisted(() => ({
   record:
     vi.fn<(draftId: string, hostId: string, hasClient: boolean) => void>(),
 }));
-/** Per-draft ownership generation the real coordinator would report. */
-const ownershipSeqMock = vi.hoisted(() => ({
-  byDraft: new Map<string, number>(),
-}));
 vi.mock("@/lib/drafts/draft-mirror-coordinator", async () => {
   const store = await import("@/stores/home/landing-draft-store");
   return {
-    draftOwnershipSeq: (draftId: string): number =>
-      ownershipSeqMock.byDraft.get(draftId) ?? 0,
-    applyIncomingDraftDocument: (
-      draft: unknown,
-      admit: unknown,
-    ): Promise<void> => applyIncomingDraftDocumentMock.apply(draft, admit),
+    applyIncomingDraftDocument: (document: unknown): Promise<void> =>
+      applyIncomingDraftDocumentMock.apply(document),
     deleteLandingDraftThroughHost: (
       draftId: string,
       hostId: string,
@@ -508,13 +498,12 @@ describe("<EpicsListPanel />", () => {
     testState.fetchNextPage.mockReset();
     testState.openLandingDraftFromHistory.mockReset();
     testState.hostId = "host-test";
-    draftClaimTestState.claim.mockReset();
+    draftRetractTestState.retract.mockReset();
     applyIncomingDraftDocumentMock.apply.mockReset();
     applyIncomingDraftDocumentMock.apply.mockImplementation(() =>
       Promise.resolve(),
     );
     deleteThroughHostMock.record.mockReset();
-    ownershipSeqMock.byDraft.clear();
     testState.activityByEpicId.clear();
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
     queryClient.clear();
@@ -3450,46 +3439,17 @@ describe("<EpicsListPanel />", () => {
     expect(screen.getByText(/every device/i)).not.toBeNull();
   });
 
-  it("claims a foreign-owned draft before deleting it", async () => {
+  it("retracts through the placement host client and drops the mirror when a replica row's delete is confirmed (retracted)", async () => {
     const draftId = seedForeignOwnedLandingDraft("someone else's draft");
-    draftClaimTestState.claim.mockResolvedValue({
-      status: "already-owned",
-      draft: {
-        draftId,
-        kind: "landing",
-        target: { epicId: null, chatId: null, blockId: null },
-        revision: 1,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: "host-test",
-        origin: "own",
-        adoption: { state: "adopted", hostId: "host-test" },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: { type: "doc", content: [] },
-          selection: null,
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-    });
+    draftRetractTestState.retract.mockResolvedValue({ status: "retracted" });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
     await waitFor(() => {
-      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+      expect(draftRetractTestState.retract).toHaveBeenCalledWith(draftId);
     });
-    // The claim committed on `hostId`, and the successful local apply does
-    // not change which host the delete is routed through.
     await waitFor(() => {
       expect(
         useLandingDraftStore
@@ -3498,83 +3458,22 @@ describe("<EpicsListPanel />", () => {
       ).toBe(false);
     });
     expect(landingDraftIsRetired(draftId)).toBe(true);
-    expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
-    // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
-    // resolves null here - the call still names hostId, just with no client.
-    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
-      draftId,
-      testState.hostId,
-      false,
-    );
+    // A retract completes locally - there is nothing left pending on any host.
+    expect(pendingLandingDraftDeleteHostId(draftId)).toBeNull();
+    expect(deleteThroughHostMock.record).not.toHaveBeenCalled();
   });
 
-  it("routes the delete through a third host's newer ownership instead of applying a stale claim response", async () => {
-    // The claim resolves ok, but while it was in flight another device's
-    // claim landed its document onto a THIRD host ("host-c") - distinct from
-    // both the claiming host ("host-test") and the owner recorded before the
-    // claim ("host-b", from `seedForeignOwnedLandingDraft`). That newer
-    // ownership must win: the stale response is not applied, and the delete
-    // is left pending on "host-c" instead of completing through `hostId`.
-    const draftId = seedForeignOwnedLandingDraft("raced draft");
-    let resolveClaim: (value: DraftClaimResult) => void = () => undefined;
-    const pendingClaim = new Promise<DraftClaimResult>((resolve) => {
-      resolveClaim = resolve;
-    });
-    draftClaimTestState.claim.mockImplementation(() => pendingClaim);
+  it("drops the mirror when retract reports the cloud row already absent", async () => {
+    const draftId = seedForeignOwnedLandingDraft("already-gone draft");
+    draftRetractTestState.retract.mockResolvedValue({ status: "absent" });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
     await waitFor(() => {
-      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+      expect(draftRetractTestState.retract).toHaveBeenCalledWith(draftId);
     });
-
-    // A third host's document applies here while the claim is still
-    // in flight - simulating another device's claim completing first. An
-    // ownership apply bumps the draft's ownership generation.
-    useLandingDraftStore.setState((state) => ({
-      drafts: state.drafts.map((draft) =>
-        draft.id === draftId
-          ? {
-              ...draft,
-              ownerHostId: "host-c",
-              adoption: { state: "adopted" as const, hostId: "host-c" },
-            }
-          : draft,
-      ),
-    }));
-    ownershipSeqMock.byDraft.set(draftId, 1);
-
-    resolveClaim({
-      status: "already-owned",
-      draft: {
-        draftId,
-        kind: "landing",
-        target: { epicId: null, chatId: null, blockId: null },
-        revision: 1,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: "host-test",
-        origin: "own",
-        adoption: { state: "adopted", hostId: "host-test" },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: { type: "doc", content: [] },
-          selection: null,
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-    });
-
     await waitFor(() => {
       expect(
         useLandingDraftStore
@@ -3582,81 +3481,22 @@ describe("<EpicsListPanel />", () => {
           .drafts.some((draft) => draft.id === draftId),
       ).toBe(false);
     });
-    expect(applyIncomingDraftDocumentMock.apply).not.toHaveBeenCalled();
-    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
-      draftId,
-      "host-c",
-      false,
-    );
-    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-c");
+    expect(landingDraftIsRetired(draftId)).toBe(true);
   });
 
-  it("keeps the delete pending on the pre-claim owner when ownership cycled away and back (A -> C -> B) while the claim response was in flight", async () => {
-    // The claim starts from owner "host-b" (`seedForeignOwnedLandingDraft`)
-    // and resolves ok, but while the response was in flight other devices
-    // moved the row on to "host-c" and BACK to "host-b": the owner name
-    // ends up equal to the pre-claim owner, so an owner comparison alone
-    // would admit the stale response. The ownership generation bumped, so
-    // the response is dropped and the delete stays pending on "host-b".
-    const draftId = seedForeignOwnedLandingDraft("cycled draft");
-    let resolveClaim: (value: DraftClaimResult) => void = () => undefined;
-    const pendingClaim = new Promise<DraftClaimResult>((resolve) => {
-      resolveClaim = resolve;
-    });
-    draftClaimTestState.claim.mockImplementation(() => pendingClaim);
+  it("retracts a row this host owns but adopted on another host", async () => {
+    const draftId = seedOwnAdoptedOnOtherHostLandingDraft(
+      "own row adopted elsewhere",
+    );
+    draftRetractTestState.retract.mockResolvedValue({ status: "retracted" });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
     await waitFor(() => {
-      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+      expect(draftRetractTestState.retract).toHaveBeenCalledWith(draftId);
     });
-
-    // Two ownership applies land while the claim is still in flight: the
-    // row's owner is back where it started, and the generation is two on.
-    useLandingDraftStore.setState((state) => ({
-      drafts: state.drafts.map((draft) =>
-        draft.id === draftId
-          ? {
-              ...draft,
-              ownerHostId: "host-b",
-              adoption: { state: "adopted" as const, hostId: "host-b" },
-            }
-          : draft,
-      ),
-    }));
-    ownershipSeqMock.byDraft.set(draftId, 2);
-
-    resolveClaim({
-      status: "already-owned",
-      draft: {
-        draftId,
-        kind: "landing",
-        target: { epicId: null, chatId: null, blockId: null },
-        revision: 1,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: "host-test",
-        origin: "own",
-        adoption: { state: "adopted", hostId: "host-test" },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: { type: "doc", content: [] },
-          selection: null,
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-    });
-
     await waitFor(() => {
       expect(
         useLandingDraftStore
@@ -3664,13 +3504,8 @@ describe("<EpicsListPanel />", () => {
           .drafts.some((draft) => draft.id === draftId),
       ).toBe(false);
     });
-    expect(applyIncomingDraftDocumentMock.apply).not.toHaveBeenCalled();
-    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
-      draftId,
-      "host-b",
-      false,
-    );
-    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-b");
+    expect(landingDraftIsRetired(draftId)).toBe(true);
+    expect(deleteThroughHostMock.record).not.toHaveBeenCalled();
   });
 
   it("deletes an own row already owned by the History host through that host, even though the landing placement points elsewhere", async () => {
@@ -3693,7 +3528,7 @@ describe("<EpicsListPanel />", () => {
           .drafts.some((draft) => draft.id === draftId),
       ).toBe(false);
     });
-    expect(draftClaimTestState.claim).not.toHaveBeenCalled();
+    expect(draftRetractTestState.retract).not.toHaveBeenCalled();
     expect(landingDraftIsRetired(draftId)).toBe(true);
     expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
     // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
@@ -3724,19 +3559,17 @@ describe("<EpicsListPanel />", () => {
     expect(pendingLandingDraftDeleteHostId(draftId)).toBeNull();
   });
 
-  it("leaves a foreign-owned draft in place when the claim fails (not a not-found/not-published refusal)", async () => {
-    const draftId = seedForeignOwnedLandingDraft("failed-claim draft");
-    draftClaimTestState.claim.mockResolvedValue({ status: "failed" });
+  it("leaves a foreign-owned draft in place when retract reports unsupported (a host predating drafts.retract)", async () => {
+    const draftId = seedForeignOwnedLandingDraft("unsupported-host draft");
+    draftRetractTestState.retract.mockResolvedValue({ status: "unsupported" });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
     await waitFor(() => {
-      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
+      expect(draftRetractTestState.retract).toHaveBeenCalledWith(draftId);
     });
-    // A `failed` claim is not conclusive (host offline, too old, etc.) - the
-    // row must stay, unlike the not-found/not-published cases below.
     expect(
       useLandingDraftStore
         .getState()
@@ -3745,23 +3578,36 @@ describe("<EpicsListPanel />", () => {
     expect(landingDraftIsRetired(draftId)).toBe(false);
   });
 
-  it("retires an adopted foreign-owned draft through its adoption host when the claim reports not-found", async () => {
-    // `seedForeignOwnedLandingDraft` seeds a row already adopted on
-    // "host-b" - the foreign host, distinct from this panel's own
-    // `testState.hostId` ("host-test"). A not-found/not-published claim
-    // must retire it through THAT adoption host, not complete a
-    // local-only `applyHostDelete` that leaves the (unpublished) copy
-    // sitting there.
-    const draftId = seedForeignOwnedLandingDraft("refused draft");
-    draftClaimTestState.claim.mockResolvedValue({
-      status: "unavailable",
-      reason: "not-found",
-    });
+  it("leaves a foreign-owned draft in place when retract fails (not conclusive)", async () => {
+    const draftId = seedForeignOwnedLandingDraft("failed-retract draft");
+    draftRetractTestState.retract.mockResolvedValue({ status: "failed" });
     renderPanel("embedded", "/");
 
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
+    await waitFor(() => {
+      expect(draftRetractTestState.retract).toHaveBeenCalledWith(draftId);
+    });
+    // A `failed` retract is not conclusive (host offline, too old, etc.) -
+    // the row must stay, unlike `retracted`/`absent` above.
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === draftId),
+    ).toBe(true);
+    expect(landingDraftIsRetired(draftId)).toBe(false);
+  });
+
+  it("deletes an unowned non-replica row locally when there is no resolved host", async () => {
+    const draftId = seedRetainedLandingDraft("no-host own draft");
+    testState.hostId = null;
+    renderPanel("embedded", "/");
+
+    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
+    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
+
+    expect(draftRetractTestState.retract).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(
         useLandingDraftStore
@@ -3769,75 +3615,9 @@ describe("<EpicsListPanel />", () => {
           .drafts.some((draft) => draft.id === draftId),
       ).toBe(false);
     });
-    expect(landingDraftIsRetired(draftId)).toBe(true);
-    expect(pendingLandingDraftDeleteHostId(draftId)).toBe("host-b");
-    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
-      draftId,
-      "host-b",
-      false,
-    );
   });
 
-  it("still removes the row when the claim succeeds but the local apply rejects, adopting the draft locally before the delete", async () => {
-    const draftId = seedForeignOwnedLandingDraft("apply-rejects draft");
-    draftClaimTestState.claim.mockResolvedValue({
-      status: "already-owned",
-      draft: {
-        draftId,
-        kind: "landing",
-        target: { epicId: null, chatId: null, blockId: null },
-        revision: 1,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: "host-test",
-        origin: "own",
-        adoption: { state: "adopted", hostId: "host-test" },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: { type: "doc", content: [] },
-          selection: null,
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-    });
-    applyIncomingDraftDocumentMock.apply.mockRejectedValueOnce(
-      new Error("blob read failed"),
-    );
-    renderPanel("embedded", "/");
-
-    fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
-    fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
-
-    await waitFor(() => {
-      expect(draftClaimTestState.claim).toHaveBeenCalledWith(draftId);
-    });
-    await waitFor(() => {
-      expect(
-        useLandingDraftStore
-          .getState()
-          .drafts.some((draft) => draft.id === draftId),
-      ).toBe(false);
-    });
-    expect(landingDraftIsRetired(draftId)).toBe(true);
-    expect(pendingLandingDraftDeleteHostId(draftId)).toBe(testState.hostId);
-    // This file mounts no <HostRuntimeProvider>, so useHostClientForHostId
-    // resolves null here - the call still names hostId, just with no client.
-    expect(deleteThroughHostMock.record).toHaveBeenCalledWith(
-      draftId,
-      testState.hostId,
-      false,
-    );
-  });
-
-  it("leaves a replica draft in place when there is no resolved host (host-scoped delete cannot tell whether it needs a claim)", async () => {
+  it("leaves a replica draft in place when there is no resolved host (host-scoped delete cannot route a retract)", async () => {
     const draftId = seedForeignOwnedLandingDraft("no-host replica draft");
     testState.hostId = null;
     renderPanel("embedded", "/");
@@ -3845,7 +3625,7 @@ describe("<EpicsListPanel />", () => {
     fireEvent.click(await screen.findByTestId("history-drafts-row-delete"));
     fireEvent.click(await screen.findByTestId("history-drafts-delete-confirm"));
 
-    expect(draftClaimTestState.claim).not.toHaveBeenCalled();
+    expect(draftRetractTestState.retract).not.toHaveBeenCalled();
     expect(
       useLandingDraftStore
         .getState()
@@ -3915,8 +3695,9 @@ function seedOwnLandingDraft(text: string): string {
   return id;
 }
 
-// A row this panel's host ("host-test") does not own - `origin: "replica"`
-// so `draftRequiresClaim` reports it unowned regardless of ownerHostId.
+// A row this panel's host ("host-test") does not own - `origin: "replica"`,
+// so `HistoryDraftsList`'s delete always retracts it regardless of
+// ownerHostId.
 function seedForeignOwnedLandingDraft(text: string): string {
   const id = "foreign-draft";
   useLandingDraftStore.setState((state) => ({
@@ -3937,6 +3718,37 @@ function seedForeignOwnedLandingDraft(text: string): string {
         ownerHostId: "host-b",
         origin: "replica",
         adoption: { state: "adopted", hostId: "host-b" },
+        closed: true,
+      },
+    ],
+  }));
+  return id;
+}
+
+// A row this panel's host ("host-test") owns (`origin: "own"`) but that is
+// ADOPTED on a different host ("host-other") - the own-row analogue of a
+// replica. `HistoryDraftsList` cannot delete it through `hostId` (it is not
+// the owner there), so it retracts too.
+function seedOwnAdoptedOnOtherHostLandingDraft(text: string): string {
+  const id = "own-draft-adopted-elsewhere";
+  useLandingDraftStore.setState((state) => ({
+    drafts: [
+      ...state.drafts,
+      {
+        id,
+        content: {
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+        },
+        selection: null,
+        lastTouchedAt: Date.now(),
+        settings: null,
+        composerMode: "chat",
+        workspace: emptyLandingDraftWorkspaceSnapshot(),
+        ...freshLandingMirrorState(),
+        ownerHostId: "host-other",
+        origin: "own",
+        adoption: { state: "adopted", hostId: "host-other" },
         closed: true,
       },
     ],

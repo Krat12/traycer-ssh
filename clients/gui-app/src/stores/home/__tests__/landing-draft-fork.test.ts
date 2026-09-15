@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   emptyLandingDraftWorkspaceSnapshot,
   freshLandingMirrorState,
+  landingDraftRememberSynced,
   useLandingDraftStore,
   UNADOPTED_LANDING_DRAFT,
 } from "@/stores/home/landing-draft-store";
@@ -73,8 +74,39 @@ describe("landing draft store: forkDraft", () => {
     expect(next.generation).toBe(1);
     expect(next.syncedGeneration).toBe(0);
     expect(next.closed).toBe(false);
+    expect(next.supersedes).toBe(sourceId);
 
     expect(useLandingDraftStore.getState().activeDraftId).toBe(nextId);
+  });
+
+  it("clears supersedes once the fork's first host write acks (hostRevision > 0), but keeps it while unsynced", () => {
+    const sourceId = useLandingDraftStore.getState().createDraft(null);
+    const nextId = "forked-draft-supersedes-clear";
+    const ok = useLandingDraftStore.getState().forkDraft(sourceId, nextId);
+    expect(ok).toBe(true);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === nextId)?.supersedes,
+    ).toBe(sourceId);
+
+    // hostRevision 0 (still unacknowledged): the pointer must ride along.
+    landingDraftRememberSynced(nextId, 0, 1);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === nextId)?.supersedes,
+    ).toBe(sourceId);
+
+    // The fork's first write ACKs with a real host revision: the host now
+    // holds the row (and the retraction debt), so the one-shot pointer is
+    // cleared and must not ride a later write.
+    landingDraftRememberSynced(nextId, 1, 1);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === nextId)?.supersedes,
+    ).toBeNull();
   });
 
   it("does not move activeDraftId when the source was not the active draft", () => {

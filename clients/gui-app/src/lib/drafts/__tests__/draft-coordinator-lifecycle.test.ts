@@ -4,14 +4,12 @@ import type { CloudChatSummary } from "@traycer/protocol/host/epic/cloud-chat";
 import {
   acquireDraftMirrorSession,
   applyIncomingDraftDocument,
-  bindClaimedDraftOwnership,
   bindComposerDraftHost,
   bindInterviewDraftHost,
   bindLandingAdoptionHost,
   cloudDraftIngestSeq,
   collectDraftMirrorDirtyWrites,
   deleteLandingDraftThroughHost,
-  draftOwnershipSeq,
   ingestCloudDraftSummary,
   releaseDraftMirrorSession,
   resetDraftMirrorCoordinatorForTests,
@@ -20,24 +18,19 @@ import {
   unbindInterviewDraftHost,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { fakeDraftStreamClient } from "@/lib/drafts/__tests__/draft-mirror-test-stream";
+import { notifyDraftLocalDelete } from "@/lib/drafts/draft-local-edits";
 import {
-  notifyDraftLocalDelete,
-  notifyDraftLocalEdit,
-} from "@/lib/drafts/draft-local-edits";
-import {
-  isLandingDraftRetirementSpeculative,
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
-  rearmLandingDraftDelete,
   resetLandingDraftRetirementsForTests,
-  retireLandingDraft,
-  retireLandingDraftSpeculatively,
 } from "@/lib/drafts/landing-draft-retirement";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
 import { useInterviewDraftStore } from "@/stores/composer/interview-draft-store";
 import {
+  adoptLandingDraft,
   emptyLandingDraftWorkspaceSnapshot,
   freshLandingMirrorState,
+  landingDraftRememberSynced,
   useLandingDraftStore,
 } from "@/stores/home/landing-draft-store";
 
@@ -154,303 +147,6 @@ describe("interview host binding", () => {
   });
 });
 
-describe("routeLocalEdit / collectAllDirtyWrites withhold an own row the placement has left", () => {
-  const HOST_A = "host-a-adopted";
-  const HOST_B = "host-b-placement";
-
-  function mountHostSession(hostId: string, log: HostLog) {
-    return acquireDraftMirrorSession({
-      hostId,
-      client: {
-        request: (method: string, params: unknown) => {
-          if (method === "drafts.list") {
-            return Promise.resolve({
-              drafts: log.rows,
-              tombstones: [],
-              snapshotSeq: 0,
-              scopeId: null,
-            });
-          }
-          if (method === "drafts.upsert") {
-            const write = (params as { draft: DraftWrite }).draft;
-            log.upserts.push(write);
-            const document: DraftDocument = {
-              ...write,
-              ownerHostId: hostId,
-              origin: "own",
-              adoption: { state: "adopted", hostId },
-              publication: {
-                status: "unpublished",
-                lastPublishedAt: null,
-                publishedRevision: null,
-                halted: null,
-              },
-              revision: 1,
-            };
-            log.rows = [document];
-            return Promise.resolve({ draft: document });
-          }
-          return Promise.reject(new Error(`unexpected ${String(method)}`));
-        },
-      } as never,
-      streamClient: fakeDraftStreamClient(),
-      timing: { debounceMs: 0, maxWaitMs: 0 },
-    });
-  }
-
-  function ownAdoptedLandingDraft(id: string) {
-    return {
-      id,
-      content: typed("edited body"),
-      selection: null,
-      lastTouchedAt: 0,
-      settings: null,
-      composerMode: "chat" as const,
-      workspace: emptyLandingDraftWorkspaceSnapshot(),
-      ...freshLandingMirrorState(),
-      adoption: { state: "adopted" as const, hostId: HOST_A },
-      origin: "own" as const,
-      ownerHostId: HOST_A,
-      generation: 3,
-      syncedGeneration: 2,
-    };
-  }
-
-  it("withholds noteDirty on the adopted host when the landing placement has moved to another host", async () => {
-    const id = "own-withheld";
-    const logA: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountHostSession(HOST_A, logA);
-    bindLandingAdoptionHost(HOST_B);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    // Let any scheduled (debounceMs: 0) send resolve before asserting.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(logA.upserts).toEqual([]);
-  });
-
-  it("contrast: notes dirty on the adopted host when the placement still matches it", async () => {
-    const id = "own-routed";
-    const logA: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountHostSession(HOST_A, logA);
-    bindLandingAdoptionHost(HOST_A);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
-  });
-
-  it("collectAllDirtyWrites skips only the row whose edit was withheld; a row dirtied before the placement moved still syncs", () => {
-    const withheld = "own-skip-collect";
-    const preTransition = "own-pre-transition";
-    bindLandingAdoptionHost(HOST_B);
-    useLandingDraftStore.setState({
-      drafts: [
-        ownAdoptedLandingDraft(withheld),
-        ownAdoptedLandingDraft(preTransition),
-      ],
-      activeDraftId: null,
-    });
-    notifyDraftLocalEdit(withheld);
-
-    expect(
-      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
-    ).toEqual([preTransition]);
-  });
-
-  it("a withheld row stays held when the landing placement is cleared", () => {
-    const id = "own-held-placement-cleared";
-    bindLandingAdoptionHost(HOST_B);
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-    notifyDraftLocalEdit(id);
-
-    // The landing mount unmounted; a tab mirror keeps host A's session
-    // alive and its reconnect sweep must not deliver the held edit there.
-    bindLandingAdoptionHost(null);
-    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
-  });
-
-  it("a withheld row is swept again once the placement returns to its adoption host", () => {
-    const id = "own-held-then-returned";
-    bindLandingAdoptionHost(HOST_B);
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-    notifyDraftLocalEdit(id);
-    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
-
-    bindLandingAdoptionHost(HOST_A);
-    expect(
-      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
-    ).toEqual([id]);
-  });
-
-  it("contrast: collectAllDirtyWrites includes the row when the placement matches its adoption host", () => {
-    const id = "own-include-collect";
-    bindLandingAdoptionHost(HOST_A);
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    expect(
-      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
-    ).toEqual([id]);
-  });
-
-  it("bindLandingAdoptionHost re-queues a held edit once the placement returns to the row's adoption host, syncing exactly once", async () => {
-    const id = "own-requeued-on-return";
-    const logA: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountHostSession(HOST_A, logA);
-    bindLandingAdoptionHost(HOST_B);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(logA.upserts).toEqual([]);
-
-    bindLandingAdoptionHost(HOST_A);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
-  });
-
-  it("contrast: a held edit stays held when the placement moves to a different host than the row's adoption host", async () => {
-    const id = "own-still-held-other-host";
-    const logA: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountHostSession(HOST_A, logA);
-    bindLandingAdoptionHost(HOST_B);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(logA.upserts).toEqual([]);
-
-    bindLandingAdoptionHost("host-c");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(logA.upserts).toEqual([]);
-  });
-
-  it("bindLandingAdoptionHost(null) re-queues nothing and does not throw", () => {
-    const id = "own-cleared-placement-no-throw";
-    bindLandingAdoptionHost(HOST_B);
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-    notifyDraftLocalEdit(id);
-
-    expect(() => bindLandingAdoptionHost(null)).not.toThrow();
-    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
-  });
-
-  it("a hold survives a round trip through its adoption host when nothing was mounted there to flush it", () => {
-    const id = "own-hold-survives-unflushed-return";
-    bindLandingAdoptionHost(HOST_B);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    // No session is mounted for HOST_A, so the return below re-queues onto
-    // nothing and cannot flush the row clean.
-    bindLandingAdoptionHost(HOST_A);
-    bindLandingAdoptionHost(HOST_B);
-
-    // If the marker had been released on the round trip (rather than only
-    // at sync), this would wrongly stop withholding the row here.
-    expect(collectDraftMirrorDirtyWrites(HOST_A)).toEqual([]);
-  });
-
-  it("contrast: once a return flush actually syncs the row, the marker is gone and a later edit is not spuriously withheld", async () => {
-    const id = "own-marker-released-at-sync";
-    const logA: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountHostSession(HOST_A, logA);
-    bindLandingAdoptionHost(HOST_B);
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingDraft(id)],
-      activeDraftId: null,
-    });
-
-    notifyDraftLocalEdit(id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(logA.upserts).toEqual([]);
-
-    // The return flushes through the mounted session, and `rememberSynced`
-    // releases the marker once the row is clean.
-    bindLandingAdoptionHost(HOST_A);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(logA.upserts.map((write) => write.draftId)).toEqual([id]);
-
-    // A fresh edit, made directly in the store (bumping generation past
-    // syncedGeneration) while the placement still matches the adoption
-    // host, must not be withheld by a marker that should already be gone.
-    useLandingDraftStore.setState((state) => ({
-      drafts: state.drafts.map((draft) =>
-        draft.id === id
-          ? { ...draft, generation: draft.generation + 1 }
-          : draft,
-      ),
-    }));
-
-    expect(
-      collectDraftMirrorDirtyWrites(HOST_A).map((entry) => entry.write.draftId),
-    ).toEqual([id]);
-  });
-});
-
 describe("submitComposerDraft", () => {
   it("does not tombstone a draft the user re-created during finalization", async () => {
     const log: HostLog = {
@@ -533,34 +229,32 @@ describe("submitComposerDraft", () => {
     store.fenceAndDetachSubmittedDraft(CHAT_ID, draftId, HOST_ID);
     const epochAfterSubmit = readDraft().resetEpoch;
 
-    await applyIncomingDraftDocument(
-      {
-        draftId,
-        kind: "chat-composer",
-        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
-        revision: 3,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: HOST_ID,
-        origin: "own",
-        adoption: { state: "adopted", hostId: HOST_ID },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: typed("submitted"),
-          selection: { from: 1, to: 10 },
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
+    await applyIncomingDraftDocument({
+      draftId,
+      kind: "chat-composer",
+      target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
+      revision: 3,
+      lastTouchedAt: 1,
+      workspace: null,
+      supersedes: null,
+      ownerHostId: HOST_ID,
+      origin: "own",
+      adoption: { state: "adopted", hostId: HOST_ID },
+      publication: {
+        status: "unpublished",
+        lastPublishedAt: null,
+        publishedRevision: null,
+        halted: null,
       },
-      null,
-    );
+      portable: {
+        content: typed("submitted"),
+        selection: { from: 1, to: 10 },
+        runSettings: null,
+        composerMode: "chat",
+        blobHashes: [],
+        closed: false,
+      },
+    });
 
     expect(readDraft().content).not.toEqual(typed("submitted"));
     expect(readDraft().resetEpoch).toBe(epochAfterSubmit);
@@ -651,7 +345,7 @@ describe("deleteLandingDraftThroughHost", () => {
     expect(requested).toEqual([id]);
   });
 
-  it("no session mounted: a resolved drafts.delete({ deleted: false }) unresolves the receipt owner, and a later owner document routes the delete there", async () => {
+  it("no session mounted: a resolved drafts.delete({ deleted: false }) also completes the receipt - absent is as final as deleted, so a later document from another host does not route a delete there", async () => {
     const id = "direct-delete-false";
     useLandingDraftStore.setState({
       drafts: [ownAdoptedLandingRow(id, HOST_B)],
@@ -661,23 +355,23 @@ describe("deleteLandingDraftThroughHost", () => {
 
     deleteLandingDraftThroughHost(id, HOST_B, client);
 
-    // host-b never had the row (or a claim moved it away): the receipt goes
-    // back to owner-unresolved rather than completing over a row that may
-    // still exist elsewhere.
+    // Ownership never moves, so host-b answering `deleted: false` (the row
+    // is not on the host that owns it) is as final as `deleted: true`: the
+    // receipt completes rather than going back to owner-unresolved.
     await vi.waitFor(() => {
       expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
     });
     expect(landingDraftIsRetired(id)).toBe(true);
 
-    // The new owner's directory head arrives next; it supplies the missing
-    // delete destination instead of installing a visible row.
+    // A later document from another host is rejected (the id is retired)
+    // and does not reopen the completed receipt or install a visible row.
     const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await applyIncomingDraftDocument(document, null);
+    await applyIncomingDraftDocument(document);
 
     expect(
       useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
     ).toBe(false);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
   });
 
   it("no session mounted: a rejected drafts.delete leaves the receipt pending on host-b", async () => {
@@ -725,7 +419,7 @@ describe("deleteLandingDraftThroughHost", () => {
     });
   });
 
-  it("a mounted session's drafts.delete answering absent unresolves the receipt via the store's deleteDraft; a later host-c document routes the delete there", async () => {
+  it("a mounted session's drafts.delete answering absent also completes the receipt via the store's deleteDraft; a later host-c document does not route a delete there", async () => {
     const id = "route-local-delete-absent";
     const log: HostLog = {
       upserts: [],
@@ -776,70 +470,12 @@ describe("deleteLandingDraftThroughHost", () => {
     });
     expect(landingDraftIsRetired(id)).toBe(true);
 
+    // Completed, not merely unresolved: a later document from another host
+    // is rejected (the id is retired) and must not reopen the receipt.
     const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await applyIncomingDraftDocument(document, null);
+    await applyIncomingDraftDocument(document);
 
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-  });
-
-  it("a stale drafts.delete({ deleted: false }) answer after the receipt was re-armed onto a new host leaves that receipt untouched", async () => {
-    const id = "stale-answer-rearmed-false";
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingRow(id, HOST_B)],
-      activeDraftId: null,
-    });
-    // A holder, not a narrowed `let`: TS narrows the local to `null` after
-    // the assignment and then calls the invocation below uncallable.
-    const deleteAnswer: {
-      resolve: ((value: { deleted: boolean }) => void) | null;
-    } = { resolve: null };
-    const client = fakeDirectClient(
-      () =>
-        new Promise((resolve) => {
-          deleteAnswer.resolve = resolve;
-        }),
-    );
-
-    deleteLandingDraftThroughHost(id, HOST_B, client);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-
-    expect(rearmLandingDraftDelete(id, "host-c")).toBe(true);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-
-    deleteAnswer.resolve?.({ deleted: false });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-  });
-
-  it("a stale drafts.delete({ deleted: true }) answer after the receipt was re-armed onto a new host also leaves that receipt untouched", async () => {
-    const id = "stale-answer-rearmed-true";
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingRow(id, HOST_B)],
-      activeDraftId: null,
-    });
-    // A holder, not a narrowed `let`: TS narrows the local to `null` after
-    // the assignment and then calls the invocation below uncallable.
-    const deleteAnswer: {
-      resolve: ((value: { deleted: boolean }) => void) | null;
-    } = { resolve: null };
-    const client = fakeDirectClient(
-      () =>
-        new Promise((resolve) => {
-          deleteAnswer.resolve = resolve;
-        }),
-    );
-
-    deleteLandingDraftThroughHost(id, HOST_B, client);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-
-    expect(rearmLandingDraftDelete(id, "host-c")).toBe(true);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-
-    deleteAnswer.resolve?.({ deleted: true });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
+    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
   });
 
   it("client is null and no session is mounted: the row is removed locally, the receipt stays pending on host-b, and nothing throws", () => {
@@ -855,283 +491,6 @@ describe("deleteLandingDraftThroughHost", () => {
       useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
     ).toBe(false);
     expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-  });
-});
-
-describe("speculative landing draft retirement", () => {
-  const HOST_B = "host-b";
-
-  function mountAbsentAnsweringSession(hostId: string, log: HostLog) {
-    return acquireDraftMirrorSession({
-      hostId,
-      client: {
-        request: (method: string, params: unknown) => {
-          if (method === "drafts.list") {
-            return Promise.resolve({
-              drafts: log.rows,
-              tombstones: [],
-              snapshotSeq: 0,
-              scopeId: null,
-            });
-          }
-          if (method === "drafts.delete") {
-            const draftId = (params as { draftId: string }).draftId;
-            log.deletes.push(draftId);
-            return Promise.resolve({ deleted: false });
-          }
-          return Promise.reject(new Error(`unexpected ${String(method)}`));
-        },
-      } as never,
-      streamClient: fakeDraftStreamClient(),
-      timing: { debounceMs: 0, maxWaitMs: 0 },
-    });
-  }
-
-  it("a document from another owner leaves a speculative receipt untouched, and creates no row", async () => {
-    const id = "speculative-other-owner";
-    retireLandingDraftSpeculatively(id, HOST_B);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
-
-    // The claim's refusal may have been a lost response to a commit on
-    // host-b; a document from a DIFFERENT owner (host-a) says nothing about
-    // that and must not redirect - or resolve - the speculative receipt.
-    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
-    await applyIncomingDraftDocument(document, null);
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
-    expect(
-      useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
-    ).toBe(false);
-  });
-
-  it("a document from the speculated host resolves the receipt, still pending there", async () => {
-    const id = "speculative-confirmed-owner";
-    retireLandingDraftSpeculatively(id, HOST_B);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(true);
-
-    // A document from the SAME host the receipt speculated on confirms the
-    // claim did commit there.
-    const document = landingCloudDocument(id, HOST_B, "cloud body host-b");
-    await applyIncomingDraftDocument(document, null);
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
-  });
-
-  it("a speculative receipt on the claimed host is COMPLETED (not unresolved) when that host answers absent", async () => {
-    const id = "speculative-absent-completes";
-    const log: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountAbsentAnsweringSession(HOST_B, log);
-    // Let the session's own bootstrap (list + retryPendingDeletes) finish
-    // before driving the delete below, so it cannot race it.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    retireLandingDraftSpeculatively(id, HOST_B);
-
-    notifyDraftLocalDelete(id);
-
-    await vi.waitFor(() => {
-      expect(log.deletes).toEqual([id]);
-    });
-    await vi.waitFor(() => {
-      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
-    });
-    expect(landingDraftIsRetired(id)).toBe(true);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
-
-    // Completed, not merely unresolved: a later document from another host
-    // must not reopen the receipt.
-    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await applyIncomingDraftDocument(document, null);
-    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
-  });
-
-  it("contrast: a non-speculative receipt on the same absent answer stays unresolved, not completed", async () => {
-    const id = "non-speculative-absent-unresolves";
-    const log: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    mountAbsentAnsweringSession(HOST_B, log);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // A confirmed-owner receipt, unlike the speculative one above.
-    retireLandingDraft(id, HOST_B);
-    expect(isLandingDraftRetirementSpeculative(id)).toBe(false);
-
-    notifyDraftLocalDelete(id);
-
-    await vi.waitFor(() => {
-      expect(log.deletes).toEqual([id]);
-    });
-    await vi.waitFor(() => {
-      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
-    });
-    expect(landingDraftIsRetired(id)).toBe(true);
-
-    // Unresolved, not completed: a later document from another host supplies
-    // the missing delete destination instead of being ignored.
-    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await applyIncomingDraftDocument(document, null);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-  });
-
-  function ownAdoptedLandingRowForOrdering(id: string, hostId: string) {
-    return {
-      id,
-      content: typed("own body"),
-      selection: null,
-      lastTouchedAt: 0,
-      settings: null,
-      composerMode: "chat" as const,
-      workspace: emptyLandingDraftWorkspaceSnapshot(),
-      ...freshLandingMirrorState(),
-      adoption: { state: "adopted" as const, hostId },
-      origin: "own" as const,
-      ownerHostId: hostId,
-      closed: true,
-    };
-  }
-
-  it("a session echo naming a new owner retargets a delete pending on host-a while it is still in flight (host-a's deferred answer arrives after and is ignored)", async () => {
-    const id = "codex-ordering-retarget";
-    const log: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    const deleteAnswer: {
-      resolve: ((value: { deleted: boolean }) => void) | null;
-    } = { resolve: null };
-    acquireDraftMirrorSession({
-      hostId: HOST_B,
-      client: {
-        request: (method: string, params: unknown) => {
-          if (method === "drafts.list") {
-            return Promise.resolve({
-              drafts: log.rows,
-              tombstones: [],
-              snapshotSeq: 0,
-              scopeId: null,
-            });
-          }
-          if (method === "drafts.delete") {
-            const draftId = (params as { draftId: string }).draftId;
-            log.deletes.push(draftId);
-            return new Promise((resolve) => {
-              deleteAnswer.resolve = resolve;
-            });
-          }
-          return Promise.reject(new Error(`unexpected ${String(method)}`));
-        },
-      } as never,
-      streamClient: fakeDraftStreamClient(),
-      timing: { debounceMs: 0, maxWaitMs: 0 },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingRowForOrdering(id, HOST_B)],
-      activeDraftId: null,
-    });
-
-    useLandingDraftStore.getState().deleteDraft(id);
-
-    await vi.waitFor(() => {
-      expect(log.deletes).toEqual([id]);
-    });
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-
-    // A session echo naming host-c as the new owner arrives while host-b's
-    // delete is still in flight (its `drafts.delete` answer is deferred).
-    await applyIncomingDraftDocument(
-      landingCloudDocument(id, "host-c", "cloud body host-c"),
-      null,
-    );
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-
-    deleteAnswer.resolve?.({ deleted: false });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // The stale host-b answer is ignored, not unresolved: the receipt still
-    // names the retargeted host.
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-c");
-  });
-
-  it("contrast: a session echo naming the SAME host leaves the pending delete there, and its deleted:false answer then unresolves it", async () => {
-    const id = "codex-ordering-same-host";
-    const log: HostLog = {
-      upserts: [],
-      deletes: [],
-      rows: [],
-      deleteFailures: 0,
-    };
-    const deleteAnswer: {
-      resolve: ((value: { deleted: boolean }) => void) | null;
-    } = { resolve: null };
-    acquireDraftMirrorSession({
-      hostId: HOST_B,
-      client: {
-        request: (method: string, params: unknown) => {
-          if (method === "drafts.list") {
-            return Promise.resolve({
-              drafts: log.rows,
-              tombstones: [],
-              snapshotSeq: 0,
-              scopeId: null,
-            });
-          }
-          if (method === "drafts.delete") {
-            const draftId = (params as { draftId: string }).draftId;
-            log.deletes.push(draftId);
-            return new Promise((resolve) => {
-              deleteAnswer.resolve = resolve;
-            });
-          }
-          return Promise.reject(new Error(`unexpected ${String(method)}`));
-        },
-      } as never,
-      streamClient: fakeDraftStreamClient(),
-      timing: { debounceMs: 0, maxWaitMs: 0 },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    useLandingDraftStore.setState({
-      drafts: [ownAdoptedLandingRowForOrdering(id, HOST_B)],
-      activeDraftId: null,
-    });
-
-    useLandingDraftStore.getState().deleteDraft(id);
-
-    await vi.waitFor(() => {
-      expect(log.deletes).toEqual([id]);
-    });
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-
-    // A session echo naming host-b again (the same host) arrives before the
-    // deferred answer.
-    await applyIncomingDraftDocument(
-      landingCloudDocument(id, HOST_B, "cloud body host-b"),
-      null,
-    );
-    expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
-
-    deleteAnswer.resolve?.({ deleted: false });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    // host-b's own answer of `deleted: false` unresolves the (now-resolved,
-    // still same-host) receipt.
-    expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
-    expect(landingDraftIsRetired(id)).toBe(true);
   });
 });
 
@@ -1170,6 +529,7 @@ function landingCloudDocument(
     revision: 1,
     lastTouchedAt: 2,
     workspace: null,
+    supersedes: null,
     ownerHostId,
     origin: "replica",
     adoption: { state: "adopted", hostId: ownerHostId },
@@ -1190,588 +550,102 @@ function landingCloudDocument(
   };
 }
 
-/**
- * An "own" landing document, as a host session's own bootstrap/live echo
- * would apply it (`origin: "own"`) - unlike `landingCloudDocument`, whose
- * `origin: "replica"` never reserves `landingOwnerAppliedSeq`. Applying this
- * through `applyIncomingDraftDocument` is what populates that reservation
- * for the admit-fence tests below.
- */
-function landingOwnDocument(
-  draftId: string,
-  ownerHostId: string,
-  text: string,
-): DraftDocument {
-  return {
-    draftId,
-    kind: "landing",
-    target: { epicId: null, chatId: null, blockId: null },
-    revision: 1,
-    lastTouchedAt: 2,
-    workspace: null,
-    ownerHostId,
-    origin: "own",
-    adoption: { state: "adopted", hostId: ownerHostId },
-    publication: {
-      status: "current",
-      lastPublishedAt: 1,
-      publishedRevision: 1,
-      halted: null,
-    },
-    portable: {
-      content: typed(text),
-      selection: null,
-      runSettings: null,
-      composerMode: "chat",
-      blobHashes: [],
-      closed: false,
-    },
-  };
-}
-
-describe("ingestCloudDraftSummary admit fence", () => {
-  it("does not overwrite a landing row this device already owns as its own", async () => {
-    const id = "d1";
-    // Routed through an actual apply (not a raw setState) so the fence's
-    // `landingOwnerAppliedSeq` reservation is populated for this row -
-    // otherwise it defaults to seq 0 and any non-negative snapshotSeq below
-    // would wrongly read as "not stale".
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-a", "local own body"),
-      null,
+describe("session/write plane: fork carries supersedes", () => {
+  it("a forked landing row's first collected write names its ancestor; the next write after landingDraftRememberSynced carries none", () => {
+    const sourceId = useLandingDraftStore.getState().createDraft(null);
+    const nextId = "session-write-plane-fork";
+    expect(useLandingDraftStore.getState().forkDraft(sourceId, nextId)).toBe(
+      true,
     );
+    adoptLandingDraft(nextId, HOST_ID);
 
-    const document = landingCloudDocument(id, "host-b", "cloud body");
-    await ingestCloudDraftSummary({
-      hostId: "host-a",
-      summary: landingCloudSummary(document),
-      document,
-      // Predates the own-apply above: the fence's stale check rejects it.
-      snapshotSeq: 0,
-    });
+    const firstWrite = collectDraftMirrorDirtyWrites(HOST_ID).find(
+      (entry) => entry.write.draftId === nextId,
+    );
+    expect(firstWrite?.write.supersedes).toBe(sourceId);
 
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("own");
-    expect(row?.ownerHostId).toBe("host-a");
-    expect(row?.content).toEqual(typed("local own body"));
-  });
-
-  it("applies the incoming document when no local landing row exists yet", async () => {
-    const id = "d2";
+    const generationAfterFork =
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === nextId)?.generation ?? 0;
+    landingDraftRememberSynced(nextId, 1, generationAfterFork);
     expect(
-      useLandingDraftStore.getState().drafts.find((draft) => draft.id === id),
-    ).toBeUndefined();
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === nextId)?.supersedes,
+    ).toBeNull();
 
-    const document = landingCloudDocument(id, "host-b", "cloud body");
-    await ingestCloudDraftSummary({
-      hostId: "host-a",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq: 0,
-    });
-
-    const row = useLandingDraftStore
+    // A fresh edit after the ACK is dirty again but owes the host nothing
+    // about an ancestor - the pointer was one-shot and is already spent.
+    useLandingDraftStore
       .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("replica");
-    expect(row?.content).toEqual(typed("cloud body"));
+      .setDraftContent(nextId, typed("edited after sync"), null);
+    const secondWrite = collectDraftMirrorDirtyWrites(HOST_ID).find(
+      (entry) => entry.write.draftId === nextId,
+    );
+    expect(secondWrite?.write.supersedes).toBeNull();
   });
 
-  it("applies the incoming document when the local landing row is already a replica", async () => {
-    const id = "d3";
+  it("routeLocalDelete retracts a foreign landing row through the placement host's client instead of calling drafts.delete", () => {
+    const id = "foreign-delete-retract";
+    const retracts: string[] = [];
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    acquireDraftMirrorSession({
+      hostId: "host-placement",
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: log.rows,
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.retract") {
+            retracts.push((params as { draftId: string }).draftId);
+            return Promise.resolve({ retracted: true });
+          }
+          if (method === "drafts.delete") {
+            log.deletes.push((params as { draftId: string }).draftId);
+            return Promise.resolve({ deleted: true });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+    bindLandingAdoptionHost("host-placement");
+
     useLandingDraftStore.setState({
       drafts: [
         {
           id,
-          content: typed("stale replica body"),
+          content: typed("replica body"),
           selection: null,
           lastTouchedAt: 0,
           settings: null,
-          composerMode: "chat",
+          composerMode: "chat" as const,
           workspace: emptyLandingDraftWorkspaceSnapshot(),
           ...freshLandingMirrorState(),
-          adoption: { state: "adopted", hostId: "host-b" },
-          origin: "replica",
-          ownerHostId: "host-b",
+          adoption: { state: "adopted" as const, hostId: "host-owner" },
+          origin: "replica" as const,
+          ownerHostId: "host-owner",
         },
       ],
       activeDraftId: null,
     });
 
-    const document = landingCloudDocument(id, "host-b", "cloud body");
-    await ingestCloudDraftSummary({
-      hostId: "host-a",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq: 0,
-    });
+    notifyDraftLocalDelete(id);
 
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("replica");
-    expect(row?.content).toEqual(typed("cloud body"));
-  });
-
-  it("applies an incoming document owned by a different host than the ingesting host, even onto a local own row", async () => {
-    // Scoped fence: the local row is "own" adopted on host-a, but the
-    // ingesting host is host-b (the placement auto-followed there). host-a's
-    // own document is exactly what this directory legitimately supplies a
-    // newer head for, so it is applied even though the row is "own" locally.
-    const id = "d4";
-    useLandingDraftStore.setState({
-      drafts: [
-        {
-          id,
-          content: typed("local own body on host-a"),
-          selection: null,
-          lastTouchedAt: 0,
-          settings: null,
-          composerMode: "chat",
-          workspace: emptyLandingDraftWorkspaceSnapshot(),
-          ...freshLandingMirrorState(),
-          adoption: { state: "adopted", hostId: "host-a" },
-          origin: "own",
-          ownerHostId: "host-a",
-        },
-      ],
-      activeDraftId: null,
-    });
-
-    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq: 0,
-    });
-
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.content).toEqual(typed("cloud body host-a"));
-  });
-
-  it("does not overwrite a local own row when the ingesting host matches the row's owner host", async () => {
-    // Contrast: same local own row shape, but the ingesting host IS the
-    // row's owner host (host-a). The fence still blocks the apply, exactly
-    // as the first admit-fence test above.
-    const id = "d5";
-    // Routed through an actual apply so the fence's `landingOwnerAppliedSeq`
-    // reservation is populated - see the "d1" test above for why a raw
-    // setState row would not exercise the stale-snapshot rejection.
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-b", "local own body on host-b"),
-      null,
-    );
-
-    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(document),
-      document,
-      // Predates the own-apply above: the fence's stale check rejects it.
-      snapshotSeq: 0,
-    });
-
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.content).toEqual(typed("local own body on host-b"));
-  });
-
-  it("rejects an ingest whose snapshot predates the apply that made this device own the row for the ingesting host", async () => {
-    const id = "fence-stale-snapshot";
-    // host-b becomes owner of this row via an apply (a host session's own
-    // echo), reserving `landingOwnerAppliedSeq` for it.
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-b", "host-b own body"),
-      null,
-    );
-
-    // A summary owned by a different host (host-a), but the snapshot that
-    // listed it (0) was dispatched BEFORE the own-apply above: stale, so the
-    // row stays own/host-b.
-    const document = landingCloudDocument(id, "host-a", "cloud body host-a");
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq: 0,
-    });
-
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("own");
-    expect(row?.ownerHostId).toBe("host-b");
-    expect(row?.content).toEqual(typed("host-b own body"));
-  });
-
-  it("admits an ingest whose snapshot was dispatched after the apply that made this device own the row, adopting the new owner", async () => {
-    const id = "fence-newer-snapshot";
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-b", "host-b own body"),
-      null,
-    );
-    // A snapshot dispatched NOW, after the own-apply above.
-    const snapshotSeq = cloudDraftIngestSeq();
-
-    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq,
-    });
-
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.ownerHostId).toBe("host-c");
-    expect(row?.origin).toBe("replica");
-    expect(row?.content).toEqual(typed("cloud body host-c"));
-  });
-
-  it("admits a newer snapshot the same way over a dirty own row: local content survives, but the row adopts the new owner", async () => {
-    const id = "fence-newer-snapshot-dirty";
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-b", "host-b own body"),
-      null,
-    );
-    // Dirty the row locally (generation past syncedGeneration) before the
-    // newer-owner head arrives.
-    useLandingDraftStore.setState((state) => ({
-      drafts: state.drafts.map((draft) =>
-        draft.id === id
-          ? {
-              ...draft,
-              content: typed("locally edited body"),
-              generation: draft.generation + 1,
-            }
-          : draft,
-      ),
-    }));
-    const snapshotSeq = cloudDraftIngestSeq();
-
-    const document = landingCloudDocument(id, "host-c", "cloud body host-c");
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq,
-    });
-
-    const row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.ownerHostId).toBe("host-c");
-    // Dirty rows adopt ownership without losing the uncommitted local edit.
-    expect(row?.content).toEqual(typed("locally edited body"));
-  });
-
-  it("does not retarget a pending delete when the ingest's snapshot predates the apply that made this device own the row for the retired id", async () => {
-    const id = "fence-stale-snapshot-retirement";
-    // host-a becomes owner of this row via an apply (a host session's own
-    // echo), reserving `landingOwnerAppliedSeq` for it.
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-a", "host-a own body"),
-      null,
-    );
-    useLandingDraftStore.getState().deleteDraft(id);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
-
-    // A summary owned by a different host (host-b), but the snapshot that
-    // listed it (0) was dispatched BEFORE the own-apply above: stale, so the
-    // receipt must not be pulled away from host-a.
-    const document = landingCloudDocument(id, "host-b", "cloud body host-b");
-    await ingestCloudDraftSummary({
-      hostId: "host-c",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq: 0,
-    });
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
-  });
-
-  it("retargets the pending delete when the ingest's snapshot postdates the apply that made this device own the row for the retired id", async () => {
-    const id = "fence-newer-snapshot-retirement";
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-a", "host-a own body"),
-      null,
-    );
-    useLandingDraftStore.getState().deleteDraft(id);
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-a");
-
-    // A snapshot dispatched NOW, after the own-apply above.
-    const snapshotSeq = cloudDraftIngestSeq();
-    const document = landingCloudDocument(id, "host-b", "cloud body host-b");
-    await ingestCloudDraftSummary({
-      hostId: "host-c",
-      summary: landingCloudSummary(document),
-      document,
-      snapshotSeq,
-    });
-
-    expect(pendingLandingDraftDeleteHostId(id)).toBe("host-b");
-  });
-
-  it("bindClaimedDraftOwnership migrates a replica of another host to own on the claiming host, fencing a pre-claim snapshot but admitting a newer one", async () => {
-    const id = "fence-claim-migrate";
-    const initialDocument = landingCloudDocument(id, "host-a", "replica body");
-    await ingestCloudDraftSummary({
-      hostId: "host-x",
-      summary: landingCloudSummary(initialDocument),
-      document: initialDocument,
-      snapshotSeq: 0,
-    });
-    let row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("replica");
-    expect(row?.ownerHostId).toBe("host-a");
-
-    bindClaimedDraftOwnership(
-      landingOwnDocument(id, "host-b", "claimed body"),
-      "host-b",
-    );
-
-    row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("own");
-    expect(row?.ownerHostId).toBe("host-b");
-
-    // A pre-claim snapshot (dispatched before the claim above) still names
-    // host-a as owner: stale, so the row stays own/host-b.
-    const preClaimDocument = landingCloudDocument(
-      id,
-      "host-a",
-      "pre-claim body",
-    );
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(preClaimDocument),
-      document: preClaimDocument,
-      snapshotSeq: 0,
-    });
-    row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("own");
-    expect(row?.ownerHostId).toBe("host-b");
-
-    // Contrast: a snapshot dispatched after the claim is admitted, adopting
-    // the new (older) owner's head.
-    const snapshotSeq = cloudDraftIngestSeq();
-    const postClaimDocument = landingCloudDocument(
-      id,
-      "host-a",
-      "post-claim body",
-    );
-    await ingestCloudDraftSummary({
-      hostId: "host-b",
-      summary: landingCloudSummary(postClaimDocument),
-      document: postClaimDocument,
-      snapshotSeq,
-    });
-    row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("replica");
-    expect(row?.ownerHostId).toBe("host-a");
-    expect(row?.content).toEqual(typed("post-claim body"));
-  });
-
-  it("cross-host: a third host's ingest is fenced by an own row's apply seq regardless of which host ingests it, and admitted once the snapshot postdates it", async () => {
-    const id = "fence-cross-host";
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-b", "host-b own body"),
-      null,
-    );
-
-    // host-c ingests a document owned by host-a whose snapshot predates the
-    // host-b apply above: stale, so the row stays own/host-b regardless of
-    // the ingesting host being neither the row's owner nor the document's
-    // owner.
-    const preApplyDocument = landingCloudDocument(
-      id,
-      "host-a",
-      "pre-apply body host-a",
-    );
-    await ingestCloudDraftSummary({
-      hostId: "host-c",
-      summary: landingCloudSummary(preApplyDocument),
-      document: preApplyDocument,
-      snapshotSeq: 0,
-    });
-    let row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("own");
-    expect(row?.ownerHostId).toBe("host-b");
-    expect(row?.content).toEqual(typed("host-b own body"));
-
-    // Contrast: a snapshot dispatched after the host-b apply is admitted,
-    // even though the ingesting host (host-c) is neither the row's prior
-    // owner nor the document's new owner.
-    const snapshotSeq = cloudDraftIngestSeq();
-    const postApplyDocument = landingCloudDocument(
-      id,
-      "host-a",
-      "post-apply body host-a",
-    );
-    await ingestCloudDraftSummary({
-      hostId: "host-c",
-      summary: landingCloudSummary(postApplyDocument),
-      document: postApplyDocument,
-      snapshotSeq,
-    });
-    row = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(row?.origin).toBe("replica");
-    expect(row?.ownerHostId).toBe("host-a");
-    expect(row?.content).toEqual(typed("post-apply body host-a"));
-  });
-});
-
-describe("draftOwnershipSeq", () => {
-  it("reads 0 for a draft id that has never been applied", () => {
-    expect(draftOwnershipSeq("never-applied")).toBe(0);
-  });
-
-  it("increases after applyIncomingDraftDocument applies a landing own document", async () => {
-    const id = "seq-landing-apply";
-    expect(draftOwnershipSeq(id)).toBe(0);
-
-    await applyIncomingDraftDocument(
-      landingOwnDocument(id, "host-a", "local own body"),
-      null,
-    );
-
-    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
-  });
-
-  it("increases after bindClaimedDraftOwnership binds a landing document", () => {
-    const id = "seq-landing-bind";
-    expect(draftOwnershipSeq(id)).toBe(0);
-
-    bindClaimedDraftOwnership(
-      landingOwnDocument(id, "host-b", "claimed body"),
-      "host-b",
-    );
-
-    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
-  });
-
-  it("increases after applyIncomingDraftDocument applies a chat-composer document", async () => {
-    const id = "seq-composer-apply";
-    expect(draftOwnershipSeq(id)).toBe(0);
-
-    await applyIncomingDraftDocument(
-      {
-        draftId: id,
-        kind: "chat-composer",
-        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
-        revision: 1,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: HOST_ID,
-        origin: "own",
-        adoption: { state: "adopted", hostId: HOST_ID },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: typed("composer body"),
-          selection: null,
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-      null,
-    );
-
-    expect(draftOwnershipSeq(id)).toBeGreaterThan(0);
-  });
-
-  it("leaves draftOwnershipSeq and row content unchanged for an older document from the same owner", async () => {
-    const id = "seq-landing-stale";
-    const first = {
-      ...landingOwnDocument(id, "host-a", "first body"),
-      revision: 2,
-    };
-    await applyIncomingDraftDocument(first, null);
-    const seqAfterFirst = draftOwnershipSeq(id);
-    expect(seqAfterFirst).toBeGreaterThan(0);
-    const rowAfterFirst = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(rowAfterFirst?.content).toEqual(typed("first body"));
-
-    // Older than the row's hostRevision (2), but still `revision > 0` - the
-    // stale-echo case `applyLandingHostDocument` now rejects.
-    const older = {
-      ...landingOwnDocument(id, "host-a", "stale body"),
-      revision: 1,
-    };
-    await applyIncomingDraftDocument(older, null);
-
-    expect(draftOwnershipSeq(id)).toBe(seqAfterFirst);
-    const rowAfterStale = useLandingDraftStore
-      .getState()
-      .drafts.find((draft) => draft.id === id);
-    expect(rowAfterStale?.content).toEqual(typed("first body"));
-  });
-
-  it("leaves draftOwnershipSeq unchanged for a chat-composer document fenced by a pending submitted delete", async () => {
-    const store = useComposerDraftStore.getState();
-    store.bindTarget(CHAT_ID, EPIC_ID);
-    store.setSnapshot(CHAT_ID, typed("submitted"), { from: 1, to: 10 });
-    const draftId = readDraftId();
-    store.clearDraft(CHAT_ID);
-    store.fenceAndDetachSubmittedDraft(CHAT_ID, draftId, HOST_ID);
-    const seqBefore = draftOwnershipSeq(draftId);
-
-    await applyIncomingDraftDocument(
-      {
-        draftId,
-        kind: "chat-composer",
-        target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
-        revision: 3,
-        lastTouchedAt: 1,
-        workspace: null,
-        ownerHostId: HOST_ID,
-        origin: "own",
-        adoption: { state: "adopted", hostId: HOST_ID },
-        publication: {
-          status: "unpublished",
-          lastPublishedAt: null,
-          publishedRevision: null,
-          halted: null,
-        },
-        portable: {
-          content: typed("submitted"),
-          selection: { from: 1, to: 10 },
-          runSettings: null,
-          composerMode: "chat",
-          blobHashes: [],
-          closed: false,
-        },
-      },
-      null,
-    );
-
-    expect(draftOwnershipSeq(draftId)).toBe(seqBefore);
+    expect(retracts).toEqual([id]);
+    expect(log.deletes).toEqual([]);
   });
 });
 
@@ -1809,7 +683,6 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
-      snapshotSeq: 0,
     });
     const seqAfterIngest = cloudDraftIngestSeq();
     expect(seqAfterIngest).toBeGreaterThan(0);
@@ -1957,7 +830,6 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
-      snapshotSeq: 0,
     });
 
     expect(cloudDraftIngestSeq()).toBe(1);
@@ -1989,7 +861,6 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       hostId: "host-a",
       summary: landingCloudSummary(document),
       document,
-      snapshotSeq: 0,
     });
 
     // The sequence is reserved synchronously, before the apply's await
@@ -2017,6 +888,7 @@ describe("sweepAbsentCloudDraftMirrors", () => {
       revision: 1,
       lastTouchedAt: 2,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-b",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-b" },

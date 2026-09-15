@@ -15,8 +15,7 @@ export interface CloudDraftRowRef {
  * here because that triple identifies a row to the SERVER, which resolves one
  * row per identity, while the ingest tracks MANY hosts' rows at once: two
  * hosts' rows arriving under one triple would otherwise collapse into one
- * guard entry, and a claim - which rebinds the owner while PRESERVING the
- * head - would be skipped as already ingested.
+ * guard entry.
  */
 export function cloudDraftIdentityKey(row: CloudDraftRowRef): string {
   const { identity } = row;

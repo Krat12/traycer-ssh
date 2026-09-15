@@ -2,7 +2,6 @@ import "../../../../../__tests__/test-browser-apis";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JsonContent } from "@traycer/protocol/common/registry";
-import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 
 import { useChatComposerSubmit } from "@/components/chat/composer/use-chat-composer-submit";
 import type { ChatComposerSubmitInput } from "@/components/chat/composer/chat-composer";
@@ -156,8 +155,6 @@ function mountSubmit(args: {
   readonly editor: ComposerPromptEditorHandle;
   readonly imagesUnsupported: boolean;
   readonly onSubmitMessage: (input: ChatComposerSubmitInput) => boolean;
-  readonly draftUnowned?: boolean;
-  readonly settleDraftOwnership?: () => Promise<SettledOwnership>;
 }) {
   const toolbarStore = createComposerToolbarStore({
     seedKey: "browser-annotation-submit",
@@ -191,71 +188,9 @@ function mountSubmit(args: {
       workspaceBlocked: false,
       imagesUnsupported: args.imagesUnsupported,
       attachmentPreparationPending: false,
-      draftUnowned: args.draftUnowned ?? false,
-      settleDraftOwnership:
-        args.settleDraftOwnership ??
-        (() =>
-          Promise.resolve({ hostId: "host-test", abandon: () => undefined })),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),
-  );
-}
-
-function mountSubmitWithOwnershipProps(args: {
-  readonly taskId: string;
-  readonly editor: ComposerPromptEditorHandle;
-  readonly onSubmitMessage: (input: ChatComposerSubmitInput) => boolean;
-}) {
-  const toolbarStore = createComposerToolbarStore({
-    seedKey: "browser-annotation-submit-reentry",
-    values: {
-      permission: "supervised",
-      selection: {
-        harnessId: "codex",
-        modelSlug: "gpt-5",
-        profileId: null,
-      },
-      reasoning: "medium",
-      serviceTier: "auto",
-    },
-    onSettingsChange: null,
-    tuiOnly: false,
-    hostId: null,
-  });
-  const pickerStore = createComposerPickerStore();
-  return renderHook(
-    (props: {
-      readonly draftUnowned: boolean;
-      readonly settleDraftOwnership: () => Promise<SettledOwnership>;
-    }) =>
-      useChatComposerSubmit({
-        taskId: args.taskId,
-        editorRef: { current: args.editor },
-        pickerStore,
-        toolbarStore,
-        activeTurnStatus: null,
-        steerCapable: false,
-        steerEnabled: true,
-        steerProtocolSupported: true,
-        getActiveTurnForSteer: () => null,
-        hasPendingApprovals: false,
-        sendDisabled: false,
-        workspaceBlocked: false,
-        imagesUnsupported: false,
-        attachmentPreparationPending: false,
-        draftUnowned: props.draftUnowned,
-        settleDraftOwnership: props.settleDraftOwnership,
-        onSubmitMessage: args.onSubmitMessage,
-        onSideChat: null,
-      }),
-    {
-      initialProps: {
-        draftUnowned: false,
-        settleDraftOwnership: () =>
-          Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
-      },
-    },
   );
 }
 
@@ -598,173 +533,5 @@ describe("browser annotation image gating", () => {
       await Promise.resolve();
     });
     expect(submit).not.toHaveBeenCalled();
-  });
-});
-
-describe("useChatComposerSubmit ownership settle + annotation prep", () => {
-  it("parks abandon while annotation prep is pending and never calls it once the send finalizes", async () => {
-    const taskId = "chat-ann-ownership-send";
-    useComposerDraftStore
-      .getState()
-      .addBrowserAnnotation(taskId, annotationRecord(null));
-    imageStoreMocks.sessionImageBytes.mockReturnValue(null);
-    let release: (() => void) | null = null;
-    imageStoreMocks.getImageBytes.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          release = () => resolve(CROP_BYTES);
-        }),
-    );
-    const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(() =>
-      Promise.resolve({ hostId: "host-test", abandon }),
-    );
-    const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
-    const { result } = mountSubmit({
-      taskId,
-      editor: fakeEditor(EMPTY_DOC),
-      imagesUnsupported: false,
-      onSubmitMessage: submit,
-      draftUnowned: true,
-      settleDraftOwnership,
-    });
-
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-
-    // Flush the settle: the re-entered `submitDraft` starts annotation-image
-    // preparation and returns before the send finalizes, so `abandon` must be
-    // PARKED rather than called here.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    expect(abandon).not.toHaveBeenCalled();
-
-    // Resolve the image read so the send finalizes.
-    await act(async () => {
-      release?.();
-      await Promise.resolve();
-    });
-    await waitFor(() => {
-      expect(submit).toHaveBeenCalledTimes(1);
-    });
-    // The send went out, so the parked `abandon` must never be called.
-    expect(abandon).not.toHaveBeenCalled();
-  });
-
-  it("calls the parked abandon exactly once when the annotation prep settles with nothing sent", async () => {
-    const taskId = "chat-ann-ownership-abandon";
-    useComposerDraftStore
-      .getState()
-      .addBrowserAnnotation(taskId, annotationRecord(null));
-    imageStoreMocks.sessionImageBytes.mockReturnValue(null);
-    let release: (() => void) | null = null;
-    imageStoreMocks.getImageBytes.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          release = () => resolve(undefined);
-        }),
-    );
-    const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(() =>
-      Promise.resolve({ hostId: "host-test", abandon }),
-    );
-    const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
-    const { result } = mountSubmit({
-      taskId,
-      editor: fakeEditor(EMPTY_DOC),
-      imagesUnsupported: false,
-      onSubmitMessage: submit,
-      draftUnowned: true,
-      settleDraftOwnership,
-    });
-
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(abandon).not.toHaveBeenCalled();
-
-    // The image bytes come back missing, so nothing is sent - the parked
-    // `abandon` must run exactly once from the preparation's `finally`.
-    await act(async () => {
-      release?.();
-      await Promise.resolve();
-    });
-    await waitFor(() => {
-      expect(abandon).toHaveBeenCalledTimes(1);
-    });
-    expect(submit).not.toHaveBeenCalled();
-  });
-
-  it("re-enters the latest submitDraft instead of sending on the old closure when ownership is lost during annotation prep", async () => {
-    const taskId = "chat-ann-ownership-reentry";
-    useComposerDraftStore
-      .getState()
-      .addBrowserAnnotation(taskId, annotationRecord(null));
-    imageStoreMocks.sessionImageBytes.mockReturnValue(null);
-    let releaseFirst: (() => void) | null = null;
-    imageStoreMocks.getImageBytes.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseFirst = () => resolve(CROP_BYTES);
-        }),
-    );
-    imageStoreMocks.getImageBytes.mockResolvedValue(CROP_BYTES);
-
-    const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(() =>
-      Promise.resolve({ hostId: "host-test", abandon }),
-    );
-    const submit = vi.fn((_input: ChatComposerSubmitInput) => true);
-    const { result, rerender } = mountSubmitWithOwnershipProps({
-      taskId,
-      editor: fakeEditor(EMPTY_DOC),
-      onSubmitMessage: submit,
-    });
-
-    // Mounted with draftUnowned: false - the submit starts annotation prep
-    // directly, with no settle.
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-    expect(settleDraftOwnership).not.toHaveBeenCalled();
-
-    // The draft flips to unowned while the first preparation's crop read is
-    // still in flight.
-    act(() => {
-      rerender({ draftUnowned: true, settleDraftOwnership });
-    });
-
-    // Resolve the first preparation: the hook must not send from this old
-    // closure. It re-enters the latest `submitDraft`, which settles first.
-    await act(async () => {
-      releaseFirst?.();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await waitFor(() => {
-      expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    });
-
-    // Once the settle resolves, the send proceeds: a second preparation run
-    // starts and completes, and only then does the message go out.
-    await waitFor(() => {
-      expect(submit).toHaveBeenCalledTimes(1);
-    });
-    expect(imageStoreMocks.getImageBytes).toHaveBeenCalledTimes(2);
-    // The send succeeded on the re-settled attempt, so the (second) settle's
-    // abandon must never fire.
-    expect(abandon).not.toHaveBeenCalled();
-    // Settle was called exactly once - the re-entry gated on the flip
-    // instead of settling twice or sending on the stale closure.
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
   });
 });

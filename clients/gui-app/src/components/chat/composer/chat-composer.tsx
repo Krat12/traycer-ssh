@@ -556,10 +556,10 @@ function ChatComposerImpl(props: ChatComposerProps) {
   const authority = useChatComposerDraftAuthority({
     chatId: taskId,
     tabHostId,
-    client: hostClient,
   });
-  // The first edit of a draft another host owns claims it for this host
-  // underneath; the editor is never held for it.
+  // The first edit of a draft this host does not own forks it underneath
+  // (a fresh id, same content) before the keystroke lands; the editor is
+  // never held for it.
   const handleDocumentChangeNotingEdit = useCallback(
     (content: JsonContent, selection: { from: number; to: number }): void => {
       authority.noteEdit();
@@ -585,8 +585,6 @@ function ChatComposerImpl(props: ChatComposerProps) {
       workspaceBlocked,
       imagesUnsupported,
       attachmentPreparationPending: pastePending,
-      draftUnowned: authority.unowned,
-      settleDraftOwnership: authority.settleOwnership,
       onSubmitMessage,
       onSideChat,
     });

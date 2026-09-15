@@ -5,10 +5,7 @@ import type { DraftDocument, DraftPublication } from "@traycer/protocol/host";
 import { isJsonContent } from "@/lib/editor/prosemirror-json";
 import { basePersistOptions, persistKey, STORE_KEYS } from "@/lib/persist";
 import { legacyComposerDraftId, mintDraftId } from "@/lib/drafts/draft-ids";
-import {
-  notifyDraftLocalDelete,
-  notifyDraftLocalEdit,
-} from "@/lib/drafts/draft-local-edits";
+import { notifyDraftLocalEdit } from "@/lib/drafts/draft-local-edits";
 import {
   collectDraftAnnotationImageHashes,
   mergeBrowserAnnotationRecords,
@@ -71,6 +68,13 @@ export interface DraftState {
   /** Host that currently owns the row; null until a host document applies. */
   readonly ownerHostId: string | null;
   readonly origin: "own" | "replica" | null;
+  /**
+   * Ancestor draft id this row was re-keyed from (`detachDraftIdentity`),
+   * carried until the fresh id's first host write is acknowledged. Sent
+   * once as `DraftWrite.supersedes`; the host retracts the ancestor's cloud
+   * row. Cleared on that ACK so no later write repeats it.
+   */
+  readonly supersedes: string | null;
   readonly publication: DraftPublication | null;
 }
 
@@ -83,22 +87,6 @@ interface ComposerDraftStore {
   readonly pendingSubmittedDraftDeletes: Partial<
     Record<string, PendingSubmittedDraftDelete>
   >;
-  /**
-   * Ids retired here - by `detachDraftIdentity` (a repair) or by
-   * `fenceAndDetachSubmittedDraft` (a submit). Their pending delete is not
-   * serialized with a concurrent claim of the same id from another view:
-   * the host can answer `absent` first (which completes the pending entry),
-   * or the delete can complete before the other claim's response arrives,
-   * and that claim then commits. A host document for a retired id is never
-   * applied (a submitted id would resurrect the sent text as a clean draft);
-   * it re-arms the delete on the document's owner instead. Persisted, so a
-   * reload between the answer and the late document keeps the fence. Never
-   * pruned: even a `deleted` answer does not make an older document
-   * impossible - another view's claim apply admitted before the delete can
-   * still resume after it (its blob reads run outside the session's
-   * tombstone ordering) and would restore the submitted text.
-   */
-  readonly retiredDraftIds: Partial<Record<string, true>>;
   /**
    * Records a real document mutation - callers must only invoke this from the
    * editor boundary's document-change signal (never a selection-only echo),
@@ -156,22 +144,15 @@ interface ComposerDraftStore {
    */
   readonly clearDraft: (chatId: string) => void;
   /**
-   * The repair for a chat draft this host could not claim back (its row was
-   * demoted to a replica): re-mint the draft id and drop ownership while
-   * KEEPING the content, marked dirty and routed, so the next flush upserts
-   * it under the fresh id as this host's own row. Nothing is owed to the
-   * host for the old id - it still holds that row as a replica.
+   * The fork rule for a chat draft another host owns (its row here is a
+   * replica): re-mint the draft id and drop ownership while KEEPING the
+   * content, with `supersedes` naming the old id, marked dirty and routed,
+   * so the next flush upserts it under the fresh id as this host's own row.
+   * Nothing is deleted from here: the host that takes the upsert retracts
+   * the ancestor's cloud row, and the ancestor's owner tombstones (or
+   * re-mints) its local row from there.
    */
-  /**
-   * Re-key a chat draft this host could not claim: the content stays, a
-   * fresh id is minted, and the OLD id is retired through `hostId` (the
-   * host that would own a claim of it) exactly like a submitted id - a
-   * pending delete plus a routed tombstone. Another mounted view's claim of
-   * the old id can still succeed after this detach; its document is then
-   * refused by the pending-delete guard and the row it left live on the
-   * host is tombstoned, instead of resurfacing at a later bootstrap.
-   */
-  readonly detachDraftIdentity: (chatId: string, hostId: string) => void;
+  readonly detachDraftIdentity: (chatId: string) => void;
   /**
    * Retire the submitted draft's host identity. `clearDraft` empties the
    * document but KEEPS `draftId`, so a keystroke landing while the submit
@@ -187,15 +168,7 @@ interface ComposerDraftStore {
     draftId: string,
     hostId: string,
   ) => void;
-  /**
-   * A host answered the pending delete for `draftId`. `hostId` null is a
-   * host tombstone (authoritative); otherwise only the host the receipt
-   * currently names completes it. The retirement fence is kept.
-   */
-  readonly completeSubmittedDraftDelete: (
-    draftId: string,
-    hostId: string | null,
-  ) => void;
+  readonly completeSubmittedDraftDelete: (draftId: string) => void;
   readonly bindTarget: (chatId: string, epicId: string) => void;
 }
 const EMPTY_COMPOSER_CONTENT: JsonContent = {
@@ -203,10 +176,6 @@ const EMPTY_COMPOSER_CONTENT: JsonContent = {
   content: [{ type: "paragraph" }],
 };
 const EMPTY_COMPOSER_SELECTION: DraftSelection = { from: 1, to: 1 };
-
-export function resetComposerDetachedDraftIdsForTests(): void {
-  useComposerDraftStore.setState({ retiredDraftIds: {} });
-}
 
 export const EMPTY_COMPOSER_DRAFT: DraftState = {
   content: EMPTY_COMPOSER_CONTENT,
@@ -222,6 +191,7 @@ export const EMPTY_COMPOSER_DRAFT: DraftState = {
   syncedGeneration: 0,
   ownerHostId: null,
   origin: null,
+  supersedes: null,
   publication: null,
 };
 
@@ -257,7 +227,6 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
     (set, get) => ({
       drafts: {},
       pendingSubmittedDraftDeletes: {},
-      retiredDraftIds: {},
       setSnapshot: (chatId, content, selection) => {
         const draftId = touchLocalComposerDraft(chatId, {
           content,
@@ -276,7 +245,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           return;
         }
         // A caret move on a row this host does not own stays local: it is
-        // not an edit, must not claim, and must not queue an upsert through
+        // not an edit, must not fork, and must not queue an upsert through
         // the stale identity.
         if (current.origin === "replica") {
           set((state) => ({
@@ -381,7 +350,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         );
         scheduleLandingImageReconcile();
       },
-      detachDraftIdentity: (chatId, hostId) => {
+      detachDraftIdentity: (chatId) => {
         // The replacement id is minted here, not on the next edit: the dirty
         // sweep skips a row with no id and the edit listener routes by id, so
         // a detach that left `draftId` null would keep the content local
@@ -392,11 +361,6 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
         set((state) => {
           const current = ensureDraft(state.drafts, chatId);
           return {
-            retiredDraftIds: { ...state.retiredDraftIds, [previousId]: true },
-            pendingSubmittedDraftDeletes: {
-              ...state.pendingSubmittedDraftDeletes,
-              [previousId]: { hostId },
-            },
             drafts: {
               ...state.drafts,
               [chatId]: {
@@ -405,15 +369,13 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
                 hostRevision: 0,
                 ownerHostId: null,
                 origin: null,
+                supersedes: previousId,
                 publication: null,
                 generation: current.generation + 1,
               },
             },
           };
         });
-        // The old id is retired through `hostId`: routed now, and retried
-        // by that host's session on connect while the receipt is pending.
-        notifyDraftLocalDelete(previousId);
         notifyDraftLocalEdit(draftId);
       },
       fenceAndDetachSubmittedDraft: (chatId, draftId, hostId) => {
@@ -421,7 +383,6 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           const current = ensureDraft(state.drafts, chatId);
           if (current.draftId !== draftId) return state;
           return {
-            retiredDraftIds: { ...state.retiredDraftIds, [draftId]: true },
             pendingSubmittedDraftDeletes: {
               ...state.pendingSubmittedDraftDeletes,
               [draftId]: { hostId },
@@ -441,16 +402,11 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           };
         });
       },
-      completeSubmittedDraftDelete: (draftId, hostId) => {
+      completeSubmittedDraftDelete: (draftId) => {
         set((state) => {
-          const pending = state.pendingSubmittedDraftDeletes[draftId];
-          if (pending === undefined) return state;
-          // Only the host the receipt currently names completes it: a late
-          // answer from a host the delete was since retargeted away from
-          // says nothing about the row where it lives now. A host
-          // tombstone (`hostId` null) is authoritative. The retirement
-          // fence (`retiredDraftIds`) stays either way.
-          if (hostId !== null && pending.hostId !== hostId) return state;
+          if (state.pendingSubmittedDraftDeletes[draftId] === undefined) {
+            return state;
+          }
           const pendingSubmittedDraftDeletes = {
             ...state.pendingSubmittedDraftDeletes,
           };
@@ -517,6 +473,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             syncedGeneration: 0,
             ownerHostId: normalizedNullableId(value.ownerHostId),
             origin: normalizedOrigin(value.origin),
+            supersedes: normalizedNullableId(value.supersedes),
             publication: null,
           };
         }
@@ -533,18 +490,7 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
             pendingSubmittedDraftDeletes[draftId] = { hostId };
           }
         }
-        const retiredDraftIds: Partial<Record<string, true>> = {};
-        if (isRecord(persistedState.retiredDraftIds)) {
-          for (const draftId of Object.keys(persistedState.retiredDraftIds)) {
-            if (draftId.length > 0) retiredDraftIds[draftId] = true;
-          }
-        }
-        return {
-          ...currentState,
-          drafts,
-          pendingSubmittedDraftDeletes,
-          retiredDraftIds,
-        };
+        return { ...currentState, drafts, pendingSubmittedDraftDeletes };
       },
     },
   ),
@@ -674,84 +620,37 @@ export function composerDraftRememberSynced(
           syncedGeneration: clearDirty
             ? current.generation
             : current.syncedGeneration,
+          // The host holds the row (and the retraction debt) from the first
+          // ACK on: the one-shot pointer must not ride a later write.
+          supersedes: hostRevision > 0 ? null : current.supersedes,
         },
       },
     };
   });
-}
-
-/**
- * Bind a chat draft to `hostId` as that host's own row without a document:
- * the claim committed but its document could not be applied locally. The
- * host's next echo brings the content.
- */
-export function bindComposerDraftOwnership(
-  draftId: string,
-  hostId: string,
-  revision: number,
-): void {
-  const chatId = findComposerChatIdByDraftId(draftId);
-  if (chatId === null) return;
-  useComposerDraftStore.setState((state) => {
-    const current = ensureDraft(state.drafts, chatId);
-    return {
-      drafts: {
-        ...state.drafts,
-        [chatId]: {
-          ...current,
-          ownerHostId: hostId,
-          origin: "own",
-          // Revisions are per owner (see `bindLandingDraftOwnership`).
-          hostRevision: revision,
-        },
-      },
-    };
-  });
-  notifyDraftLocalEdit(draftId);
 }
 
 /**
  * Applies a chat-composer document to the store. Returns whether the row
- * took it: a retired id, an id the row no longer carries, or an id fenced
- * by a submit is rejected without touching the row - and without counting
- * as an ownership apply for the fences that read `draftOwnershipSeq`.
+ * took it: an id the row no longer carries, or an id fenced by a submit, is
+ * rejected without touching the row.
  */
 export function applyComposerHostDocument(document: DraftDocument): boolean {
   if (document.kind !== "chat-composer") return false;
   const chatId = document.target.chatId;
   if (chatId === null) return false;
-  // A row re-minted by the repair (or fenced after a submit) must not be
+  // A row re-keyed by the fork rule (or fenced after a submit) must not be
   // pulled back to a retired identity by an echo for the old id that was
   // already in flight; the host only ever echoes ids this client minted.
+  // The one echo allowed to move the row's id is a host re-mint that names
+  // the id it replaces.
   const before = ensureDraft(useComposerDraftStore.getState().drafts, chatId);
-  // A retired id (re-minted by a repair, or fenced by a submit) whose claim
-  // committed elsewhere after its delete already completed (see
-  // `retiredDraftIds`): the row is live on its owner now, so the delete is
-  // re-armed there and routed; the document is never applied. Checked
-  // before the id-mismatch guard, which a submit's null `draftId` bypasses.
   if (
-    useComposerDraftStore.getState().retiredDraftIds[document.draftId] ===
-      true &&
-    before.draftId !== document.draftId
+    before.draftId !== null &&
+    before.draftId !== document.draftId &&
+    document.supersedes !== before.draftId
   ) {
-    // Re-armed on the document's owner: no pending delete, or one that
-    // names another host (the row moved after that delete was routed).
-    if (
-      pendingSubmittedDraftDeleteHostId(document.draftId) !==
-      document.ownerHostId
-    ) {
-      useComposerDraftStore.setState((state) => ({
-        pendingSubmittedDraftDeletes: {
-          ...state.pendingSubmittedDraftDeletes,
-          [document.draftId]: { hostId: document.ownerHostId },
-        },
-      }));
-      notifyDraftLocalDelete(document.draftId);
-    }
     return false;
   }
-  if (before.draftId !== null && before.draftId !== document.draftId)
-    return false;
   // An id fenced by a submit is on its way to a tombstone; its late echo
   // must not put the sent content back into the cleared composer.
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) return false;
@@ -795,11 +694,6 @@ export function applyComposerHostDocument(document: DraftDocument): boolean {
       },
     };
   });
-  // A replica's edit is held out of the sweep; when the claim makes the row
-  // this host's own, requeue it or the one-shot edit stays local.
-  if (before.origin === "replica" && document.origin === "own") {
-    notifyDraftLocalEdit(document.draftId);
-  }
   return true;
 }
 
@@ -837,8 +731,9 @@ export function collectComposerDirtyWrites(): ReadonlyArray<{
     if (draft === undefined) continue;
     if (draft.generation <= draft.syncedGeneration) continue;
     if (draft.draftId === null) continue;
-    // A demoted row's dirty edit waits for the claim (or the repair's fresh
-    // identity); it is never upserted under the stale identity.
+    // A replica is never upserted under the owner's identity: an edit
+    // re-keys it first (`detachDraftIdentity`), so a dirty replica is a row
+    // whose content the fresh id already carries.
     if (draft.origin === "replica") continue;
     if (isNeverTypedEmptyComposerDraft(draft)) continue;
     out.push({ chatId, draft });

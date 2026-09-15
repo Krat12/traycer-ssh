@@ -1,5 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
+import { useCallback, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type {
   ChatActiveTurn,
@@ -92,15 +91,6 @@ interface UseChatComposerSubmitArgs {
   readonly workspaceBlocked: boolean;
   readonly imagesUnsupported: boolean;
   readonly attachmentPreparationPending: boolean;
-  /**
-   * True while this chat's draft row is one this host does not own (demoted
-   * to a replica after a claim elsewhere). The editor stays live (the first
-   * edit claims), and a send lets a pending or fresh claim settle first so
-   * the row it clears is one this host owns; it proceeds either way.
-   */
-  readonly draftUnowned: boolean;
-  /** Resolves once the claim has settled, claimed or refused. Never throws. */
-  readonly settleDraftOwnership: () => Promise<SettledOwnership>;
   readonly onSubmitMessage:
     | ((input: ChatComposerSubmitInput) => boolean)
     | null;
@@ -158,14 +148,6 @@ export interface ChatComposerSubmitResult {
   };
 }
 
-/**
- * Read through a call so the flag is not narrowed by the assignment that
- * cleared it just before the re-entered handler ran.
- */
-function wasDispatched(flag: { readonly current: boolean }): boolean {
-  return flag.current;
-}
-
 export function useChatComposerSubmit(
   args: UseChatComposerSubmitArgs,
 ): ChatComposerSubmitResult {
@@ -184,8 +166,6 @@ export function useChatComposerSubmit(
     workspaceBlocked,
     imagesUnsupported,
     attachmentPreparationPending,
-    draftUnowned,
-    settleDraftOwnership,
     onSubmitMessage,
     onSideChat,
   } = args;
@@ -198,15 +178,7 @@ export function useChatComposerSubmit(
 
   // Everything an ACCEPTED submit does to the composer, shared by the send and
   // the side-chat paths so a refused one leaves the text in place on both.
-  // Whether the re-entered send actually went out after an ownership settle;
-  // a settle whose send then declined hands the refusal back to the repair.
-  const dispatched = useRef(false);
-  // A settle's `abandon`, parked while the re-entered send is still preparing
-  // annotation images: whether it dispatches is only known when that
-  // preparation settles, so the refusal repair must wait for it.
-  const parkedAbandon = useRef<(() => void) | null>(null);
   const clearAcceptedDraft = useCallback((): void => {
-    dispatched.current = true;
     void submitComposerDraft(taskId);
     pickerStore.getState().reset();
     editorRef.current?.clear();
@@ -258,49 +230,9 @@ export function useChatComposerSubmit(
     ],
   );
 
-  // The latest send, for the ownership continuation below: the claim settles
-  // after a re-render, and the stale closure would gate on a `draftUnowned`
-  // that may have flipped. `ownershipSettled` marks the one re-entry that
-  // must not gate again - a refused claim leaves the draft unowned, and the
-  // send proceeds on the row as it is rather than settling forever.
-  const submitDraftRef = useRef<(source: ChatComposerSubmitSource) => void>(
-    () => undefined,
-  );
-  const ownershipSettled = useRef(false);
-  // One send per settle: a second Enter while the claim is in flight would
-  // attach a second continuation and send twice.
-  const ownershipSettling = useRef(false);
-  // The latest ownership reading, for the annotation-preparation
-  // continuation: another host can claim the draft during that read, and
-  // the stale closure would send and delete through this host regardless.
-  const draftUnownedRef = useRef(draftUnowned);
-  useLayoutEffect(() => {
-    draftUnownedRef.current = draftUnowned;
-  }, [draftUnowned]);
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
-      if (draftUnowned && !ownershipSettled.current) {
-        if (ownershipSettling.current) return;
-        ownershipSettling.current = true;
-        void settleDraftOwnership().then((settled) => {
-          ownershipSettling.current = false;
-          ownershipSettled.current = true;
-          dispatched.current = false;
-          try {
-            submitDraftRef.current(source);
-          } finally {
-            ownershipSettled.current = false;
-          }
-          if (wasDispatched(dispatched)) return;
-          if (annotationPrepFlight.current) {
-            parkedAbandon.current = settled.abandon;
-            return;
-          }
-          settled.abandon();
-        });
-        return;
-      }
       const toolbar = toolbarStore.getState();
       if (toolbar.selection.modelSlug.length === 0) return;
       const editor = editorRef.current;
@@ -428,10 +360,6 @@ export function useChatComposerSubmit(
 
       annotationPrepFlight.current = true;
       setAnnotationPreparationPending(true);
-      // Ownership as the read starts. A draft still unowned here is one whose
-      // settle was refused and whose send proceeds on the row as it is; only
-      // ownership LOST during the read sends the submit back through the gate.
-      const unownedAtPrepStart = draftUnownedRef.current;
       void (async () => {
         try {
           const annotationImages =
@@ -451,23 +379,9 @@ export function useChatComposerSubmit(
             );
             return;
           }
-          // The draft lost its ownership while the images were read (another
-          // host claimed it): re-enter the LATEST handler, which settles it
-          // again before sending, instead of sending on the old closure. The
-          // parked abandon belongs to the superseded settlement and is
-          // dropped: the new settlement carries its own.
-          if (draftUnownedRef.current && !unownedAtPrepStart) {
-            annotationPrepFlight.current = false;
-            parkedAbandon.current = null;
-            submitDraftRef.current(source);
-            return;
-          }
           submitPreparedDraft(annotationImages);
         } finally {
           annotationPrepFlight.current = false;
-          const parked = parkedAbandon.current;
-          parkedAbandon.current = null;
-          if (parked !== null && !wasDispatched(dispatched)) parked();
           setAnnotationPreparationPending(false);
         }
       })();
@@ -475,9 +389,7 @@ export function useChatComposerSubmit(
     [
       activeTurnStatus,
       clearAcceptedDraft,
-      draftUnowned,
       editorRef,
-      settleDraftOwnership,
       finalizeSend,
       onSideChat,
       pickerStore,
@@ -490,15 +402,7 @@ export function useChatComposerSubmit(
       toolbarStore,
     ],
   );
-  useLayoutEffect(() => {
-    submitDraftRef.current = submitDraft;
-  }, [submitDraft]);
 
-  // The deferred confirm re-enters through a ref after an ownership settle,
-  // exactly as `submitDraft` does: another host can claim the draft while the
-  // dialog is open, and the confirm must not finalize on a row this host no
-  // longer owns without settling first.
-  const onRestartRef = useRef<() => void>(() => undefined);
   const onRestart = useCallback((): void => {
     if (pendingConflict === null) return;
     // The same guards the live submit path enforces (submitDraft) must block this
@@ -507,22 +411,6 @@ export function useChatComposerSubmit(
     // clears) rather than pushing the send through the guards.
     if (submitBlocked()) {
       setPendingConflict(null);
-      return;
-    }
-    if (draftUnowned && !ownershipSettled.current) {
-      if (ownershipSettling.current) return;
-      ownershipSettling.current = true;
-      void settleDraftOwnership().then((settled) => {
-        ownershipSettling.current = false;
-        ownershipSettled.current = true;
-        dispatched.current = false;
-        try {
-          onRestartRef.current();
-        } finally {
-          ownershipSettled.current = false;
-        }
-        if (!wasDispatched(dispatched)) settled.abandon();
-      });
       return;
     }
     // Bind the consent to the turn it was DISPLAYED for. The composer persists
@@ -559,19 +447,14 @@ export function useChatComposerSubmit(
       setPendingConflict(null);
     }
   }, [
-    draftUnowned,
     finalizeSend,
     pendingConflict,
     activeTurnStatus,
-    settleDraftOwnership,
     steerEnabled,
     steerProtocolSupported,
     getActiveTurnForSteer,
     submitBlocked,
   ]);
-  useLayoutEffect(() => {
-    onRestartRef.current = onRestart;
-  }, [onRestart]);
 
   const onOpenChange = useCallback((open: boolean): void => {
     if (open) return;

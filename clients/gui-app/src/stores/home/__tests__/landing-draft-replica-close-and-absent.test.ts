@@ -2,9 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DraftDocument } from "@traycer/protocol/host";
 import {
   applyLandingHostDocument,
-  bindLandingDraftOwnership,
   collectLandingDirtyWrites,
-  deleteClaimedRetiredLandingDraft,
   deleteLandingDraftOnHost,
   dropForeignLandingMirrorsAbsent,
   emptyLandingDraftWorkspaceSnapshot,
@@ -16,7 +14,6 @@ import {
   landingDraftIsRetired,
   pendingLandingDraftDeleteHostId,
   resetLandingDraftRetirementsForTests,
-  retireLandingDraft,
 } from "@/lib/drafts/landing-draft-retirement";
 import {
   setDraftLocalDeleteListener,
@@ -48,6 +45,7 @@ function baseDraft(
     syncedGeneration: 0,
     ownerHostId: null,
     origin: null,
+    supersedes: null,
     publication: null,
     confirmedHostBlobHashes: [],
     closed: false,
@@ -481,6 +479,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
       revision: 5,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-b",
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
@@ -517,6 +516,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
       revision: 6,
       lastTouchedAt: 100,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -569,6 +569,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
       revision: 6,
       lastTouchedAt: 100,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -621,6 +622,7 @@ describe("landing draft store: applyLandingHostDocument closed on the clean path
       revision: 4,
       lastTouchedAt: 100,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -712,47 +714,6 @@ describe("landing draft store: collectLandingDirtyWrites excludes replica rows",
   });
 });
 
-describe("landing draft store: bindLandingDraftOwnership", () => {
-  beforeEach(() => {
-    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
-    resetLandingDraftRetirementsForTests();
-  });
-
-  afterEach(() => {
-    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
-    resetLandingDraftRetirementsForTests();
-    setDraftLocalEditListener(null);
-  });
-
-  it("adopts a replica row to the given host as own, resets the host revision to the claimed one, and notifies the local-edit listener", () => {
-    const draft = baseDraft("replica-1", {
-      origin: "replica",
-      adoption: { state: "adopted", hostId: "host-b" },
-      ownerHostId: "host-b",
-      hostRevision: 9,
-      generation: 2,
-      syncedGeneration: 2,
-    });
-    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: null });
-
-    const notified: string[] = [];
-    setDraftLocalEditListener((id) => notified.push(id));
-
-    bindLandingDraftOwnership("replica-1", "host-a", 1);
-
-    const after = useLandingDraftStore
-      .getState()
-      .drafts.find((d) => d.id === "replica-1");
-    expect(after).toBeDefined();
-    expect(after?.adoption).toEqual({ state: "adopted", hostId: "host-a" });
-    expect(after?.ownerHostId).toBe("host-a");
-    expect(after?.origin).toBe("own");
-    // Revisions are per owner: host-b's 9 must not gate host-a's echoes.
-    expect(after?.hostRevision).toBe(1);
-    expect(notified).toEqual(["replica-1"]);
-  });
-});
-
 describe("landing draft store: closeDraft on empty content routes host delete only for own rows", () => {
   beforeEach(() => {
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
@@ -828,7 +789,7 @@ describe("landing draft store: deleteDraft never routes a replica's host delete 
     setDraftLocalDeleteListener(null);
   });
 
-  it("destroys a non-empty replica adopted on host-b locally, with no pending host-route receipt and no local-delete notification", () => {
+  it("destroys a non-empty replica adopted on host-b locally with no pending host-route receipt, but still notifies local-delete for a best-effort retract", () => {
     const deleted: string[] = [];
     setDraftLocalDeleteListener((id) => deleted.push(id));
 
@@ -849,8 +810,12 @@ describe("landing draft store: deleteDraft never routes a replica's host delete 
     expect(after).toBeUndefined();
     expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
     expect(landingDraftIsRetired("replica-non-empty")).toBe(true);
+    // Retired locally with no host-route receipt - ownership never moves,
+    // so this row's `drafts.delete` never routes through its adoption host.
     expect(pendingLandingDraftDeleteHostId("replica-non-empty")).toBeNull();
-    expect(deleted).toEqual([]);
+    // The coordinator is still notified for any adopted row: it turns this
+    // one into a best-effort `drafts.retract` through the placement host.
+    expect(deleted).toEqual(["replica-non-empty"]);
   });
 
   it("contrast: destroys a non-empty own row adopted on host-a locally and still routes the host delete", () => {
@@ -879,84 +844,6 @@ describe("landing draft store: deleteDraft never routes a replica's host delete 
   });
 });
 
-describe("landing draft store: deleteClaimedRetiredLandingDraft", () => {
-  beforeEach(() => {
-    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
-    resetLandingDraftRetirementsForTests();
-  });
-
-  afterEach(() => {
-    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
-    resetLandingDraftRetirementsForTests();
-    setDraftLocalDeleteListener(null);
-  });
-
-  it("re-arms a receipt left by an emptied replica closed from its tab, to pendingDelete on the claiming host, and notifies local-delete", () => {
-    const deleted: string[] = [];
-    setDraftLocalDeleteListener((id) => deleted.push(id));
-
-    const draft = baseDraft("replica-empty", {
-      content: EMPTY_LANDING_DRAFT_CONTENT,
-      origin: "replica",
-      adoption: { state: "adopted", hostId: "host-b" },
-      ownerHostId: "host-b",
-      generation: 2,
-      syncedGeneration: 2,
-    });
-    useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
-
-    // Closing the emptied replica from its tab retires it locally: a
-    // receipt exists, but nothing is pending yet since it had no owner.
-    useLandingDraftStore.getState().closeDraft("replica-empty");
-    expect(landingDraftIsRetired("replica-empty")).toBe(true);
-    expect(pendingLandingDraftDeleteHostId("replica-empty")).toBeNull();
-    expect(deleted).toEqual([]);
-
-    deleteClaimedRetiredLandingDraft("replica-empty", "host-a");
-
-    expect(pendingLandingDraftDeleteHostId("replica-empty")).toBe("host-a");
-    expect(deleted).toEqual(["replica-empty"]);
-  });
-
-  it("does nothing for a draft with no retirement receipt", () => {
-    const deleted: string[] = [];
-    setDraftLocalDeleteListener((id) => deleted.push(id));
-
-    expect(landingDraftIsRetired("never-retired")).toBe(false);
-
-    deleteClaimedRetiredLandingDraft("never-retired", "host-a");
-
-    expect(landingDraftIsRetired("never-retired")).toBe(false);
-    expect(deleted).toEqual([]);
-  });
-
-  it("retargets a receipt whose delete is pending on a DIFFERENT host, and notifies local-delete", () => {
-    const deleted: string[] = [];
-    setDraftLocalDeleteListener((id) => deleted.push(id));
-
-    retireLandingDraft("pending-on-host-a", "host-a");
-    expect(pendingLandingDraftDeleteHostId("pending-on-host-a")).toBe("host-a");
-
-    deleteClaimedRetiredLandingDraft("pending-on-host-a", "host-b");
-
-    expect(pendingLandingDraftDeleteHostId("pending-on-host-a")).toBe("host-b");
-    expect(deleted).toEqual(["pending-on-host-a"]);
-  });
-
-  it("leaves a receipt already pending on the SAME host unchanged and does not notify", () => {
-    const deleted: string[] = [];
-    setDraftLocalDeleteListener((id) => deleted.push(id));
-
-    retireLandingDraft("pending-on-host-b", "host-b");
-    expect(pendingLandingDraftDeleteHostId("pending-on-host-b")).toBe("host-b");
-
-    deleteClaimedRetiredLandingDraft("pending-on-host-b", "host-b");
-
-    expect(pendingLandingDraftDeleteHostId("pending-on-host-b")).toBe("host-b");
-    expect(deleted).toEqual([]);
-  });
-});
-
 describe("landing draft store: own row adopted on a host the landing placement has left", () => {
   beforeEach(() => {
     useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
@@ -972,7 +859,7 @@ describe("landing draft store: own row adopted on a host the landing placement h
     setDraftLocalFlushListener(null);
   });
 
-  it("deleteDraft retires an own row adopted on host-a locally when the placement is host-b: no host-route receipt, no local-delete notification", () => {
+  it("deleteDraft retires an own row adopted on host-a locally when the placement is host-b: no host-route receipt, but still notifies local-delete for a best-effort retract", () => {
     setLandingPlacementHostReader(() => "host-b");
     const deleted: string[] = [];
     setDraftLocalDeleteListener((id) => deleted.push(id));
@@ -994,8 +881,12 @@ describe("landing draft store: own row adopted on a host the landing placement h
     expect(after).toBeUndefined();
     expect(useLandingDraftStore.getState().activeDraftId).toBeNull();
     expect(landingDraftIsRetired("own-left-behind")).toBe(true);
+    // Foreign to the placement (adopted on a host it has left), so this row
+    // is not deleted through its adoption host.
     expect(pendingLandingDraftDeleteHostId("own-left-behind")).toBeNull();
-    expect(deleted).toEqual([]);
+    // The coordinator is still notified for any adopted row: it turns this
+    // one into a best-effort `drafts.retract` through the placement host.
+    expect(deleted).toEqual(["own-left-behind"]);
   });
 
   it("contrast: deleteDraft routes the host delete when the placement is still host-a", () => {
@@ -1226,7 +1117,7 @@ describe("landing draft store: deleteLandingDraftOnHost", () => {
     expect(deleted).toEqual(["replica-adopted-host-a"]);
   });
 
-  it("contrast: deleteDraft on the same replica row retires it locally with a null host and does not notify", () => {
+  it("contrast: deleteDraft on the same replica row retires it locally with a null host, but still notifies local-delete for a best-effort retract", () => {
     const deleted: string[] = [];
     setDraftLocalDeleteListener((id) => deleted.push(id));
 
@@ -1247,10 +1138,10 @@ describe("landing draft store: deleteLandingDraftOnHost", () => {
     expect(after).toBeUndefined();
     expect(landingDraftIsRetired("replica-contrast")).toBe(true);
     expect(pendingLandingDraftDeleteHostId("replica-contrast")).toBeNull();
-    expect(deleted).toEqual([]);
+    expect(deleted).toEqual(["replica-contrast"]);
   });
 
-  it("re-arms a local-only receipt (no row) to the given host and notifies", () => {
+  it("is a no-op for a row that already has a local-only retirement receipt but no longer exists (a missing row is never re-armed)", () => {
     const deleted: string[] = [];
     setDraftLocalDeleteListener((id) => deleted.push(id));
 
@@ -1265,18 +1156,19 @@ describe("landing draft store: deleteLandingDraftOnHost", () => {
     useLandingDraftStore.setState({ drafts: [draft], activeDraftId: draft.id });
 
     // Closing the emptied replica from its tab retires it locally with no
-    // owner: a receipt exists, but nothing is pending yet.
+    // owner: a receipt exists, but nothing is pending yet, and the row is
+    // gone from the store.
     useLandingDraftStore.getState().closeDraft("replica-empty-onhost");
     expect(landingDraftIsRetired("replica-empty-onhost")).toBe(true);
     expect(pendingLandingDraftDeleteHostId("replica-empty-onhost")).toBeNull();
     expect(deleted).toEqual([]);
 
+    // A missing row is a no-op: there is no row left to route a delete
+    // through `host-b`, so the existing receipt is left exactly as it was.
     deleteLandingDraftOnHost("replica-empty-onhost", "host-b");
 
-    expect(pendingLandingDraftDeleteHostId("replica-empty-onhost")).toBe(
-      "host-b",
-    );
-    expect(deleted).toEqual(["replica-empty-onhost"]);
+    expect(pendingLandingDraftDeleteHostId("replica-empty-onhost")).toBeNull();
+    expect(deleted).toEqual([]);
   });
 
   it("does nothing when there is no row and no retirement receipt", () => {

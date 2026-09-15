@@ -1,5 +1,5 @@
 import { createRef, type RefObject } from "react";
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatQueueDeliveryPolicy,
@@ -10,7 +10,6 @@ import type { JsonContent } from "@traycer/protocol/common/registry";
 import { createComposerPickerStore } from "../picker/composer-picker-store";
 import type { ComposerPromptEditorHandle } from "../composer-prompt-editor";
 import { useChatComposerSubmit } from "../use-chat-composer-submit";
-import type { SettledOwnership } from "@/hooks/drafts/use-draft-authority";
 import { useChatComposerDraft } from "../use-chat-composer-draft";
 import { createFakeComposerPromptEditorHandle } from "./composer-prompt-editor-handle-fixtures";
 import { createComposerToolbarStore } from "@/stores/composer/composer-toolbar-store";
@@ -103,9 +102,6 @@ describe("chat-composer submit gate (path resolution)", () => {
           workspaceBlocked: false,
           imagesUnsupported: false,
           attachmentPreparationPending: pending,
-          draftUnowned: false,
-          settleDraftOwnership: () =>
-            Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
           onSubmitMessage,
           onSideChat: null,
         }),
@@ -352,312 +348,38 @@ describe("chat-composer submit multi-surface clear", () => {
   });
 });
 
-/**
- * `draftUnowned` gates a live submit behind `settleDraftOwnership()`. The
- * gate must re-enter through the LATEST `submitDraft` closure (via
- * `submitDraftRef`, assigned in a `useEffect`), marking the one re-entry
- * `ownershipSettled` so it never gates a second time - the send goes out
- * exactly once whether or not the claim actually landed (a refused claim
- * still proceeds on the row as it is; drafts have no error UI to gate on).
- */
-describe("unowned draft", () => {
-  it("re-enters the latest submitDraft once settleDraftOwnership resolves after a rerender with draftUnowned: false", async () => {
+describe("chat-composer submit after re-key", () => {
+  it("submits immediately on a draft re-keyed by detachDraftIdentity right before submit", () => {
+    const taskId = "task-rekeyed-submit";
     const onSubmitMessage = vi.fn(acceptSubmit);
+    const clear = vi.fn(() => undefined);
+    const editor = controllableEditorHandle({
+      content: DIRTY,
+      ready: true,
+      clear,
+    });
     const editorRef = createRef<ComposerPromptEditorHandle | null>();
-    editorRef.current = editorHandle({ content: DIRTY, ready: true });
-    const pickerStore = createComposerPickerStore();
-    const toolbarStore = createComposerToolbarStore({
-      seedKey: "chat-submit-gate-unowned-test",
-      values: {
-        permission: "supervised",
-        selection: {
-          harnessId: "claude",
-          modelSlug: "claude-sonnet",
-          profileId: null,
-        },
-        reasoning: "medium",
-        serviceTier: "",
-      },
-      onSettingsChange: null,
-      tuiOnly: false,
-      hostId: null,
+    editorRef.current = editor.handle;
+
+    act(() => {
+      useComposerDraftStore.getState().setSnapshot(taskId, DIRTY, null);
+    });
+    act(() => {
+      useComposerDraftStore.getState().detachDraftIdentity(taskId);
     });
 
-    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
-    const settleDraftOwnership = vi.fn(
-      () =>
-        new Promise<SettledOwnership>((resolve) => {
-          resolveSettled = resolve;
-        }),
-    );
-
-    const { result, rerender } = renderHook(
-      (draftUnowned: boolean) =>
-        useChatComposerSubmit({
-          taskId: "task-unowned",
-          editorRef,
-          pickerStore,
-          toolbarStore,
-          activeTurnStatus: null,
-          steerCapable: false,
-          steerEnabled: true,
-          steerProtocolSupported: true,
-          getActiveTurnForSteer: () => null,
-          hasPendingApprovals: false,
-          sendDisabled: false,
-          workspaceBlocked: false,
-          imagesUnsupported: false,
-          attachmentPreparationPending: false,
-          draftUnowned,
-          settleDraftOwnership,
-          onSubmitMessage,
-          onSideChat: null,
-        }),
-      { initialProps: true },
-    );
+    const { result } = mountSubmitHook({
+      taskId,
+      editorRef,
+      onSubmitMessage,
+    });
 
     act(() => {
       result.current.submitDraft("enter");
     });
 
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
-
-    // Caller re-renders with draftUnowned: false BEFORE the claim settles -
-    // the still-pending promise must re-enter through the LATEST closure.
-    rerender(false);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveSettled?.({ hostId: "host-test", abandon: vi.fn() });
-      await Promise.resolve();
-    });
-
-    await waitFor(() => {
-      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-  });
-
-  it("calling submitDraft twice while settleDraftOwnership is pending settles once and sends once", async () => {
-    const onSubmitMessage = vi.fn(acceptSubmit);
-    const editorRef = createRef<ComposerPromptEditorHandle | null>();
-    editorRef.current = editorHandle({ content: DIRTY, ready: true });
-    const pickerStore = createComposerPickerStore();
-    const toolbarStore = createComposerToolbarStore({
-      seedKey: "chat-submit-gate-unowned-double-submit-test",
-      values: {
-        permission: "supervised",
-        selection: {
-          harnessId: "claude",
-          modelSlug: "claude-sonnet",
-          profileId: null,
-        },
-        reasoning: "medium",
-        serviceTier: "",
-      },
-      onSettingsChange: null,
-      tuiOnly: false,
-      hostId: null,
-    });
-
-    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
-    const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(
-      () =>
-        new Promise<SettledOwnership>((resolve) => {
-          resolveSettled = resolve;
-        }),
-    );
-
-    const { result } = renderHook(() =>
-      useChatComposerSubmit({
-        taskId: "task-unowned-double-submit",
-        editorRef,
-        pickerStore,
-        toolbarStore,
-        activeTurnStatus: null,
-        steerCapable: false,
-        steerEnabled: true,
-        steerProtocolSupported: true,
-        getActiveTurnForSteer: () => null,
-        hasPendingApprovals: false,
-        sendDisabled: false,
-        workspaceBlocked: false,
-        imagesUnsupported: false,
-        attachmentPreparationPending: false,
-        draftUnowned: true,
-        settleDraftOwnership,
-        onSubmitMessage,
-        onSideChat: null,
-      }),
-    );
-
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
-
-    // A second Enter while the claim is still in flight must not start a
-    // second settle - it is a silent no-op (`ownershipSettling` gate).
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveSettled?.({ hostId: "host-test", abandon });
-      await Promise.resolve();
-    });
-
-    await waitFor(() => {
-      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    // The re-entered send went out (dispatched), so the settle is not
-    // abandoned.
-    expect(abandon).not.toHaveBeenCalled();
-  });
-
-  it("still sends exactly once, with no loop, when settleDraftOwnership resolves but the caller keeps draftUnowned: true", async () => {
-    const onSubmitMessage = vi.fn(acceptSubmit);
-    const editorRef = createRef<ComposerPromptEditorHandle | null>();
-    editorRef.current = editorHandle({ content: DIRTY, ready: true });
-    const pickerStore = createComposerPickerStore();
-    const toolbarStore = createComposerToolbarStore({
-      seedKey: "chat-submit-gate-unowned-refused-test",
-      values: {
-        permission: "supervised",
-        selection: {
-          harnessId: "claude",
-          modelSlug: "claude-sonnet",
-          profileId: null,
-        },
-        reasoning: "medium",
-        serviceTier: "",
-      },
-      onSettingsChange: null,
-      tuiOnly: false,
-      hostId: null,
-    });
-
-    const settleDraftOwnership = vi.fn(() =>
-      Promise.resolve({ hostId: "host-test", abandon: vi.fn() }),
-    );
-
-    const { result } = renderHook(() =>
-      useChatComposerSubmit({
-        taskId: "task-unowned-refused",
-        editorRef,
-        pickerStore,
-        toolbarStore,
-        activeTurnStatus: null,
-        steerCapable: false,
-        steerEnabled: true,
-        steerProtocolSupported: true,
-        getActiveTurnForSteer: () => null,
-        hasPendingApprovals: false,
-        sendDisabled: false,
-        workspaceBlocked: false,
-        imagesUnsupported: false,
-        attachmentPreparationPending: false,
-        // No rerender ever drops this back to false - a refused claim leaves
-        // the draft unowned forever, and the send must still go out once.
-        draftUnowned: true,
-        settleDraftOwnership,
-        onSubmitMessage,
-        onSideChat: null,
-      }),
-    );
-
-    await act(async () => {
-      result.current.submitDraft("enter");
-      await Promise.resolve();
-    });
-
-    await waitFor(() => {
-      expect(onSubmitMessage).toHaveBeenCalledTimes(1);
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-  });
-
-  it("abandons the settle when the re-entered send declines (sendDisabled flips before the settle resolves)", async () => {
-    const onSubmitMessage = vi.fn(acceptSubmit);
-    const editorRef = createRef<ComposerPromptEditorHandle | null>();
-    editorRef.current = editorHandle({ content: DIRTY, ready: true });
-    const pickerStore = createComposerPickerStore();
-    const toolbarStore = createComposerToolbarStore({
-      seedKey: "chat-submit-gate-unowned-decline-test",
-      values: {
-        permission: "supervised",
-        selection: {
-          harnessId: "claude",
-          modelSlug: "claude-sonnet",
-          profileId: null,
-        },
-        reasoning: "medium",
-        serviceTier: "",
-      },
-      onSettingsChange: null,
-      tuiOnly: false,
-      hostId: null,
-    });
-
-    let resolveSettled: ((value: SettledOwnership) => void) | null = null;
-    const abandon = vi.fn();
-    const settleDraftOwnership = vi.fn(
-      () =>
-        new Promise<SettledOwnership>((resolve) => {
-          resolveSettled = resolve;
-        }),
-    );
-
-    const { result, rerender } = renderHook(
-      (props: { sendDisabled: boolean }) =>
-        useChatComposerSubmit({
-          taskId: "task-unowned-decline",
-          editorRef,
-          pickerStore,
-          toolbarStore,
-          activeTurnStatus: null,
-          steerCapable: false,
-          steerEnabled: true,
-          steerProtocolSupported: true,
-          getActiveTurnForSteer: () => null,
-          hasPendingApprovals: false,
-          sendDisabled: props.sendDisabled,
-          workspaceBlocked: false,
-          imagesUnsupported: false,
-          attachmentPreparationPending: false,
-          draftUnowned: true,
-          settleDraftOwnership,
-          onSubmitMessage,
-          onSideChat: null,
-        }),
-      { initialProps: { sendDisabled: false } },
-    );
-
-    act(() => {
-      result.current.submitDraft("enter");
-    });
-    expect(settleDraftOwnership).toHaveBeenCalledTimes(1);
-    expect(onSubmitMessage).not.toHaveBeenCalled();
-
-    // The caller disables sending before the settle resolves - the
-    // re-entered send must decline on the latest closure.
-    rerender({ sendDisabled: true });
-
-    await act(async () => {
-      resolveSettled?.({ hostId: "host-test", abandon });
-      await Promise.resolve();
-    });
-
-    await waitFor(() => {
-      expect(abandon).toHaveBeenCalledTimes(1);
-    });
-    expect(onSubmitMessage).not.toHaveBeenCalled();
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -700,9 +422,6 @@ function mountSubmitHook(args: {
       workspaceBlocked: false,
       imagesUnsupported: false,
       attachmentPreparationPending: false,
-      draftUnowned: false,
-      settleDraftOwnership: () =>
-        Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: null,
     }),

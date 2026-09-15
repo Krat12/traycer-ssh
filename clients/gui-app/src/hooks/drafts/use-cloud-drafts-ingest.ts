@@ -21,7 +21,6 @@ import {
   sweepAbsentCloudDraftMirrors,
 } from "@/lib/drafts/draft-mirror-coordinator";
 import { cloudDraftIdentityKey } from "@/lib/drafts/cloud-draft-identity";
-import { useLandingDraftStore } from "@/stores/home/landing-draft-store";
 import { useCloudDraftsDirectory } from "./use-cloud-drafts-directory";
 
 function ingestKey(summary: CloudChatSummary): string {
@@ -29,22 +28,16 @@ function ingestKey(summary: CloudChatSummary): string {
 }
 
 /**
- * Whether the guard may skip a listed head. Not when the local landing row
- * currently reads a DIFFERENT owner than the directory lists: ownership
- * that cycled A -> B -> A without a republish lists A again under the very
- * key A's first ingest recorded, and the row - moved to B by an ingest or a
- * session echo since - would otherwise keep reading as B's. Such a head is
- * re-read, whichever path last set the row's owner.
+ * Whether the guard may skip a listed head: the identity key (owner plus
+ * head) was already ingested by this mount. Ownership never moves, so a row
+ * whose owner differs from the listing is a different row under the same
+ * id, which a new key already covers.
  */
 function guardMaySkip(
   ingestedKeys: ReadonlyMap<string, string>,
   summary: CloudChatSummary,
 ): boolean {
-  if (!ingestedKeys.has(ingestKey(summary))) return false;
-  const row = useLandingDraftStore
-    .getState()
-    .drafts.find((draft) => draft.id === summary.identity.chatId);
-  return row === undefined || row.ownerHostId === summary.ownerHostId;
+  return ingestedKeys.has(ingestKey(summary));
 }
 
 /** Attempts per head, including the first. Bounded, with exponential spacing. */
@@ -105,15 +98,14 @@ export function useCloudDraftsIngest(
     // A replica whose row the directory no longer lists was deleted on its
     // owner; drop the mirror so it leaves the list here too. Only against a
     // fetched directory - an empty pending one lists nothing. The absence
-    // set is EVERY listed row, not the foreign ones: a replica this host has
-    // just claimed (from another window, or ahead of this window's
-    // hydration) is listed under this host's ownership and is not absent.
+    // set is EVERY listed row, not the foreign ones: a row this host owns
+    // (forked here, or listed ahead of this window's hydration) is listed
+    // under this host's ownership and is not absent.
     // The heads this run will read, reserved BEFORE the sweep: a draft the
-    // directory now lists under a new owner (a claim moved it) still has a
-    // clean local replica naming the previous owner, which the owner-aware
-    // absence check below would otherwise drop and the ingest re-create,
-    // reconciling away an open tab in between. Its new-owner summary is a
-    // new key, so it is always among these.
+    // directory lists under an owner other than the one a clean local
+    // replica names must be re-read, not dropped by the owner-aware absence
+    // check below and re-created by the ingest, reconciling away an open
+    // tab in between. Its summary is a new key, so it is always among these.
     const toRead = foreign.filter(
       (summary) => !guardMaySkip(ingestedKeys, summary),
     );
@@ -143,12 +135,10 @@ export function useCloudDraftsIngest(
       // load-bearing. `headSha256` is there because the identity alone is
       // stable across publishes, so a newer head for the same draft used to
       // hit this guard and be skipped, leaving the replica stale.
-      // `ownerHostId` is there because `claimAuthority` rebinds a row's owner
-      // while PRESERVING its head (it updates only `owner_host_id` and
-      // `owner_epoch`), so after a claim the same head arrives under a new
-      // owner: a guard that ignored the owner would skip it and the local
-      // mirror would keep the stale owner until that host republished or this
-      // hook remounted.
+      // `ownerHostId` is there because the key names a ROW, not an id: a
+      // fork or re-mint elsewhere publishes under a fresh id, but an id the
+      // directory lists under another owner than this mount last ingested
+      // is not the head it recorded.
       const key = ingestKey(summary);
       if (guardMaySkip(ingestedKeys, summary)) continue;
       ingestedKeys.set(key, summary.identity.chatId);
@@ -207,12 +197,7 @@ export function useCloudDraftsIngest(
         // The key stays unsettled through the apply, so a teardown that
         // interrupts it still releases the guard.
         try {
-          await ingestCloudDraftSummary({
-            hostId,
-            summary,
-            document,
-            snapshotSeq: snapshotIngestSeq(),
-          });
+          await ingestCloudDraftSummary({ hostId, summary, document });
           settle();
         } catch (error: unknown) {
           // Re-read through the scope: the earlier check narrowed the

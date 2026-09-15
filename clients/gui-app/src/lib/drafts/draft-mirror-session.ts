@@ -251,9 +251,8 @@ export class DraftMirrorSession {
 
   /**
    * `deleteOnHost` with the host's answer kept apart: `absent` (the host
-   * does not hold the row - never had it, or a claim moved it elsewhere
-   * meanwhile) is "done" for the send, but a landing retirement must not
-   * treat it as the row being gone everywhere.
+   * does not hold the row) is "done" for the send; the sink decides what
+   * it means for the receipt.
    */
   async deleteOnHostOutcome(draftId: string): Promise<DraftDeleteOutcome> {
     this.retiredDraftIds.add(draftId);

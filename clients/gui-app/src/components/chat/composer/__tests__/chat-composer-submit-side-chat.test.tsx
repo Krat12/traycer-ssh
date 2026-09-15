@@ -79,9 +79,6 @@ function mountSubmit(args: {
       workspaceBlocked: false,
       imagesUnsupported: false,
       attachmentPreparationPending: false,
-      draftUnowned: false,
-      settleDraftOwnership: () =>
-        Promise.resolve({ hostId: "host-test", abandon: () => undefined }),
       onSubmitMessage: args.onSubmitMessage,
       onSideChat: args.onSideChat,
     }),

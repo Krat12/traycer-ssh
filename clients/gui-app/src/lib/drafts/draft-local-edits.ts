@@ -29,9 +29,9 @@ export function setDraftLocalFlushListener(
 
 /**
  * The coordinator's landing placement host, readable by the landing store
- * so a row can be judged against the host that would claim it: an own row
+ * so a row can be judged against the host that would write it: an own row
  * adopted on a host the placement has auto-followed away from is handled
- * like a replica until the placement host's claim rebinds it.
+ * like a replica - its first edit forks it onto the placement host.
  */
 export function setLandingPlacementHostReader(
   next: LandingPlacementHostReader | null,

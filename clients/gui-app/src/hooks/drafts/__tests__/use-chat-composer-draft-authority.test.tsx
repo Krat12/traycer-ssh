@@ -1,49 +1,7 @@
-import { renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { useComposerDraftStore } from "@/stores/composer/composer-draft-store";
-import { draftRequiresClaim } from "@/lib/drafts/draft-authority";
-
-const captured = vi.hoisted(() => ({
-  repairOnEdit: null as (() => void) | null,
-}));
-
-const claimMock = vi.hoisted(() => ({
-  claim: vi.fn<(draftId: string) => void>(),
-}));
-
-// A thin stand-in for the real `useDraftAuthorityControl`: `unowned` is
-// derived the same way the real hook derives it (via the real
-// `draftRequiresClaim`), and `noteEdit` records into `claimMock.claim`
-// instead of driving a real RPC — the mount-effect cases below only need to
-// see whether the wrapper's effect called `noteEdit()` on its own, not the
-// full claim/apply/repair machinery, which `use-draft-authority.test.tsx`
-// already covers against the real hook.
-vi.mock("@/hooks/drafts/use-draft-authority", () => ({
-  useDraftAuthorityControl: (args: {
-    readonly draftId: string | null;
-    readonly ownerHostId: string | null;
-    readonly origin: "own" | "replica" | null;
-    readonly tabHostId: string | null;
-    readonly repairOnEdit: () => void;
-  }) => {
-    captured.repairOnEdit = args.repairOnEdit;
-    const unowned =
-      args.tabHostId !== null &&
-      args.draftId !== null &&
-      draftRequiresClaim(args.ownerHostId, args.origin, args.tabHostId);
-    return {
-      unowned,
-      noteEdit: () => {
-        claimMock.claim(args.draftId ?? "");
-      },
-      settleOwnership: () =>
-        Promise.resolve({ hostId: "host-test", abandon: () => {} }),
-    };
-  },
-}));
-
-const { useChatComposerDraftAuthority } =
-  await import("@/hooks/drafts/use-chat-composer-draft-authority");
+import { useChatComposerDraftAuthority } from "@/hooks/drafts/use-chat-composer-draft-authority";
 
 const DOC = {
   type: "doc" as const,
@@ -54,14 +12,8 @@ function seedComposerDraft(
   chatId: string,
   overrides: {
     readonly draftId: string;
-    readonly origin: "own" | "replica";
-    readonly ownerHostId: string;
-    /**
-     * Whether the row is left dirty (`generation > syncedGeneration`) after
-     * seeding. `setSnapshot` already leaves a fresh row dirty by default
-     * (generation 1, syncedGeneration 0); pass `false` to mark it synced.
-     */
-    readonly dirty: boolean;
+    readonly origin: "own" | "replica" | null;
+    readonly ownerHostId: string | null;
   },
 ): void {
   useComposerDraftStore.getState().setSnapshot(chatId, DOC, null);
@@ -76,9 +28,6 @@ function seedComposerDraft(
           draftId: overrides.draftId,
           origin: overrides.origin,
           ownerHostId: overrides.ownerHostId,
-          syncedGeneration: !overrides.dirty
-            ? current.generation
-            : current.syncedGeneration,
         },
       },
     };
@@ -90,120 +39,105 @@ afterEach(() => {
     drafts: {},
     pendingSubmittedDraftDeletes: {},
   });
-  captured.repairOnEdit = null;
-  claimMock.claim.mockReset();
 });
 
-describe("useChatComposerDraftAuthority: repairOnEdit", () => {
-  it("is a no-op when the row is already this host's own", () => {
-    const chatId = "chat-a";
+describe("useChatComposerDraftAuthority: chat fork", () => {
+  it("never forks an own row on its own host", () => {
+    const chatId = "chat-own";
     seedComposerDraft(chatId, {
       draftId: "d1",
       origin: "own",
       ownerHostId: "host-a",
-      dirty: true,
     });
 
-    renderHook(() =>
-      useChatComposerDraftAuthority({
-        chatId,
-        tabHostId: "host-a",
-        client: null,
-      }),
+    const view = renderHook(() =>
+      useChatComposerDraftAuthority({ chatId, tabHostId: "host-a" }),
     );
 
-    expect(captured.repairOnEdit).not.toBeNull();
-    captured.repairOnEdit?.();
+    act(() => {
+      view.result.current.noteEdit();
+    });
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.draftId).toBe("d1");
+    expect(after?.origin).toBe("own");
   });
 
-  it("detaches the identity when the row is a replica owned by another host", () => {
-    const chatId = "chat-b";
+  it("forks a replica row once: fresh id, same content, supersedes the old id, generation bumped, origin/ownerHostId cleared", () => {
+    const chatId = "chat-replica";
     seedComposerDraft(chatId, {
       draftId: "d1",
       origin: "replica",
       ownerHostId: "host-b",
-      dirty: true,
     });
+    const before = useComposerDraftStore.getState().drafts[chatId];
+    const generationBefore = before?.generation ?? 0;
 
-    renderHook(() =>
-      useChatComposerDraftAuthority({
-        chatId,
-        tabHostId: "host-a",
-        client: null,
-      }),
+    const view = renderHook(() =>
+      useChatComposerDraftAuthority({ chatId, tabHostId: "host-a" }),
     );
 
-    expect(captured.repairOnEdit).not.toBeNull();
-    captured.repairOnEdit?.();
+    act(() => {
+      view.result.current.noteEdit();
+    });
 
     const after = useComposerDraftStore.getState().drafts[chatId];
     expect(after?.draftId).not.toBe("d1");
     expect(after?.draftId).not.toBeNull();
+    expect(after?.content).toEqual(DOC);
+    expect(after?.supersedes).toBe("d1");
+    expect(after?.generation).toBe(generationBefore + 1);
+    expect(after?.origin).toBeNull();
+    expect(after?.ownerHostId).toBeNull();
   });
-});
 
-describe("useChatComposerDraftAuthority: mount re-arm", () => {
-  it("a dirty replica row re-arms at mount: claim is invoked once with no noteEdit() call from the test", () => {
-    const chatId = "chat-c";
+  it("does not fork again on a second noteEdit after the fork", () => {
+    const chatId = "chat-replica-twice";
     seedComposerDraft(chatId, {
       draftId: "d1",
       origin: "replica",
       ownerHostId: "host-b",
-      dirty: true,
     });
 
-    renderHook(() =>
-      useChatComposerDraftAuthority({
-        chatId,
-        tabHostId: "host-a",
-        client: null,
-      }),
+    const view = renderHook(() =>
+      useChatComposerDraftAuthority({ chatId, tabHostId: "host-a" }),
     );
 
-    expect(claimMock.claim).toHaveBeenCalledTimes(1);
-    expect(claimMock.claim).toHaveBeenCalledWith("d1");
-  });
-
-  it("contrast: a clean replica row does not claim at mount", () => {
-    const chatId = "chat-d";
-    seedComposerDraft(chatId, {
-      draftId: "d1",
-      origin: "replica",
-      ownerHostId: "host-b",
-      dirty: false,
+    act(() => {
+      view.result.current.noteEdit();
     });
+    const afterFork = useComposerDraftStore.getState().drafts[chatId];
+    const forkedId = afterFork?.draftId ?? null;
+    expect(forkedId).not.toBeNull();
 
-    renderHook(() =>
-      useChatComposerDraftAuthority({
-        chatId,
-        tabHostId: "host-a",
-        client: null,
-      }),
-    );
-
-    expect(claimMock.claim).not.toHaveBeenCalled();
+    act(() => {
+      view.result.current.noteEdit();
+    });
+    const afterSecondEdit = useComposerDraftStore.getState().drafts[chatId];
+    expect(afterSecondEdit?.draftId).toBe(forkedId);
+    expect(afterSecondEdit?.generation).toBe(afterFork?.generation);
   });
 
-  it("contrast: a dirty row this host already owns does not claim at mount", () => {
-    const chatId = "chat-e";
+  it("forks a row this tab's host does not own, even though the row itself reads own", () => {
+    const chatId = "chat-owned-elsewhere";
     seedComposerDraft(chatId, {
       draftId: "d1",
       origin: "own",
-      ownerHostId: "host-a",
-      dirty: true,
+      ownerHostId: "host-b",
     });
 
-    renderHook(() =>
-      useChatComposerDraftAuthority({
-        chatId,
-        tabHostId: "host-a",
-        client: null,
-      }),
+    const view = renderHook(() =>
+      useChatComposerDraftAuthority({ chatId, tabHostId: "host-a" }),
     );
 
-    expect(claimMock.claim).not.toHaveBeenCalled();
+    act(() => {
+      view.result.current.noteEdit();
+    });
+
+    const after = useComposerDraftStore.getState().drafts[chatId];
+    expect(after?.draftId).not.toBe("d1");
+    expect(after?.supersedes).toBe("d1");
+    expect(after?.origin).toBeNull();
+    expect(after?.ownerHostId).toBeNull();
   });
 });

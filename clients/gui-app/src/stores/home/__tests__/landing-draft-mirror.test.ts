@@ -42,6 +42,7 @@ import {
 } from "@/lib/tab-recovery/history";
 import { EMPTY_LANDING_DRAFT_CONTENT } from "@/stores/home/landing-draft-content";
 import { tabSourceRefs } from "@/stores/tabs/source-refs";
+import { tabCommandCoordinator } from "@/stores/tabs/tab-command-coordinator";
 
 function controlledStream(): {
   readonly client: never;
@@ -150,6 +151,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -232,6 +234,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -310,6 +313,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -395,6 +399,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -452,6 +457,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 999,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-b",
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
@@ -518,6 +524,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 999,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-b",
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
@@ -671,13 +678,14 @@ describe("landing draft host-mirror bookkeeping", () => {
     landingDraftRememberSynced(id, 1, Number.POSITIVE_INFINITY);
     expect(useLandingDraftStore.getState().activeDraftId).toBe(id);
 
-    const incoming: DraftDocument = {
+    const incoming: Extract<DraftDocument, { readonly kind: "landing" }> = {
       draftId: id,
       kind: "landing",
       target: { epicId: null, chatId: null, blockId: null },
       revision: 2,
       lastTouchedAt: 99,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-a",
       origin: "own",
       adoption: { state: "adopted", hostId: "host-a" },
@@ -765,6 +773,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 1,
       lastTouchedAt: 1,
       workspace: null,
+      supersedes: null,
       ownerHostId: hostId,
       origin: "own",
       adoption: { state: "adopted", hostId },
@@ -783,29 +792,26 @@ describe("landing draft host-mirror bookkeeping", () => {
         closed: false,
       },
     };
-    await applyIncomingDraftDocument(initial, null);
+    await applyIncomingDraftDocument(initial);
     expect(useLandingDraftStore.getState().drafts).toHaveLength(1);
 
-    const delayed = applyIncomingDraftDocument(
-      {
-        ...initial,
-        revision: 2,
-        portable: {
-          ...initial.portable,
-          blobHashes: [hash],
-          content: {
-            type: "doc",
-            content: [
-              {
-                type: "paragraph",
-                content: [{ type: "text", text: "old host body" }],
-              },
-            ],
-          },
+    const delayed = applyIncomingDraftDocument({
+      ...initial,
+      revision: 2,
+      portable: {
+        ...initial.portable,
+        blobHashes: [hash],
+        content: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "old host body" }],
+            },
+          ],
         },
       },
-      null,
-    );
+    });
     await vi.waitFor(() => {
       expect(readBlobStarted).toBe(true);
     });
@@ -827,6 +833,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 0,
       lastTouchedAt: 1,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-frontier",
       origin: "own" as const,
       adoption: { state: "adopted" as const, hostId: "host-frontier" },
@@ -929,6 +936,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 0,
       lastTouchedAt: 1,
       workspace: null,
+      supersedes: null,
       ownerHostId: hostId,
       origin: "own" as const,
       adoption: { state: "adopted" as const, hostId },
@@ -1097,6 +1105,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 4,
       lastTouchedAt: 1,
       workspace: null,
+      supersedes: null,
       ownerHostId: hostId,
       origin: "replica",
       adoption: { state: "adopted", hostId },
@@ -1115,7 +1124,7 @@ describe("landing draft host-mirror bookkeeping", () => {
         closed: false,
       },
     };
-    await applyIncomingDraftDocument(incoming, null);
+    await applyIncomingDraftDocument(incoming);
 
     await vi.waitFor(() => {
       expect(deletes).toEqual([id]);
@@ -1127,7 +1136,7 @@ describe("landing draft host-mirror bookkeeping", () => {
     });
   });
 
-  it("retargets the pending delete to the new owner a cloud head names, and stays retired after the ACK", async () => {
+  it("keeps a landing retirement receipt after cloud ingest and host-delete ACK", async () => {
     const id = useLandingDraftStore.getState().createDraft(null);
     adoptLandingDraft(id, "host-a");
     useLandingDraftStore.getState().deleteDraft(id);
@@ -1160,6 +1169,7 @@ describe("landing draft host-mirror bookkeeping", () => {
       revision: 0,
       lastTouchedAt: 2,
       workspace: null,
+      supersedes: null,
       ownerHostId: "host-b",
       origin: "replica",
       adoption: { state: "adopted", hostId: "host-b" },
@@ -1187,30 +1197,29 @@ describe("landing draft host-mirror bookkeeping", () => {
       },
     };
 
+    // Ownership never moves: the cloud head names a different host (host-b)
+    // than the receipt (host-a), but that does not retarget anything - the
+    // receipt still names host-a, and the document (a different id's owner
+    // entirely, from this device's perspective) is rejected outright since
+    // the id is retired.
     await ingestCloudDraftSummary({
       hostId: "host-a",
       summary,
       document,
-      snapshotSeq: 0,
     });
-    // The document names a NEW owner (host-b), and no ownership apply was
-    // ever recorded for this id, so the snapshot is not stale: the pending
-    // delete is retargeted from host-a to host-b.
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
-    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([]);
-    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([id]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([id]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([]);
 
     completeLandingDraftDelete(id);
     expect(landingDraftIsRetired(id)).toBe(true);
-    expect(pendingLandingDraftDeleteIdsForHost("host-b")).toEqual([]);
+    expect(pendingLandingDraftDeleteIdsForHost("host-a")).toEqual([]);
     await ingestCloudDraftSummary({
       hostId: "host-a",
       summary,
       document,
-      snapshotSeq: 0,
     });
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
-    expect(landingDraftIsRetired(id)).toBe(true);
   });
 
   it("retries a row-free landing retirement after host restart and retains its receipt", async () => {
@@ -1248,5 +1257,204 @@ describe("landing draft host-mirror bookkeeping", () => {
     expect(pendingLandingDraftDeleteIdsForHost(hostId)).toEqual([]);
     expect(landingDraftIsRetired(id)).toBe(true);
     expect(useLandingDraftStore.getState().drafts).toEqual([]);
+  });
+
+  describe("re-key: a host re-mint inherits the ancestor's open/active tab", () => {
+    it("a subscribe delete of an open, active row followed by an upsert naming it as supersedes ends with the new row open and activated", async () => {
+      const activateTabSpy = vi
+        .spyOn(tabCommandCoordinator, "activateTab")
+        .mockReturnValue(null);
+      try {
+        const hostId = "host-rekey";
+        const oldId = "rekey-old";
+        const newId = "rekey-new";
+        const stream = controlledStream();
+        acquireDraftMirrorSession({
+          hostId,
+          client: {
+            request: (method: string) => {
+              if (method === "drafts.list") {
+                return Promise.resolve({
+                  drafts: [],
+                  tombstones: [],
+                  snapshotSeq: 0,
+                  scopeId: null,
+                });
+              }
+              return Promise.reject(new Error(`unexpected ${method}`));
+            },
+          } as never,
+          streamClient: stream.client,
+          timing: undefined,
+        });
+        await vi.waitFor(() => {
+          expect(stream.started.value).toBe(true);
+        });
+
+        // A locally-known row for the ancestor id: open and active, as it
+        // would be after this device created or ingested it earlier.
+        useLandingDraftStore.setState({
+          drafts: [
+            {
+              id: oldId,
+              content: EMPTY_LANDING_DRAFT_CONTENT,
+              selection: null,
+              lastTouchedAt: 0,
+              settings: null,
+              composerMode: "chat",
+              workspace: emptyLandingDraftWorkspaceSnapshot(),
+              ...freshLandingMirrorState(),
+              adoption: { state: "adopted", hostId },
+              origin: "own",
+              ownerHostId: hostId,
+            },
+          ],
+          activeDraftId: oldId,
+        });
+
+        stream.emit({
+          kind: "delete",
+          hasBinaryPayload: false,
+          storeSeq: 1,
+          draftId: oldId,
+          revision: 1,
+        });
+
+        await vi.waitFor(() => {
+          expect(
+            useLandingDraftStore.getState().drafts.some((d) => d.id === oldId),
+          ).toBe(false);
+        });
+
+        const newDocument: Extract<
+          DraftDocument,
+          { readonly kind: "landing" }
+        > = {
+          draftId: newId,
+          kind: "landing",
+          target: { epicId: null, chatId: null, blockId: null },
+          revision: 1,
+          lastTouchedAt: 2,
+          workspace: null,
+          supersedes: oldId,
+          ownerHostId: hostId,
+          origin: "own",
+          adoption: { state: "adopted", hostId },
+          publication: {
+            status: "unpublished",
+            lastPublishedAt: null,
+            publishedRevision: null,
+            halted: null,
+          },
+          portable: {
+            content: EMPTY_LANDING_DRAFT_CONTENT,
+            selection: null,
+            runSettings: null,
+            composerMode: "chat",
+            blobHashes: [],
+            closed: false,
+          },
+        };
+        stream.emit({
+          kind: "upsert",
+          hasBinaryPayload: false,
+          storeSeq: 2,
+          draftId: newId,
+          revision: newDocument.revision,
+          draft: newDocument,
+        });
+
+        await vi.waitFor(() => {
+          const draft = useLandingDraftStore
+            .getState()
+            .drafts.find((d) => d.id === newId);
+          expect(draft?.closed).toBe(false);
+        });
+        expect(activateTabSpy).toHaveBeenCalledWith({
+          kind: "draft",
+          draftId: newId,
+          settings: null,
+          create: false,
+        });
+      } finally {
+        activateTabSpy.mockRestore();
+      }
+    });
+
+    it("an upsert naming a closed or unknown ancestor id applies as a plain insert and does not activate", async () => {
+      const activateTabSpy = vi
+        .spyOn(tabCommandCoordinator, "activateTab")
+        .mockReturnValue(null);
+      try {
+        const hostId = "host-rekey-plain";
+        const newId = "rekey-plain-new";
+        const stream = controlledStream();
+        acquireDraftMirrorSession({
+          hostId,
+          client: {
+            request: (method: string) => {
+              if (method === "drafts.list") {
+                return Promise.resolve({
+                  drafts: [],
+                  tombstones: [],
+                  snapshotSeq: 0,
+                  scopeId: null,
+                });
+              }
+              return Promise.reject(new Error(`unexpected ${method}`));
+            },
+          } as never,
+          streamClient: stream.client,
+          timing: undefined,
+        });
+        await vi.waitFor(() => {
+          expect(stream.started.value).toBe(true);
+        });
+
+        const document: Extract<DraftDocument, { readonly kind: "landing" }> = {
+          draftId: newId,
+          kind: "landing",
+          target: { epicId: null, chatId: null, blockId: null },
+          revision: 1,
+          lastTouchedAt: 1,
+          workspace: null,
+          supersedes: "never-seen-ancestor",
+          ownerHostId: hostId,
+          origin: "own",
+          adoption: { state: "adopted", hostId },
+          publication: {
+            status: "unpublished",
+            lastPublishedAt: null,
+            publishedRevision: null,
+            halted: null,
+          },
+          portable: {
+            content: EMPTY_LANDING_DRAFT_CONTENT,
+            selection: null,
+            runSettings: null,
+            composerMode: "chat",
+            blobHashes: [],
+            closed: false,
+          },
+        };
+        stream.emit({
+          kind: "upsert",
+          hasBinaryPayload: false,
+          storeSeq: 1,
+          draftId: newId,
+          revision: document.revision,
+          draft: document,
+        });
+
+        await vi.waitFor(() => {
+          expect(
+            useLandingDraftStore.getState().drafts.some((d) => d.id === newId),
+          ).toBe(true);
+        });
+        expect(activateTabSpy).not.toHaveBeenCalled();
+      } finally {
+        activateTabSpy.mockRestore();
+      }
+    });
   });
 });

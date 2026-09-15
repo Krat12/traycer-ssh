@@ -191,7 +191,7 @@ export function LandingDraftSurface() {
           {/* Drafts another host owns are not a section of their own: the
               ingest mount puts them in the landing store and the History
               drafts list below shows them beside this host's, with no owner
-              bucket. Opening one claims it underneath on the first edit. */}
+              bucket. Opening one forks it underneath on the first edit. */}
           {showRecentHistory && isMobile ? (
             /* Recent tasks live in the hamburger drawer at this width, which is
                not discoverable from a landing page that is otherwise empty
