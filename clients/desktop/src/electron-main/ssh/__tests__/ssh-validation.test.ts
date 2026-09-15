@@ -97,6 +97,32 @@ describe("SSH route validation", () => {
       /install|restart|update|kill|credentials/,
     );
   });
+  it.each([
+    { operation: "discovery", args: discoveryArgs(profile.target) },
+    {
+      operation: "tunnel",
+      args: tunnelArgs(profile.target, 12345, {
+        hostname: "127.0.0.1",
+        port: 7777,
+        version: null,
+      }),
+    },
+  ])(
+    "allows only the pre-8.7 compatibility exception before its option for $operation",
+    ({ args }) => {
+      expect(args.filter((arg) => arg.startsWith("IgnoreUnknown="))).toEqual([
+        "IgnoreUnknown=ForkAfterAuthentication",
+      ]);
+      const ignoreIndex = args.indexOf("IgnoreUnknown=ForkAfterAuthentication");
+      const forkIndex = args.indexOf("ForkAfterAuthentication=no");
+      expect(ignoreIndex).toBeGreaterThan(0);
+      expect(ignoreIndex).toBeLessThan(forkIndex);
+      expect(args[ignoreIndex - 1]).toBe("-o");
+      expect(args[forkIndex - 1]).toBe("-o");
+      expect(args).toContain("StrictHostKeyChecking=yes");
+      expect(args).toContain("BatchMode=yes");
+    },
+  );
   it("never forwards raw SSH diagnostics, paths or tokens to the renderer", () => {
     const raw =
       "/home/secret/key: Permission denied https://private.invalid?token=SECRET";

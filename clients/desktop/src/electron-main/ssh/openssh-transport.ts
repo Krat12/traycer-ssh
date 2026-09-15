@@ -39,6 +39,10 @@ const SSH_OPTIONS = [
   "-o",
   "ControlPersist=no",
   "-o",
+  // Windows can ship OpenSSH older than 8.7, when this option was added.
+  // Known options still apply; older clients cannot fork via their config.
+  "IgnoreUnknown=ForkAfterAuthentication",
+  "-o",
   "ForkAfterAuthentication=no",
   "-o",
   "ForwardAgent=no",
