@@ -3,6 +3,8 @@ import { HostRpcError } from "@traycer-clients/shared/host-transport/host-messen
 import type {
   IStreamSession,
   ServerFrameHandler,
+  StatusChangeHandler,
+  StreamConnectionStatus,
 } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type {
   DraftDocument,
@@ -37,10 +39,12 @@ import {
   collectLandingDirtyWrites,
   landingDraftIsDirty,
   landingDraftRememberSynced,
+  rememberLandingBlobsOnHost,
   useLandingDraftStore,
 } from "@/stores/home/landing-draft-store";
 import { cloudDraftsDirectoryIsVisible } from "@/lib/drafts/cloud-drafts-visibility";
 import {
+  hostWithholdsDraftBlobs,
   isDraftBlobConfirmed,
   putDraftBlobs,
   resetDraftBlobTransportForTests,
@@ -137,10 +141,13 @@ function unsupportedError(method: string): HostRpcError {
 function createStreamHarness(): {
   readonly client: DraftsStreamSubscribe;
   readonly emit: (frame: DraftsSubscribeServerFrameV10) => void;
+  /** Drive the session's own status handler - how a reconnect is staged. */
+  readonly emitStatus: (status: StreamConnectionStatus) => void;
   readonly sent: Array<{ readonly kind: string; readonly draftIds?: unknown }>;
   readonly subscribeCalls: { count: number };
 } {
   let onFrame: ServerFrameHandler | null = null;
+  let onStatus: StatusChangeHandler | null = null;
   const subscribeCalls = { count: 0 };
   const sent: Array<{ readonly kind: string; readonly draftIds?: unknown }> =
     [];
@@ -155,7 +162,9 @@ function createStreamHarness(): {
     onServerFrame: (handler) => {
       onFrame = handler;
     },
-    onStatusChange: () => undefined,
+    onStatusChange: (handler) => {
+      onStatus = handler;
+    },
     requestReconnect: () => undefined,
     close: () => undefined,
     getNegotiatedSchemaVersion: () => ({ major: 1, minor: 0 }),
@@ -163,6 +172,9 @@ function createStreamHarness(): {
   return {
     emit: (frame) => {
       onFrame?.(frame, null);
+    },
+    emitStatus: (status) => {
+      onStatus?.(status, null, null);
     },
     sent,
     subscribeCalls,
@@ -1548,12 +1560,115 @@ describe("DraftMirrorSession", () => {
     releaseUpload();
     const confirmed = await uploadPromise;
 
-    // The wire call still succeeded, so the caller's own bookkeeping counts
-    // it -
-    expect(confirmed).toEqual([hash]);
-    // - but the MEMO does not: `close()` fenced it, so the send gate must not
-    // trust bytes on a connection this client has stopped talking to.
+    // Reported UNCONFIRMED, not "confirmed but unmemoized". `close()` fenced
+    // the acknowledgement, and the caller's own bookkeeping is the landing
+    // draft's `confirmedHostBlobHashes` - the set that decides whether the
+    // local bytes may be evicted. A digest here would let the only copy go.
+    expect(confirmed).toEqual([]);
+    // The memo agrees: the send gate must not trust bytes on a connection this
+    // client has stopped talking to.
     expect(isDraftBlobConfirmed(BLOB_HOST, hash, BLOB_OWNER)).toBe(false);
+  });
+
+  it("a reconnect re-bootstrap re-probes the capability memos, not just the confirmations (DRIVE RED)", async () => {
+    // A host that comes back on a reconnect can be a host that came back on a
+    // new BUILD - a restart is how an upgrade lands. Acquisition already
+    // re-probes for exactly that reason, and the reconnect path re-lists
+    // without re-acquiring, so a host that GAINED `drafts.putBlob` stayed
+    // short-circuited until the whole tile hierarchy unmounted.
+    const host = "host-rebootstrap-capability";
+    const hash = await putImage(new Uint8Array([13, 14, 15, 16]));
+
+    // The host answers "I do not have these methods" once.
+    let withholds = true;
+    const client: DraftBlobClient = {
+      request: ((_method, _params) =>
+        withholds
+          ? Promise.reject(unsupportedError("drafts.putBlob"))
+          : Promise.resolve({
+              ok: true as const,
+            })) as HostRequester<HostRpcRegistry>["request"],
+    };
+    expect(await putDraftBlobs(host, client, [hash], BLOB_OWNER)).toEqual([]);
+    expect(hostWithholdsDraftBlobs(host)).toBe(true);
+
+    // The host restarts into a build that has them, and the mirror re-lists.
+    const stream = createStreamHarness();
+    const session = new DraftMirrorSession({
+      hostId: host,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: () => Promise.reject(new Error("not used")),
+        delete: () => Promise.reject(new Error("not used")),
+      }),
+      streamClient: stream.client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.start();
+    await Promise.resolve();
+    // The FIRST `open` is the subscribe itself, which `start()` already listed
+    // for; the second is the reconnect that re-bootstraps.
+    stream.emitStatus("open");
+    stream.emitStatus("open");
+    await Promise.resolve();
+
+    expect(hostWithholdsDraftBlobs(host)).toBe(false);
+    withholds = false;
+    expect(await putDraftBlobs(host, client, [hash], BLOB_OWNER)).toEqual([
+      hash,
+    ]);
+    session.close();
+  });
+
+  it("F6 consequence: a fenced acknowledgement never reaches a landing draft's confirmedHostBlobHashes", async () => {
+    // The memo is not the only consumer of `putDraftBlobs`' answer.
+    // `rememberLandingBlobsOnHost` feeds that same array into the set
+    // `landingDraftPinsLocalImageBytes` reads, and a draft whose every hash is
+    // in it stops pinning its local bytes - so an acknowledgement from a
+    // retired conversation would let the LRU discard the only copy of the
+    // image. This asserts the value at the boundary the eviction gate reads.
+    const bytes = new Uint8Array([9, 10, 11, 12]);
+    const hash = await putImage(bytes);
+    let releaseUpload: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const client: DraftBlobClient = {
+      request: (async (_method, _params) => {
+        await gate;
+        return { ok: true as const };
+      }) as HostRequester<HostRpcRegistry>["request"],
+    };
+    const host = "host-close-fence-eviction";
+
+    const uploadPromise = putDraftBlobs(host, client, [hash], BLOB_OWNER);
+    const session = new DraftMirrorSession({
+      hostId: host,
+      rpc: createRpc({
+        list: () => Promise.resolve(listResponse([], 1, EMPTY_LIST_TOMBSTONES)),
+        upsert: () => Promise.reject(new Error("not used")),
+        delete: () => Promise.reject(new Error("not used")),
+      }),
+      streamClient: createStreamHarness().client,
+      sink: createSink({ dirty: new Set(), writes: [] }),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+      now: () => 0,
+    });
+    session.close();
+
+    releaseUpload();
+    const confirmed = await uploadPromise;
+
+    const draftId = useLandingDraftStore.getState().createDraft(null);
+    rememberLandingBlobsOnHost(draftId, confirmed);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.find((draft) => draft.id === draftId)?.confirmedHostBlobHashes,
+    ).toEqual([]);
+    useLandingDraftStore.setState({ drafts: [], activeDraftId: null });
   });
 
   it("F6 positive control: without close(), the identical sequence DOES confirm", async () => {

@@ -1003,6 +1003,17 @@ export const useWorktreeIntentStagingStore =
               (acc, entry) => mergeWorktreeIntentEntry(acc, entry),
               existing ?? { entries: [] },
             );
+            // `sessionSweptRefsByHost` is deliberately NOT cleared here, and
+            // that asymmetry with `stageEntry` is the point. Clearing a swept
+            // mark says "this path was recreated", and only a per-entry stage
+            // carries that assertion. This action's one caller re-stages the
+            // WHOLE captured intent to restamp `isPrimary` after a primary
+            // switch, so it re-stages entries the user never touched: doing it
+            // here would make picking a different primary folder erase the
+            // deletion evidence for every other staged path on the host - and a
+            // recovery that had not yet observed those facts would then qualify
+            // its stashed prompt as if the worktree still existed, sending the
+            // user back into a directory that is gone.
             return {
               intentByKey: { ...state.intentByKey, [id]: merged },
               revisionByKey: incrementStagingRevision(state.revisionByKey, id),
@@ -1011,11 +1022,6 @@ export const useWorktreeIntentStagingStore =
                 id,
               ),
               sweptRefsByKey: withoutDispatchMark(state.sweptRefsByKey, id),
-              sessionSweptRefsByHost: withStagedPathsCleared(
-                state.sessionSweptRefsByHost,
-                key.hostId,
-                intent.entries,
-              ),
             };
           }),
         releaseIntentForDispatch: (key, expectedRevision) =>

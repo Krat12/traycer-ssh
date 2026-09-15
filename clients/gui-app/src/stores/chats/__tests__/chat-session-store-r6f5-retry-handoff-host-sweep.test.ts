@@ -21,7 +21,10 @@ import type { ChatStreamCallbacks } from "@traycer-clients/shared/host-transport
 import type { Chat } from "@traycer/protocol/persistence/epic/schemas";
 import type { HostRequester } from "@traycer-clients/shared/host-client/host-client";
 import type { HostRpcRegistry } from "@/lib/host";
-import type { WorktreeIntent } from "@traycer/protocol/host/worktree-schemas";
+import type {
+  WorktreeFolderIntent,
+  WorktreeIntent,
+} from "@traycer/protocol/host/worktree-schemas";
 import type { RemovedWorktreeRefs } from "@/lib/worktree/removed-worktree-refs";
 import type { PromptStashSnapshot } from "@/lib/composer/prompt-stash-codec";
 
@@ -295,17 +298,14 @@ describe("R7F3: a sticky per-consumer sweep record survives another consumer cle
       ownerKind: "chat",
       ownerId: "chat-r7f3-b",
     };
-    const sharedIntent: WorktreeIntent = {
-      entries: [
-        {
-          kind: "import",
-          workspacePath: "/repo-r7f3-shared",
-          worktreePath: "/repo-r7f3-shared",
-          repoIdentifier: null,
-          isPrimary: true,
-        },
-      ],
+    const sharedEntry: WorktreeFolderIntent = {
+      kind: "import",
+      workspacePath: "/repo-r7f3-shared",
+      worktreePath: "/repo-r7f3-shared",
+      repoIdentifier: null,
+      isPrimary: true,
     };
+    const sharedIntent: WorktreeIntent = { entries: [sharedEntry] };
     useWorktreeIntentStagingStore
       .getState()
       .stageIntent(stagingKeyA, sharedIntent);
@@ -341,9 +341,14 @@ describe("R7F3: a sticky per-consumer sweep record survives another consumer cle
     // NOW chat B stages A's OWN path - the user reasserting a path exists is
     // exactly what clears the host-wide mark, for every consumer, regardless
     // of who originally staged it or who it was swept out from under.
+    //
+    // `stageEntry`, the per-ROW action, because that is the one that carries
+    // the assertion: a bulk `stageIntent` re-stages entries the user never
+    // touched (its caller restamps `isPrimary` after a primary switch) and
+    // deliberately retracts nothing.
     useWorktreeIntentStagingStore
       .getState()
-      .stageIntent(stagingKeyB, sharedIntent);
+      .stageEntry(stagingKeyB, sharedEntry);
     expect(
       sessionSweptRefsForHost(HOST_ID)?.worktreePaths.has(
         "/repo-r7f3-shared",

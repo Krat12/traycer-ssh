@@ -133,7 +133,19 @@ interface CloudDraftImageSource {
   readonly client: DraftBlobClient;
 }
 
-const sourcesByHash = new Map<string, CloudDraftImageSource>();
+/**
+ * How many distinct addresses one digest keeps.
+ *
+ * More than one because a cloud read is addressed by a DRAFT's identity, not by
+ * the digest: two drafts can name the same image and only one of them have a
+ * retrievable blob behind it. Publication is advisory - it is skipped when the
+ * publishing host no longer held the bytes, and a blob can be swept later - so
+ * the newest address is not the likeliest to answer, it is only the newest.
+ * Small because the list is a fallback chain walked on a miss, not an index.
+ */
+const CLOUD_DRAFT_IMAGE_SOURCES_PER_HASH = 3;
+
+const sourcesByHash = new Map<string, CloudDraftImageSource[]>();
 const inFlightByHash = new Map<string, Promise<ImageBytes | null>>();
 /** Hosts that answered `E_HOST_UNSUPPORTED`: never re-probed per image. */
 const payloadUnsupportedHosts = new Set<string>();
@@ -183,10 +195,44 @@ export function recordCloudDraftImageSources(
     client: input.client,
   };
   for (const hash of input.hashes) {
+    // Newest FIRST, older addresses kept behind it. Re-recording still moves
+    // the hash to the back of the eviction order (delete-then-set on the outer
+    // map), which is the freshness signal the doc above describes; what it no
+    // longer does is discard the address a previous draft published under.
+    const kept = (sourcesByHash.get(hash) ?? []).filter(
+      (candidate) => !sameCloudDraftImageSource(candidate, source),
+    );
     sourcesByHash.delete(hash);
-    sourcesByHash.set(hash, source);
+    sourcesByHash.set(
+      hash,
+      [source, ...kept].slice(0, CLOUD_DRAFT_IMAGE_SOURCES_PER_HASH),
+    );
   }
   evictUnrootedOverflow();
+}
+
+/**
+ * Two addresses are the same when they name the same draft through the same
+ * host. The `client` is deliberately not compared: a re-ingest of the same
+ * draft on a remounted mirror carries a fresh requester for the same address,
+ * and keeping both would spend a candidate slot on a duplicate.
+ */
+function cloudDraftImageSourcesFor(
+  hash: string,
+): ReadonlyArray<CloudDraftImageSource> {
+  return sourcesByHash.get(hash) ?? [];
+}
+
+function sameCloudDraftImageSource(
+  left: CloudDraftImageSource,
+  right: CloudDraftImageSource,
+): boolean {
+  return (
+    left.hostId === right.hostId &&
+    left.identity.taskId === right.identity.taskId &&
+    left.identity.chatId === right.identity.chatId &&
+    left.identity.ownerUserId === right.identity.ownerUserId
+  );
 }
 
 /**
@@ -231,9 +277,9 @@ function evictUnrootedOverflow(): void {
 export function readCloudDraftImageBytes(
   hash: string,
 ): Promise<ImageBytes | null> {
-  const source = sourcesByHash.get(hash);
-  if (source === undefined) return Promise.resolve(null);
-  return awaitTransferBounded(hash, source);
+  if (cloudDraftImageSourcesFor(hash).length === 0)
+    return Promise.resolve(null);
+  return awaitTransferBounded(hash);
 }
 
 /**
@@ -256,11 +302,6 @@ export async function recoverCloudDraftImages(
 ): Promise<void> {
   if (input.hashes.length === 0) return;
   recordCloudDraftImageSources(input);
-  const source: CloudDraftImageSource = {
-    identity: input.identity,
-    hostId: input.hostId,
-    client: input.client,
-  };
   const pending = [...input.hashes];
   const width = Math.min(
     CLOUD_DRAFT_IMAGE_RECOVERY_CONCURRENCY,
@@ -268,15 +309,12 @@ export async function recoverCloudDraftImages(
   );
   const workers: Promise<void>[] = [];
   for (let worker = 0; worker < width; worker += 1) {
-    workers.push(drainCloudDraftImages(pending, source));
+    workers.push(drainCloudDraftImages(pending));
   }
   await Promise.all(workers);
 }
 
-async function drainCloudDraftImages(
-  pending: string[],
-  source: CloudDraftImageSource,
-): Promise<void> {
+async function drainCloudDraftImages(pending: string[]): Promise<void> {
   for (;;) {
     const hash = pending.shift();
     if (hash === undefined) return;
@@ -289,7 +327,7 @@ async function drainCloudDraftImages(
     // so the pool would bound starts rather than concurrent work. This pass is
     // background warming with nobody blocked on it, so holding the slot for the
     // real transfer is exactly right.
-    await transferFor(hash, source);
+    await transferFor(hash);
   }
 }
 
@@ -330,15 +368,12 @@ async function hasLocalImageBytes(hash: string): Promise<boolean> {
  * anything.
  *
  * Keyed by hash alone, not by source. Two drafts can name one digest and the
- * bytes are the same by construction, so joining is correct; the only cost is
- * that a joiner inherits the leader's ANSWER, so a leader whose chat no longer
- * holds the blob hands the joiner a miss. The flight is dropped on settle, so
- * that costs one retry, not a remembered verdict.
+ * bytes are the same by construction, so joining is correct - and the transfer
+ * walks EVERY address recorded for the digest, so a joiner no longer inherits
+ * one draft's bad luck: a chat whose blob was never published or has been swept
+ * is a miss on that candidate, not on the hash.
  */
-function transferFor(
-  hash: string,
-  source: CloudDraftImageSource,
-): Promise<ImageBytes | null> {
+function transferFor(hash: string): Promise<ImageBytes | null> {
   const existing = inFlightByHash.get(hash);
   if (existing !== undefined) return existing;
   // The transfer's OWN cap, and the reason it is not the caller's: a caller
@@ -348,7 +383,7 @@ function transferFor(
   // caller's wait, so it never fires on the merely-slow path the caller's
   // deadline is for.
   const transfer = waitBounded(
-    readAndStoreCloudDraftImage(hash, source),
+    readAndStoreFromAnyCloudSource(hash),
     CLOUD_DRAFT_IMAGE_TRANSFER_TIMEOUT_MS,
   )
     .then((settled) => {
@@ -375,18 +410,33 @@ function transferFor(
  * write-back are inside it, not after it. Bounding only the request left a
  * successful reply followed by a stalled write holding a send open forever.
  */
-async function awaitTransferBounded(
-  hash: string,
-  source: CloudDraftImageSource,
-): Promise<ImageBytes | null> {
+async function awaitTransferBounded(hash: string): Promise<ImageBytes | null> {
   const settled = await waitBounded(
-    transferFor(hash, source),
+    transferFor(hash),
     CLOUD_DRAFT_IMAGE_READ_TIMEOUT_MS,
   );
   if (settled !== READ_TIMED_OUT) return settled;
   appLogger.warn("[cloud-draft-image] blob read exceeded the caller's wait", {
     hash,
   });
+  return null;
+}
+
+/**
+ * Try each recorded address for `hash`, newest first, until one answers.
+ *
+ * Read at dispatch rather than captured with the flight, so an address recorded
+ * while this transfer was queued behind the concurrency bound is included.
+ * Every candidate returning `null` is an ordinary outcome - the node stays
+ * hash-only and the host's guard at send is the authority.
+ */
+async function readAndStoreFromAnyCloudSource(
+  hash: string,
+): Promise<ImageBytes | null> {
+  for (const source of cloudDraftImageSourcesFor(hash)) {
+    const bytes = await readAndStoreCloudDraftImage(hash, source);
+    if (bytes !== null) return bytes;
+  }
   return null;
 }
 

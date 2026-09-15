@@ -378,6 +378,10 @@ describe("worktree intent purge on sweep completion", () => {
 // is what lets a frozen ref be asked about long after the fact - so staging
 // a path is the only signal that can retract a mark, and it must retract
 // ONLY that path.
+//
+// The signal is `stageEntry`, the per-row action, and NOT `stageIntent`: see
+// the bulk-restage test at the end of this block for why the distinction
+// carries weight.
 describe("R6F5(a): staging a swept path clears its own swept mark", () => {
   const key = {
     surface: "owner" as const,
@@ -391,32 +395,55 @@ describe("R6F5(a): staging a swept path clears its own swept mark", () => {
     useWorktreeIntentStagingStore.getState().resetForTests();
   });
 
-  it("stageIntent naming the swept path un-marks it, and only it (DRIVE RED)", () => {
+  it("a BULK restage does not un-mark anything - only a per-row stage does (DRIVE RED)", () => {
+    // `stageIntent` re-stages a whole captured intent, and its one caller does
+    // that to restamp `isPrimary` after a primary switch - so it names entries
+    // the user did not touch and asserts nothing about whether they exist.
+    // Retracting there let picking a different primary folder erase the
+    // deletion evidence for every other staged path on the host.
+    useWorktreeIntentStagingStore
+      .getState()
+      .purgeRemovedWorktreeIntents(SWEPT_HOST, {
+        worktreePaths: new Set(["/repo-bulk-a", "/repo-bulk-b"]),
+        branches: [],
+      });
+
+    useWorktreeIntentStagingStore.getState().stageIntent(key, {
+      entries: [
+        {
+          kind: "local",
+          workspacePath: "/repo-bulk-a",
+          repoIdentifier: null,
+          isPrimary: true,
+        },
+        {
+          kind: "local",
+          workspacePath: "/repo-bulk-b",
+          repoIdentifier: null,
+          isPrimary: false,
+        },
+      ],
+    });
+
+    expect(
+      sessionSweptRefsForHost(SWEPT_HOST)?.worktreePaths.has("/repo-bulk-a"),
+    ).toBe(true);
+    expect(
+      sessionSweptRefsForHost(SWEPT_HOST)?.worktreePaths.has("/repo-bulk-b"),
+    ).toBe(true);
+
+    // The per-row action still retracts, and only for the row it names.
     useWorktreeIntentStagingStore
       .getState()
       .purgeRemovedWorktreeIntents(SWEPT_HOST, {
         worktreePaths: new Set(["/repo-recreated", "/repo-still-gone"]),
         branches: [],
       });
-    expect(
-      sessionSweptRefsForHost(SWEPT_HOST)?.worktreePaths.has("/repo-recreated"),
-    ).toBe(true);
-    expect(
-      sessionSweptRefsForHost(SWEPT_HOST)?.worktreePaths.has(
-        "/repo-still-gone",
-      ),
-    ).toBe(true);
-
-    // The user re-picks the SAME path - it was recreated on disk.
-    useWorktreeIntentStagingStore.getState().stageIntent(key, {
-      entries: [
-        {
-          kind: "local",
-          workspacePath: "/repo-recreated",
-          repoIdentifier: null,
-          isPrimary: true,
-        },
-      ],
+    useWorktreeIntentStagingStore.getState().stageEntry(key, {
+      kind: "local",
+      workspacePath: "/repo-recreated",
+      repoIdentifier: null,
+      isPrimary: true,
     });
 
     expect(
@@ -473,7 +500,7 @@ describe("R7F?/C: staging a swept EXISTING-BRANCH selection clears its own swept
     useWorktreeIntentStagingStore.getState().resetForTests();
   });
 
-  it("stageIntent re-picking a swept existing branch un-marks it (DRIVE RED)", () => {
+  it("stageEntry re-picking a swept existing branch un-marks it (DRIVE RED)", () => {
     useWorktreeIntentStagingStore
       .getState()
       .purgeRemovedWorktreeIntents(SWEPT_HOST, {
@@ -495,9 +522,9 @@ describe("R7F?/C: staging a swept EXISTING-BRANCH selection clears its own swept
     ).toBe(true);
 
     // The user re-picks the SAME existing branch - it was recreated.
-    useWorktreeIntentStagingStore.getState().stageIntent(key, {
-      entries: [existingBranchIntent("traycer/recreated-branch")],
-    });
+    useWorktreeIntentStagingStore
+      .getState()
+      .stageEntry(key, existingBranchIntent("traycer/recreated-branch"));
 
     expect(
       sessionSweptRefsForHost(SWEPT_HOST)?.branches.some(

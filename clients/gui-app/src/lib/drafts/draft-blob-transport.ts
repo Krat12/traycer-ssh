@@ -49,11 +49,12 @@ const blobUnsupportedHosts = new Set<string>();
  *    two callers that both got past it before either registered would both
  *    upload.
  *  - `unbridgeableBlobs`: digests this host answered `unsupported-format` for.
- *    Deliberately NOT owner-keyed and NOT cleared on re-bootstrap, unlike the
- *    confirmations - what a host's writer can decode is a property of the host
- *    BUILD, so neither a different account nor a reconnect changes the answer.
- *    Only `forgetBlobUnsupportedHost` clears it, which is the host-upgraded
- *    signal.
+ *    Deliberately NOT owner-keyed - what a host's writer can decode is a
+ *    property of the host BUILD, so a different account cannot change the
+ *    answer. Only `forgetBlobUnsupportedHost` clears it, which is the
+ *    host-may-have-upgraded signal: acquisition, and the mirror's re-bootstrap,
+ *    since the host that answers a reconnect can be one that came back on a
+ *    NEW build.
  *
  * ## Why an epoch, and why not the session's own generation
  *
@@ -63,10 +64,23 @@ const blobUnsupportedHosts = new Set<string>();
  * blob - recording it then would leave the gate confident about bytes nothing
  * holds, and the send would go out bare.
  *
- * So each upload captures the host's epoch when it STARTS and records its
- * confirmation only if that epoch still stands. The wire call still counts as
- * having succeeded - `putDraftBlobs` returns the digest either way, leaving
- * `rememberLandingBlobsOnHost` exactly as it was - it simply is not memoized.
+ * So each upload captures the host's epoch when it STARTS and reports success
+ * only if that epoch still stands. Both consumers of the answer need the same
+ * fence, which is why the retired-epoch arm reports FAILURE rather than "the
+ * wire call succeeded but we did not memoize it":
+ *
+ *  - the send gate reads the memo, and a stale confirmation would send a bare
+ *    hash to a host that no longer holds it;
+ *  - `rememberLandingBlobsOnHost` reads `putDraftBlobs`' return, and
+ *    `landingDraftPinsLocalImageBytes` stops pinning a landing draft's local
+ *    bytes once every hash in it is "confirmed on the host". A stale
+ *    acknowledgement there authorizes `evictAdoptedLandingMirrors` to discard
+ *    the draft holding the only copy of the image.
+ *
+ * The second is the one that costs bytes rather than a round trip, and it is
+ * exactly the host-restart case: the old conversation's ack cannot establish
+ * custody on the new one. Reporting failure re-uploads on the new conversation,
+ * which is the fail-safe direction.
  *
  * `DraftMirrorSession`'s own `bootGeneration` looks like the right counter and
  * is not: it bumps only in `close()`, so the reconnect re-bootstrap - the case
@@ -339,13 +353,14 @@ async function uploadOneDraftBlob(
       return false;
     }
     if (blobEpochOf(hostId) !== epoch) {
-      // The wire call succeeded, so the caller still counts it - what is
-      // dropped is the MEMO, because this acknowledgement describes a mirror
-      // conversation that has since been replaced.
+      // Unconfirmed, not "confirmed but unmemoized". This acknowledgement
+      // describes a mirror conversation that has since been replaced, so it
+      // establishes nothing about the one now running - see the epoch section
+      // of the module doc for why BOTH consumers need that answer.
       appLogger.warn("[draft-blobs] putBlob acknowledged after re-bootstrap", {
         sha256,
       });
-      return true;
+      return false;
     }
     if (ownerUserId !== null) recordConfirmedBlob(hostId, sha256, ownerUserId);
     return true;

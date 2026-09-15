@@ -458,4 +458,83 @@ describe("cloud-draft-image-recovery", () => {
     expect(maxInFlight).toBeLessThanOrEqual(4);
     expect(requested.sort()).toEqual([...hashes].sort());
   });
+  it("keeps an older draft's address when a newer draft names the same digest without a usable blob (DRIVE RED)", async () => {
+    // A cloud read is addressed by a DRAFT, not by a digest. Two drafts can
+    // name one image and only one of them have a retrievable blob - a head may
+    // reference an image whose publication was skipped, or whose blob was
+    // swept since. Replacing the address outright made the LATER draft the
+    // only one ever asked, so the first draft's perfectly good blob became
+    // permanently unreachable.
+    const bytes = bytesA();
+    const hash = await sha256HexOf(bytes);
+
+    const good = recordingClient((_method, _params) => ({
+      outcome: {
+        status: "ok" as const,
+        bytesBase64: toBase64(bytes),
+        byteLength: bytes.byteLength,
+      },
+    }));
+    const swept = recordingClient((_method, _params) => ({
+      outcome: { status: "unavailable" as const },
+    }));
+
+    recordCloudDraftImageSources({
+      identity: IDENTITY,
+      hostId: "host-a",
+      client: good.client,
+      hashes: [hash],
+    });
+    // A LATER draft names the same digest; its own blob is gone.
+    recordCloudDraftImageSources({
+      identity: { ...IDENTITY, chatId: "draft-2" },
+      hostId: "host-a",
+      client: swept.client,
+      hashes: [hash],
+    });
+
+    const result = await readCloudDraftImageBytes(hash);
+
+    expect(result).toEqual(bytes);
+    expect(await getImageBytes(hash)).toEqual(bytes);
+    // Newest first, so the swept address is tried and missed before the older
+    // one answers - the order is the freshness rule, the fallback is the fix.
+    expect(swept.calls).toHaveLength(1);
+    expect(good.calls).toHaveLength(1);
+  });
+
+  it("re-recording the same draft does not spend a candidate slot", async () => {
+    // A re-ingest of one draft carries a fresh requester for the same address.
+    // Without the identity-keyed dedupe those duplicates would push the only
+    // other candidate out of a three-deep list.
+    const bytes = bytesA();
+    const hash = await sha256HexOf(bytes);
+    const good = recordingClient((_method, _params) => ({
+      outcome: {
+        status: "ok" as const,
+        bytesBase64: toBase64(bytes),
+        byteLength: bytes.byteLength,
+      },
+    }));
+    const sweptClient = (): DraftBlobClient =>
+      recordingClient(() => ({ outcome: { status: "unavailable" as const } }))
+        .client;
+
+    recordCloudDraftImageSources({
+      identity: IDENTITY,
+      hostId: "host-a",
+      client: good.client,
+      hashes: [hash],
+    });
+    for (let index = 0; index < 5; index += 1) {
+      recordCloudDraftImageSources({
+        identity: { ...IDENTITY, chatId: "draft-noisy" },
+        hostId: "host-a",
+        client: sweptClient(),
+        hashes: [hash],
+      });
+    }
+
+    expect(await readCloudDraftImageBytes(hash)).toEqual(bytes);
+  });
 });

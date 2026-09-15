@@ -180,7 +180,7 @@ describe("draft blob transport", () => {
     expect(second).toEqual([hash]);
   });
 
-  it("a late acknowledgement after re-bootstrap is not recorded, but the wire call still succeeds", async () => {
+  it("a late acknowledgement after re-bootstrap is reported unconfirmed, not just unmemoized", async () => {
     // Pre-T5, there was no epoch at all: `uploadOneDraftBlob` recorded a
     // confirmation unconditionally on a successful response, so an ack that
     // arrives after `forgetConfirmedDraftBlobs` (a reconnect re-bootstrap)
@@ -206,10 +206,12 @@ describe("draft blob transport", () => {
     releaseFirst();
     const first = await firstCall;
 
-    // The wire call succeeded, so the caller still counts it -
-    // `rememberLandingBlobsOnHost` (the caller's own bookkeeping) must be
-    // unaffected by the memo dropping it.
-    expect(first).toEqual([hash]);
+    // Unconfirmed for BOTH consumers. The memo is the send gate's, and the
+    // returned array is `rememberLandingBlobsOnHost`'s - which feeds
+    // `landingDraftPinsLocalImageBytes`, the check that stops a landing draft
+    // from pinning its local bytes. Counting a retired conversation's ack
+    // there let the LRU evict the draft holding the only copy.
+    expect(first).toEqual([]);
     expect(isDraftBlobConfirmed(HOST, hash, OWNER)).toBe(false);
 
     // Positive control: without the epoch guard the confirmation WOULD have

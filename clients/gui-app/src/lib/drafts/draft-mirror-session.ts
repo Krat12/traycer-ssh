@@ -12,7 +12,11 @@ import {
 } from "@traycer/protocol/host";
 import { appLogger, describeLogError } from "@/lib/logger";
 import { isDraftsCapabilityMissing } from "./draft-capability";
-import { forgetConfirmedDraftBlobs } from "./draft-blob-transport";
+import {
+  forgetBlobUnsupportedHost,
+  forgetConfirmedDraftBlobs,
+} from "./draft-blob-transport";
+import { forgetCloudDraftPayloadUnsupportedHost } from "./cloud-draft-image-recovery";
 import { clientDraftSubscribeFrameApplies } from "./draft-subscribe-apply";
 import {
   DEFAULT_DRAFT_MIRROR_TIMING,
@@ -281,13 +285,23 @@ export class DraftMirrorSession {
   private async bootstrap(): Promise<void> {
     if (this.bootPromise !== null) return this.bootPromise;
     // A genuinely new bootstrap - not one joining the in-flight promise above -
-    // starts a new conversation with this host, so every blob confirmation the
-    // previous one collected is now unverified. This is the path acquisition
-    // does NOT cover: the reconnect handler below re-lists without
-    // re-acquiring, which is exactly when a host that restarted has silently
-    // lost its blob store. Placed after the dedupe so a joined caller does not
-    // invalidate the confirmations the bootstrap it joined is still gathering.
-    forgetConfirmedDraftBlobs(this.hostId);
+    // starts a new conversation with this host, so every verdict the previous
+    // one collected about it is now unproven. Placed after the dedupe so a
+    // joined caller does not invalidate the confirmations the bootstrap it
+    // joined is still gathering.
+    // `forgetBlobUnsupportedHost` is the whole blob-side reset (confirmations,
+    // the withholds-the-methods flag, and the per-hash unbridgeable formats),
+    // and the cloud-payload memo is its sibling for the read this host pipes.
+    // Acquisition already calls both on exactly this reasoning - "a new session
+    // is a new host connection, and a host that upgraded mid-lifetime must not
+    // stay short-circuited" - and this is the path acquisition does not cover:
+    // the reconnect handler re-lists without re-acquiring, which is both when a
+    // restarted host has silently LOST its blob store and when it has come back
+    // on a build that GAINED the methods. Being wrong here costs one refused
+    // RPC per reconnect; not clearing costs a draft whose images can never be
+    // fetched until the tile hierarchy unmounts.
+    forgetBlobUnsupportedHost(this.hostId);
+    forgetCloudDraftPayloadUnsupportedHost(this.hostId);
     const generation = this.bootGeneration;
     this.bootPromise = this.runBootstrap(generation).finally(() => {
       if (this.bootGeneration === generation) this.bootPromise = null;
