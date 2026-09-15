@@ -16,6 +16,7 @@ import {
 import { appLogger, describeLogError } from "@/lib/logger";
 import { draftDocumentFromCloudHead } from "@/lib/drafts/cloud-draft-apply";
 import {
+  flushAbsentOwnCloudDrafts,
   ingestCloudDraftSummary,
   reserveCloudDraftIngestFence,
   sweepAbsentCloudDraftMirrors,
@@ -60,8 +61,16 @@ export function useCloudDraftsIngest(
   // Guard key -> chat id: a key is released when the absence sweep drops
   // that chat's mirror, so the same head listed again later is read again.
   const ingested = useRef(new Map<string, string>());
+  // Own rows already nudged (`flushAbsentOwnCloudDrafts`) for a directory
+  // snapshot, keyed by that snapshot's fence: once per snapshot, not on
+  // every effect run that re-reads the same settled directory.
+  const nudged = useRef<{ fenceSeq: number; ids: Set<string> }>({
+    fenceSeq: -1,
+    ids: new Set(),
+  });
   useEffect(() => {
     ingested.current.clear();
+    nudged.current = { fenceSeq: -1, ids: new Set() };
   }, [directory.scopeId]);
   useEffect(() => {
     if (!directory.visible || client === null || hostId === null) return;
@@ -121,13 +130,28 @@ export function useCloudDraftsIngest(
         owners.add(chat.ownerHostId);
         listed.set(chat.identity.chatId, owners);
       }
+      const fenceSeq = snapshotIngestSeq();
       const dropped = new Set(
-        sweepAbsentCloudDraftMirrors(hostId, listed, snapshotIngestSeq()),
+        sweepAbsentCloudDraftMirrors(hostId, listed, fenceSeq),
       );
       if (dropped.size > 0) {
         for (const [key, chatId] of ingestedKeys) {
           if (dropped.has(chatId)) ingestedKeys.delete(key);
         }
+      }
+      // An own row the directory no longer lists is the owner host's to
+      // settle (delete if unchanged, re-mint if edited): nudge its mounted
+      // session with a flush so it probes the cloud, once per snapshot.
+      if (nudged.current.fenceSeq !== fenceSeq) {
+        nudged.current = { fenceSeq, ids: new Set() };
+      }
+      const alreadyNudged = nudged.current.ids;
+      for (const id of flushAbsentOwnCloudDrafts(
+        listed,
+        fenceSeq,
+        alreadyNudged,
+      )) {
+        alreadyNudged.add(id);
       }
     }
     for (const summary of foreign) {

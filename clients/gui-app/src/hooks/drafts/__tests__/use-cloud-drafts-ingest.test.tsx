@@ -38,6 +38,17 @@ const sweepMock = vi.hoisted(() => ({
 }));
 // No mirrors dropped unless a test overrides this.
 sweepMock.sweep.mockReturnValue([]);
+const flushMock = vi.hoisted(() => ({
+  flush:
+    vi.fn<
+      (
+        listed: ReadonlyMap<string, ReadonlySet<string>>,
+        fenceSeq: number,
+        alreadyFlushed: ReadonlySet<string>,
+      ) => readonly string[]
+    >(),
+}));
+flushMock.flush.mockReturnValue([]);
 
 vi.mock("@/hooks/drafts/use-cloud-drafts-directory", () => ({
   useCloudDraftsDirectory: () => ({
@@ -68,6 +79,14 @@ vi.mock("@/lib/drafts/draft-mirror-coordinator", () => ({
     listed: ReadonlyMap<string, ReadonlySet<string>>,
     fenceSeq: number,
   ): readonly string[] => sweepMock.sweep(hostId, listed, fenceSeq),
+  flushAbsentOwnCloudDrafts: (
+    listed: ReadonlyMap<string, ReadonlySet<string>>,
+    fenceSeq: number,
+    alreadyFlushed: ReadonlySet<string>,
+    // Snapshotted: the hook mutates the set after the call, and the tests
+    // read what was excluded AT the call.
+  ): readonly string[] =>
+    flushMock.flush(listed, fenceSeq, new Set(alreadyFlushed)),
 }));
 
 const { useCloudDraftsIngest } =
@@ -142,6 +161,8 @@ afterEach(() => {
   sweepMock.sweep.mockReset();
   // No mirrors dropped unless a test says otherwise.
   sweepMock.sweep.mockReturnValue([]);
+  flushMock.flush.mockReset();
+  flushMock.flush.mockReturnValue([]);
   vi.useRealTimers();
 });
 
@@ -323,6 +344,59 @@ describe("useCloudDraftsIngest", () => {
     // Only the foreign row (owned by another host) is head-ingested; the
     // own-host row is already live via `drafts.subscribe`.
     expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("nudges absent own rows with a flush once per settled snapshot, excluding ids already nudged for it", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.settled = true;
+    directoryMock.snapshotSeq = 7;
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    flushMock.flush.mockReturnValueOnce(["own-absent"]);
+
+    const view = renderHook(() =>
+      useCloudDraftsIngest(CLIENT as never, HOST_ID),
+    );
+    await vi.waitFor(() => {
+      expect(flushMock.flush).toHaveBeenCalledTimes(1);
+    });
+    const [listed, fenceSeq, excluded] = flushMock.flush.mock.calls[0];
+    expect([...listed.keys()]).toEqual(["draft-1"]);
+    expect(fenceSeq).toBe(7);
+    expect(excluded.size).toBe(0);
+
+    // The same snapshot read again (a new array reference, same fence):
+    // the id already nudged is excluded rather than flushed twice.
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+    await vi.waitFor(() => {
+      expect(flushMock.flush).toHaveBeenCalledTimes(2);
+    });
+    expect([...flushMock.flush.mock.calls[1][2]]).toEqual(["own-absent"]);
+
+    // A new snapshot starts over.
+    directoryMock.snapshotSeq = 8;
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+    view.rerender();
+    await vi.waitFor(() => {
+      expect(flushMock.flush).toHaveBeenCalledTimes(3);
+    });
+    expect(flushMock.flush.mock.calls[2][1]).toBe(8);
+    expect(flushMock.flush.mock.calls[2][2].size).toBe(0);
+  });
+
+  it("does not nudge own rows while the directory is unsettled", async () => {
+    readMock.read.mockResolvedValue({ kind: "ok", record: HEAD });
+    ingestMock.ingest.mockResolvedValue(undefined);
+    directoryMock.settled = false;
+    directoryMock.chats = [summary(DIGEST_ONE, null)];
+
+    renderHook(() => useCloudDraftsIngest(CLIENT as never, HOST_ID));
+
+    await vi.waitFor(() => {
+      expect(ingestMock.ingest).toHaveBeenCalledTimes(1);
+    });
+    expect(flushMock.flush).not.toHaveBeenCalled();
   });
 
   it("does not call sweepAbsentCloudDraftMirrors while the directory is unsettled", async () => {

@@ -116,7 +116,8 @@ const draftDocumentCommonFields = {
   /**
    * Host-authored echo of `DraftWrite.supersedes`, also set by a host
    * re-mint: the ancestor draft id this row replaces. A client that still
-   * has the ancestor open re-keys that tab onto this row. Cleared to `null`
+   * has the ancestor open re-keys that tab onto this row in place (the
+   * upsert precedes the ancestor's delete frame). Cleared to `null`
    * once the supersession debt is paid, so a cold `drafts.list` never
    * re-keys on a stale pointer. Defaulted on the wire, not required: a host
    * that predates supersession still lists and echoes its rows.
@@ -139,8 +140,10 @@ const draftWriteCommonFields = {
    * retracts once the written draft is first published or deleted. Sent on
    * the fork's FIRST upsert and `null` on every other write. Never enters
    * the `draft/v1` head; the dialect and its `{1,0}` pin do not change.
+   * Defaulted on the wire, like the document's echo: a write that omits it
+   * owes nothing.
    */
-  supersedes: z.string().min(1).nullable(),
+  supersedes: z.string().min(1).nullable().default(null),
 } as const;
 
 export const draftDocumentSchema = z.discriminatedUnion("kind", [
@@ -394,8 +397,10 @@ const storeSeqField = {
  * apply tombstones as held deletes, then apply what arrives.
  *
  * A host re-mint (its cloud row was tombstoned by a fork elsewhere while
- * the row had unpublished edits) is an ordinary `delete` frame for the old
- * id followed by an `upsert` frame whose document carries `supersedes`.
+ * the row had unpublished edits) is an ordinary `upsert` frame whose
+ * document carries `supersedes`, FOLLOWED by a `delete` frame for the old
+ * id: a client with the old id open re-keys its tab onto the successor
+ * before the ancestor is removed, and the delete then finds nothing.
  *
  * Merge rule (`draftSubscribeFrameApplies` is the executable form):
  * - held **present** (row or tombstone): apply iff

@@ -43,6 +43,17 @@ import {
 import { EMPTY_LANDING_DRAFT_CONTENT } from "@/stores/home/landing-draft-content";
 import { tabSourceRefs } from "@/stores/tabs/source-refs";
 import { tabCommandCoordinator } from "@/stores/tabs/tab-command-coordinator";
+import {
+  flattenLayoutRefs,
+  tabRefKey,
+  type PersistedTabStripLayout,
+} from "@/stores/tabs/layout";
+import { useTabsStore } from "@/stores/tabs/store";
+import type { TabRef } from "@/stores/tabs/types";
+import {
+  __resetTabSyncCoordinatorForTesting,
+  installTabSyncCoordinator,
+} from "@/lib/tab-sync/tab-sync-coordinator";
 
 function controlledStream(): {
   readonly client: never;
@@ -1455,6 +1466,174 @@ describe("landing draft host-mirror bookkeeping", () => {
       } finally {
         activateTabSpy.mockRestore();
       }
+    });
+  });
+
+  describe("re-key (fixup D): an upsert naming supersedes before the ancestor's delete frame", () => {
+    function layoutOf(): PersistedTabStripLayout {
+      const state = useTabsStore.getState();
+      return {
+        version: 2,
+        items: state.items,
+        activeItemId: state.activeItemId,
+        systemTabs: state.systemTabs,
+      };
+    }
+
+    beforeEach(async () => {
+      useTabsStore.setState({
+        version: 2,
+        items: [],
+        activeItemId: null,
+        systemTabs: { history: null, settings: null },
+        activationHistory: [],
+        stripOrder: [],
+      });
+      __resetTabSyncCoordinatorForTesting();
+      installTabSyncCoordinator({ readyPromise: Promise.resolve() });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    afterEach(() => {
+      useTabsStore.setState({
+        version: 2,
+        items: [],
+        activeItemId: null,
+        systemTabs: { history: null, settings: null },
+        activationHistory: [],
+        stripOrder: [],
+      });
+      __resetTabSyncCoordinatorForTesting();
+    });
+
+    it("re-keys the strip item onto the successor at the same position, keeps it open and active, retires the ancestor, and the trailing delete is a no-op", async () => {
+      const hostId = "host-rekey-inplace";
+      const oldId = "rekey-inplace-old";
+      const newId = "rekey-inplace-new";
+      const siblingId = "rekey-inplace-sibling";
+
+      // Two open draft tabs side by side, so the re-keyed item's position is
+      // observable: the sibling first, then the ancestor - and the ancestor
+      // is the one left active.
+      tabCommandCoordinator.activateTab({
+        kind: "draft",
+        draftId: siblingId,
+        settings: null,
+        create: true,
+      });
+      tabCommandCoordinator.activateTab({
+        kind: "draft",
+        draftId: oldId,
+        settings: null,
+        create: true,
+      });
+
+      const siblingRef: TabRef = { kind: "draft", id: siblingId };
+      const oldRef: TabRef = { kind: "draft", id: oldId };
+      expect(flattenLayoutRefs(layoutOf()).map(tabRefKey)).toEqual(
+        [siblingRef, oldRef].map(tabRefKey),
+      );
+      expect(useLandingDraftStore.getState().activeDraftId).toBe(oldId);
+
+      const stream = controlledStream();
+      acquireDraftMirrorSession({
+        hostId,
+        client: {
+          request: (method: string) => {
+            if (method === "drafts.list") {
+              return Promise.resolve({
+                drafts: [],
+                tombstones: [],
+                snapshotSeq: 0,
+                scopeId: null,
+              });
+            }
+            return Promise.reject(new Error(`unexpected ${method}`));
+          },
+        } as never,
+        streamClient: stream.client,
+        timing: undefined,
+      });
+      await vi.waitFor(() => {
+        expect(stream.started.value).toBe(true);
+      });
+
+      const newDocument: Extract<DraftDocument, { readonly kind: "landing" }> =
+        {
+          draftId: newId,
+          kind: "landing",
+          target: { epicId: null, chatId: null, blockId: null },
+          revision: 1,
+          lastTouchedAt: 2,
+          workspace: null,
+          supersedes: oldId,
+          ownerHostId: hostId,
+          origin: "own",
+          adoption: { state: "adopted", hostId },
+          publication: {
+            status: "unpublished",
+            lastPublishedAt: null,
+            publishedRevision: null,
+            halted: null,
+          },
+          portable: {
+            content: EMPTY_LANDING_DRAFT_CONTENT,
+            selection: null,
+            runSettings: null,
+            composerMode: "chat",
+            blobHashes: [],
+            closed: false,
+          },
+        };
+      // The new order: the upsert naming `supersedes` arrives BEFORE the
+      // ancestor's delete frame, so the ancestor is still open here and the
+      // in-place re-key path runs instead of the old inherit-on-delete path.
+      stream.emit({
+        kind: "upsert",
+        hasBinaryPayload: false,
+        storeSeq: 1,
+        draftId: newId,
+        revision: newDocument.revision,
+        draft: newDocument,
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          useLandingDraftStore.getState().drafts.some((d) => d.id === newId),
+        ).toBe(true);
+      });
+
+      const newRef: TabRef = { kind: "draft", id: newId };
+      expect(flattenLayoutRefs(layoutOf()).map(tabRefKey)).toEqual(
+        [siblingRef, newRef].map(tabRefKey),
+      );
+      expect(
+        useLandingDraftStore.getState().drafts.some((d) => d.id === oldId),
+      ).toBe(false);
+      expect(landingDraftIsRetired(oldId)).toBe(true);
+      const newDraftRow = useLandingDraftStore
+        .getState()
+        .drafts.find((d) => d.id === newId);
+      expect(newDraftRow?.closed).toBe(false);
+      expect(useLandingDraftStore.getState().activeDraftId).toBe(newId);
+
+      // The trailing delete frame for the now-retired ancestor changes
+      // nothing: no throw, and the layout stays exactly as re-keyed.
+      stream.emit({
+        kind: "delete",
+        hasBinaryPayload: false,
+        storeSeq: 2,
+        draftId: oldId,
+        revision: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(flattenLayoutRefs(layoutOf()).map(tabRefKey)).toEqual(
+        [siblingRef, newRef].map(tabRefKey),
+      );
+      expect(
+        useLandingDraftStore.getState().drafts.some((d) => d.id === newId),
+      ).toBe(true);
     });
   });
 });

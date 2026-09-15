@@ -143,6 +143,17 @@ export interface ReplaceDraftWithDraftCommand {
   readonly nextDraftId: string;
 }
 
+export interface ReplaceDraftWithDocumentCommand {
+  readonly previousDraftId: string;
+  readonly nextDraftId: string;
+  /**
+   * Installs the successor row (`nextDraftId`) in the landing store, open.
+   * Runs inside the transaction, after the strip item has been re-keyed
+   * and before the previous row is retired.
+   */
+  readonly installNext: () => void;
+}
+
 export interface CompletePhaseMigrationCommand {
   readonly tabId: string;
   readonly phaseId: string;
@@ -1321,6 +1332,51 @@ export class TabCommandCoordinator {
    * host delete (its owner is another host, or a row this host could not
    * reclaim). `null` when the previous draft has no strip item.
    */
+  /**
+   * Re-key the strip item of `previousDraftId` onto a successor row that a
+   * HOST document supplies (a re-mint, or a fork made on another device,
+   * whose `supersedes` names the row open here), keeping the item's strip
+   * position and group. `installNext` puts the successor in the store; the
+   * previous row is then retired locally, so the host's following `delete`
+   * frame finds nothing to remove from the layout. Null when the previous
+   * draft has no strip item or the successor already exists.
+   */
+  replaceDraftWithDocument(
+    command: ReplaceDraftWithDocumentCommand,
+  ): TabRef | null {
+    const previous: TabRef = { kind: "draft", id: command.previousDraftId };
+    const nextRef: TabRef = { kind: "draft", id: command.nextDraftId };
+    const layout = currentLayout();
+    if (findStripItemForRef(layout, previous) === null) return null;
+    const drafts = useLandingDraftStore.getState().drafts;
+    if (
+      !drafts.some((draft) => draft.id === command.previousDraftId) ||
+      drafts.some((draft) => draft.id === command.nextDraftId) ||
+      landingDraftIsRetired(command.nextDraftId)
+    ) {
+      return null;
+    }
+    const next = replaceLayoutRef(layout, { previous, next: nextRef });
+    if (next === layout) return null;
+    this.execute({
+      layout: next,
+      reservedAdditions: [nextRef],
+      pendingRemovals: [previous],
+      projectSourceCompatibility: true,
+      applySources: () => {
+        this.applyExpectedSourceMutation(command.installNext);
+      },
+      applyRemovals: () => {
+        this.applyExpectedSourceMutation(() => {
+          useLandingDraftStore
+            .getState()
+            .applyHostDelete(command.previousDraftId);
+        });
+      },
+    });
+    return nextRef;
+  }
+
   replaceDraftWithDraft(command: ReplaceDraftWithDraftCommand): TabRef | null {
     const previous: TabRef = { kind: "draft", id: command.previousDraftId };
     const nextRef: TabRef = { kind: "draft", id: command.nextDraftId };

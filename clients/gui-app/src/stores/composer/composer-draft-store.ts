@@ -162,11 +162,15 @@ interface ComposerDraftStore {
    * it local-only. Dropping the id here means the next edit mints a fresh
    * one and a fresh host row. The row is left CLEAN because it is empty and
    * its old id is on its way out; nothing is owed to the host.
+   *
+   * `hostId` names the host the pending delete is routed to; `null` records
+   * no pending delete (a row the tab host does not own is retracted through
+   * the cloud by the caller instead of deleted on a host).
    */
   readonly fenceAndDetachSubmittedDraft: (
     chatId: string,
     draftId: string,
-    hostId: string,
+    hostId: string | null,
   ) => void;
   readonly completeSubmittedDraftDelete: (draftId: string) => void;
   readonly bindTarget: (chatId: string, epicId: string) => void;
@@ -383,10 +387,13 @@ export const useComposerDraftStore = create<ComposerDraftStore>()(
           const current = ensureDraft(state.drafts, chatId);
           if (current.draftId !== draftId) return state;
           return {
-            pendingSubmittedDraftDeletes: {
-              ...state.pendingSubmittedDraftDeletes,
-              [draftId]: { hostId },
-            },
+            pendingSubmittedDraftDeletes:
+              hostId === null
+                ? state.pendingSubmittedDraftDeletes
+                : {
+                    ...state.pendingSubmittedDraftDeletes,
+                    [draftId]: { hostId },
+                  },
             drafts: {
               ...state.drafts,
               [chatId]: {

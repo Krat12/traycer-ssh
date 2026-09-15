@@ -313,10 +313,10 @@ describe("drafts wire documents", () => {
     expect(draftSurfaceKindOf("stash-entry")).toBeNull();
   });
 
-  it("requires `supersedes` on every write and round-trips it on a document", () => {
+  it("defaults `supersedes` to null on a write and round-trips it on a document", () => {
     const { supersedes: _omitted, ...writeWithoutSupersedes } = LANDING_WRITE;
-    expect(draftWriteSchema.safeParse(writeWithoutSupersedes).success).toBe(
-      false,
+    expect(draftWriteSchema.parse(writeWithoutSupersedes)).toEqual(
+      LANDING_WRITE,
     );
     const forkWrite = { ...LANDING_WRITE, supersedes: "draft-ancestor" };
     expect(draftWriteSchema.parse(forkWrite)).toEqual(forkWrite);

@@ -261,6 +261,143 @@ describe("submitComposerDraft", () => {
   });
 });
 
+interface ForeignSubmitLog {
+  readonly retracts: string[];
+  readonly deletes: string[];
+}
+
+function mountTabHostSession(hostId: string, log: ForeignSubmitLog) {
+  return acquireDraftMirrorSession({
+    hostId,
+    client: {
+      request: (method: string, params: unknown) => {
+        if (method === "drafts.list") {
+          return Promise.resolve({
+            drafts: [],
+            tombstones: [],
+            snapshotSeq: 0,
+            scopeId: null,
+          });
+        }
+        if (method === "drafts.retract") {
+          log.retracts.push((params as { draftId: string }).draftId);
+          return Promise.resolve({ retracted: true });
+        }
+        if (method === "drafts.delete") {
+          log.deletes.push((params as { draftId: string }).draftId);
+          return Promise.resolve({ deleted: true });
+        }
+        return Promise.reject(new Error(`unexpected ${String(method)}`));
+      },
+    } as never,
+    streamClient: fakeDraftStreamClient(),
+    timing: { debounceMs: 0, maxWaitMs: 0 },
+  });
+}
+
+async function applyForeignComposerDocument(params: {
+  readonly draftId: string;
+  readonly ownerHostId: string;
+  readonly origin: "own" | "replica";
+}): Promise<void> {
+  await applyIncomingDraftDocument({
+    draftId: params.draftId,
+    kind: "chat-composer",
+    target: { epicId: EPIC_ID, chatId: CHAT_ID, blockId: null },
+    revision: 1,
+    lastTouchedAt: 1,
+    workspace: null,
+    supersedes: null,
+    ownerHostId: params.ownerHostId,
+    origin: params.origin,
+    adoption: { state: "adopted", hostId: params.ownerHostId },
+    publication: {
+      status: "current",
+      lastPublishedAt: 1,
+      publishedRevision: 1,
+      halted: null,
+    },
+    portable: {
+      content: typed("foreign body"),
+      selection: null,
+      runSettings: null,
+      composerMode: "chat",
+      blobHashes: [],
+      closed: false,
+    },
+  });
+}
+
+describe("submitComposerDraft: a row the tab host does not own (fixup B)", () => {
+  const TAB_HOST = "host-tab";
+
+  it("a replica row retracts through the tab host instead of deleting, dropping the id with no pending delete", async () => {
+    const log: ForeignSubmitLog = { retracts: [], deletes: [] };
+    mountTabHostSession(TAB_HOST, log);
+    bindComposerDraftHost(CHAT_ID, TAB_HOST);
+
+    const draftId = "foreign-submit-replica";
+    await applyForeignComposerDocument({
+      draftId,
+      ownerHostId: "host-owner",
+      origin: "replica",
+    });
+
+    await submitComposerDraft(CHAT_ID);
+
+    expect(log.retracts).toEqual([draftId]);
+    expect(log.deletes).toEqual([]);
+    expect(
+      useComposerDraftStore.getState().drafts[CHAT_ID]?.draftId,
+    ).toBeNull();
+    expect(
+      useComposerDraftStore.getState().pendingSubmittedDraftDeletes[draftId],
+    ).toBeUndefined();
+  });
+
+  it("an own row whose owner differs from the tab host also retracts through the tab host instead of deleting", async () => {
+    const log: ForeignSubmitLog = { retracts: [], deletes: [] };
+    mountTabHostSession(TAB_HOST, log);
+    bindComposerDraftHost(CHAT_ID, TAB_HOST);
+
+    const draftId = "foreign-submit-own-elsewhere";
+    await applyForeignComposerDocument({
+      draftId,
+      ownerHostId: "host-other",
+      origin: "own",
+    });
+
+    await submitComposerDraft(CHAT_ID);
+
+    expect(log.retracts).toEqual([draftId]);
+    expect(log.deletes).toEqual([]);
+    expect(
+      useComposerDraftStore.getState().drafts[CHAT_ID]?.draftId,
+    ).toBeNull();
+    expect(
+      useComposerDraftStore.getState().pendingSubmittedDraftDeletes[draftId],
+    ).toBeUndefined();
+  });
+
+  it("contrast: an own row owned by the tab host itself still goes through drafts.delete", async () => {
+    const log: ForeignSubmitLog = { retracts: [], deletes: [] };
+    mountTabHostSession(TAB_HOST, log);
+    bindComposerDraftHost(CHAT_ID, TAB_HOST);
+
+    const draftId = "own-submit-on-tab-host";
+    await applyForeignComposerDocument({
+      draftId,
+      ownerHostId: TAB_HOST,
+      origin: "own",
+    });
+
+    await submitComposerDraft(CHAT_ID);
+
+    expect(log.deletes).toEqual([draftId]);
+    expect(log.retracts).toEqual([]);
+  });
+});
+
 describe("deleteLandingDraftThroughHost", () => {
   const HOST_B = "host-b";
 
@@ -491,6 +628,60 @@ describe("deleteLandingDraftThroughHost", () => {
       useLandingDraftStore.getState().drafts.some((draft) => draft.id === id),
     ).toBe(false);
     expect(pendingLandingDraftDeleteHostId(id)).toBe(HOST_B);
+  });
+
+  it("an explicit host on the receipt takes precedence over the placement/foreign rule (fixup C): host-b deletes its own row while host-a, the placement, is never asked to retract", async () => {
+    const HOST_A = "host-a-placement";
+    const retracts: string[] = [];
+    acquireDraftMirrorSession({
+      hostId: HOST_A,
+      client: {
+        request: (method: string, params: unknown) => {
+          if (method === "drafts.list") {
+            return Promise.resolve({
+              drafts: [],
+              tombstones: [],
+              snapshotSeq: 0,
+              scopeId: null,
+            });
+          }
+          if (method === "drafts.retract") {
+            retracts.push((params as { draftId: string }).draftId);
+            return Promise.resolve({ retracted: true });
+          }
+          return Promise.reject(new Error(`unexpected ${String(method)}`));
+        },
+      } as never,
+      streamClient: fakeDraftStreamClient(),
+      timing: { debounceMs: 0, maxWaitMs: 0 },
+    });
+    bindLandingAdoptionHost(HOST_A);
+
+    const id = "explicit-host-precedence";
+    const log: HostLog = {
+      upserts: [],
+      deletes: [],
+      rows: [],
+      deleteFailures: 0,
+    };
+    mountHostSession(HOST_B, log);
+    // Own on host-b, but the placement (host-a) is a DIFFERENT host, which
+    // would make this row read as foreign from the placement's point of
+    // view - if the explicit receipt host below did not take precedence.
+    useLandingDraftStore.setState({
+      drafts: [ownAdoptedLandingRow(id, HOST_B)],
+      activeDraftId: null,
+    });
+
+    deleteLandingDraftThroughHost(id, HOST_B, null);
+
+    await vi.waitFor(() => {
+      expect(log.deletes).toEqual([id]);
+    });
+    await vi.waitFor(() => {
+      expect(pendingLandingDraftDeleteHostId(id)).toBeNull();
+    });
+    expect(retracts).toEqual([]);
   });
 });
 

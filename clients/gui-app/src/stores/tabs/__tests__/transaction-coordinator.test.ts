@@ -53,7 +53,10 @@ import {
 } from "@/stores/tabs/tab-command-coordinator";
 import { useTabsStore } from "@/stores/tabs/store";
 import type { TabRef } from "@/stores/tabs/types";
-import { landingDraftIsRetired } from "@/lib/drafts/landing-draft-retirement";
+import {
+  landingDraftIsRetired,
+  retireLandingDraft,
+} from "@/lib/drafts/landing-draft-retirement";
 
 interface IntermediateSnapshot {
   readonly source: "tabs" | "canvas" | "drafts" | "ledger";
@@ -511,6 +514,94 @@ describe("tab command coordinator transactions", () => {
         .getState()
         .drafts.some((draft) => draft.id === draftRef.id),
     ).toBe(true);
+  });
+
+  it("replaceDraftWithDocument re-keys the strip item onto a host-supplied successor, runs installNext, and retires the previous draft", () => {
+    const draftRef = openDraftSource();
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+
+    const nextDraftId = "rekeyed-from-document";
+    let installNextRan = false;
+    const nextRef = tabCommandCoordinator.replaceDraftWithDocument({
+      previousDraftId: draftRef.id,
+      nextDraftId,
+      installNext: () => {
+        installNextRan = true;
+        useLandingDraftStore.getState().createDraftWithId(nextDraftId, null);
+      },
+    });
+
+    expect(nextRef).toEqual({ kind: "draft", id: nextDraftId });
+    expect(installNextRan).toBe(true);
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toEqual([
+      tabRefKey({ kind: "draft", id: nextDraftId }),
+    ]);
+    expect(landingDraftIsRetired(draftRef.id)).toBe(true);
+    expect(
+      useLandingDraftStore
+        .getState()
+        .drafts.some((draft) => draft.id === nextDraftId),
+    ).toBe(true);
+  });
+
+  it("replaceDraftWithDocument returns null and never runs installNext when the previous draft has no strip item", () => {
+    let installNextRan = false;
+    const nextRef = tabCommandCoordinator.replaceDraftWithDocument({
+      previousDraftId: "document-not-in-strip",
+      nextDraftId: "document-unused-next",
+      installNext: () => {
+        installNextRan = true;
+      },
+    });
+
+    expect(nextRef).toBeNull();
+    expect(installNextRan).toBe(false);
+  });
+
+  it("replaceDraftWithDocument returns null and never runs installNext when nextDraftId already exists in the landing store", () => {
+    const draftRef = openDraftSource();
+    useLandingDraftStore
+      .getState()
+      .createDraftWithId("document-already-exists", null);
+    let installNextRan = false;
+
+    const nextRef = tabCommandCoordinator.replaceDraftWithDocument({
+      previousDraftId: draftRef.id,
+      nextDraftId: "document-already-exists",
+      installNext: () => {
+        installNextRan = true;
+      },
+    });
+
+    expect(nextRef).toBeNull();
+    expect(installNextRan).toBe(false);
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+    expect(landingDraftIsRetired(draftRef.id)).toBe(false);
+  });
+
+  it("replaceDraftWithDocument returns null and never runs installNext when nextDraftId is retired", () => {
+    const draftRef = openDraftSource();
+    retireLandingDraft("document-retired-next", null);
+    let installNextRan = false;
+
+    const nextRef = tabCommandCoordinator.replaceDraftWithDocument({
+      previousDraftId: draftRef.id,
+      nextDraftId: "document-retired-next",
+      installNext: () => {
+        installNextRan = true;
+      },
+    });
+
+    expect(nextRef).toBeNull();
+    expect(installNextRan).toBe(false);
+    expect(flattenLayoutRefs(layoutFromTabsState()).map(tabRefKey)).toContain(
+      tabRefKey(draftRef),
+    );
+    expect(landingDraftIsRetired(draftRef.id)).toBe(false);
   });
 
   it("closeRef keeps the closed source under pendingRemovals until removal settles", () => {
