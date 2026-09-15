@@ -97,6 +97,14 @@ import {
   type DraftMirrorSink,
 } from "./draft-mirror-session";
 import type { DraftMirrorTiming } from "./draft-mirror-timing";
+import {
+  completeLandingDraftDelete,
+  landingDraftIsRetired,
+  pendingLandingDraftDeleteHostId,
+  pendingLandingDraftDeleteIdsForHost,
+  retireLandingDraft,
+  resolveLandingDraftRetirementOwner,
+} from "./landing-draft-retirement";
 
 type SessionEntry = {
   readonly session: DraftMirrorSession;
@@ -105,6 +113,7 @@ type SessionEntry = {
 
 const sessions = new Map<string, SessionEntry>();
 const sessionClients = new Map<string, HostRequester<HostRpcRegistry>>();
+const knownLandingDraftIds = new Set<string>();
 const cloudScopeIdByHost = new Map<string, string | null>();
 const cloudScopeListeners = new Set<() => void>();
 
@@ -344,18 +353,29 @@ const sink: DraftMirrorSink = {
     );
   },
   isDeletePending(draftId) {
-    return composerSubmittedDraftDeleteIsPending(draftId);
+    return (
+      landingDraftIsRetired(draftId) ||
+      composerSubmittedDraftDeleteIsPending(draftId)
+    );
   },
   pendingDeleteIdsForHost(hostId) {
-    return pendingSubmittedDraftDeleteIdsForHost(hostId);
+    return [
+      ...pendingLandingDraftDeleteIdsForHost(hostId),
+      ...pendingSubmittedDraftDeleteIdsForHost(hostId),
+    ];
   },
   completeDelete(draftId) {
+    completeLandingDraftDelete(draftId);
     useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
   },
   applyUpsert(document) {
     return applyHostDocument(document);
   },
   applyDelete(draftId) {
+    // A tombstone can arrive while the first landing upsert awaits its images,
+    // before there is any local row for applyLandingHostDelete to remove.
+    if (knownLandingDraftIds.has(draftId)) retireLandingDraft(draftId, null);
+    completeLandingDraftDelete(draftId);
     useComposerDraftStore.getState().completeSubmittedDraftDelete(draftId);
     applyLandingHostDelete(draftId);
     applyComposerHostDelete(draftId);
@@ -399,7 +419,22 @@ const sink: DraftMirrorSink = {
   },
 };
 
+function rejectRetiredLandingDocument(document: DraftDocument): boolean {
+  if (document.kind !== "landing" || !landingDraftIsRetired(document.draftId))
+    return false;
+  // Desktop may restore content before it has recovered host adoption.
+  // The first owner document supplies the missing delete destination, never
+  // a replacement visible row. ACKed receipts cannot be rearmed here.
+  resolveLandingDraftRetirementOwner(document.draftId, document.ownerHostId);
+  if (pendingLandingDraftDeleteHostId(document.draftId) !== null) {
+    routeLocalDelete(document.draftId);
+  }
+  return true;
+}
+
 async function applyHostDocument(document: DraftDocument): Promise<void> {
+  if (document.kind === "landing") knownLandingDraftIds.add(document.draftId);
+  if (rejectRetiredLandingDocument(document)) return;
   if (composerSubmittedDraftDeleteIsPending(document.draftId)) {
     await retrySubmittedDraftDelete(document.draftId);
     return;
@@ -427,6 +462,7 @@ async function applyHostDocument(document: DraftDocument): Promise<void> {
     return;
   }
   if (document.kind === "landing") {
+    if (rejectRetiredLandingDocument(document)) return;
     applyLandingHostDocument(document, document.portable.content);
     return;
   }
@@ -563,6 +599,8 @@ function warnUnboundInterviewTarget(
 }
 
 function hostIdForDraft(draftId: string): string | null {
+  const landingDeleteHostId = pendingLandingDraftDeleteHostId(draftId);
+  if (landingDeleteHostId !== null) return landingDeleteHostId;
   const pendingDeleteHostId = pendingSubmittedDraftDeleteHostId(draftId);
   if (pendingDeleteHostId !== null) return pendingDeleteHostId;
   const landing = useLandingDraftStore
@@ -613,7 +651,9 @@ function routeLocalEdit(draftId: string): void {
 function routeLocalDelete(draftId: string): void {
   const session = sessionForDraft(draftId);
   if (session === null) return;
-  void session.deleteOnHost(draftId);
+  void session.deleteOnHost(draftId).then((deleted) => {
+    if (deleted) completeLandingDraftDelete(draftId);
+  });
 }
 
 function routeLocalFlush(draftId: string): void {
@@ -772,6 +812,7 @@ export function resetDraftMirrorCoordinatorForTests(): void {
   }
   sessions.clear();
   sessionClients.clear();
+  knownLandingDraftIds.clear();
   cloudScopeIdByHost.clear();
   composerHostByChatId.clear();
   interviewHostByKey.clear();

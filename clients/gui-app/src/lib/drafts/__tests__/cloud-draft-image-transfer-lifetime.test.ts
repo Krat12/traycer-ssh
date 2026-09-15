@@ -143,14 +143,14 @@ function deferred<T>(): Deferred<T> {
  * faked. `advanceTimersByTimeAsync` flushes microtasks between each 0ms
  * tick, which is what lets IndexedDB's own chain of callbacks run.
  */
-async function flushFakeTimers(times = 5): Promise<void> {
+async function flushFakeTimers(times: number): Promise<void> {
   for (let index = 0; index < times; index += 1) {
     await vi.advanceTimersByTimeAsync(0);
   }
 }
 
 /** Same drain, for the stretches where real timers are in effect. */
-async function flushRealTimers(times = 5): Promise<void> {
+async function flushRealTimers(times: number): Promise<void> {
   for (let index = 0; index < times; index += 1) {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 0);
@@ -215,7 +215,7 @@ describe("cloud-draft-image-recovery - transfer lifetime (F2)", () => {
     });
 
     // Let the four eager workers each reach their own RPC call.
-    await flushFakeTimers();
+    await flushFakeTimers(5);
     expect(requestedHashes).toHaveLength(4);
     expect(maxInFlight).toBe(4);
 
@@ -233,7 +233,7 @@ describe("cloud-draft-image-recovery - transfer lifetime (F2)", () => {
     for (const { hash } of fixtures.slice(0, 4)) {
       gates.get(hash)?.resolve();
     }
-    await flushRealTimers();
+    await flushRealTimers(5);
     for (const { hash } of fixtures.slice(4)) {
       gates.get(hash)?.resolve();
     }
@@ -271,7 +271,7 @@ describe("cloud-draft-image-recovery - transfer lifetime (F2)", () => {
     const callerPromise = readCloudDraftImageBytes(hash);
 
     // Let the request actually dispatch before the deadline can mean anything.
-    await flushFakeTimers();
+    await flushFakeTimers(5);
     expect(calls).toHaveLength(1);
 
     // Cross the caller's bound while the reply is still withheld. Under the
@@ -326,7 +326,7 @@ describe("cloud-draft-image-recovery - stalled write-back (F4)", () => {
     const callerPromise = readCloudDraftImageBytes(hash);
 
     // Let the request settle and the (never-settling) write-back start.
-    await flushFakeTimers();
+    await flushFakeTimers(5);
     expect(calls).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(CALLER_READ_TIMEOUT_MS + 1);

@@ -136,7 +136,7 @@ function b64Of(text: string): string {
 function pendingImageNode(
   id: string,
   b64content: string,
-  mimeType: string = "image/png",
+  mimeType: string,
 ): JsonContent {
   return {
     type: "imageAttachment",
@@ -433,7 +433,9 @@ describe("reingestPendingImages (mount-time restart)", () => {
   it("rewrites a surviving b64content node to a hash-only one - the upgrade path for an existing large draft", async () => {
     const editor = fakeEditor({
       type: "doc",
-      content: [pendingImageNode("legacy-1", b64Of("legacy-bytes"))],
+      content: [
+        pendingImageNode("legacy-1", b64Of("legacy-bytes"), "image/png"),
+      ],
     });
     const { result } = renderHook(() =>
       useComposerPendingImageIngest({
@@ -472,7 +474,7 @@ describe("reingestPendingImages (mount-time restart)", () => {
       type: "doc",
       content: [
         pendingImageNode("bmp-1", b64Of("bmp-bytes"), "image/bmp"),
-        pendingImageNode("png-1", b64Of("png-bytes")),
+        pendingImageNode("png-1", b64Of("png-bytes"), "image/png"),
       ],
     });
     const { result } = renderHook(() =>
@@ -536,7 +538,9 @@ describe("a failed ingest removes the node and toasts, keeping no inline bytes",
     );
     const editor = fakeEditor({
       type: "doc",
-      content: [pendingImageNode("will-fail", b64Of("doomed-bytes"))],
+      content: [
+        pendingImageNode("will-fail", b64Of("doomed-bytes"), "image/png"),
+      ],
     });
     const { result } = renderHook(() =>
       useComposerPendingImageIngest({
@@ -620,7 +624,7 @@ describe("F5: the 15s deadline and abort responsiveness (use-composer-pending-im
 
     const editor = fakeEditor({
       type: "doc",
-      content: [pendingImageNode("stuck-1", b64Of("stuck-bytes"))],
+      content: [pendingImageNode("stuck-1", b64Of("stuck-bytes"), "image/png")],
     });
     const { result } = renderHook(() =>
       useComposerPendingImageIngest({

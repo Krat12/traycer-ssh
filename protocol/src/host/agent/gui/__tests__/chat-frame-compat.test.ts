@@ -11,6 +11,7 @@ import {
   chatSubscribeV17,
   chatSubscribeV19,
   chatSubscribeV110,
+  chatSubscribeV111,
   chatSubscribeSnapshotServerFrameShallowSchemaV16,
   chatSubscribeSnapshotServerFrameShallowSchema,
   chatSubscribeServerFrameSchema,
@@ -268,24 +269,43 @@ describe("projectChatClientFrameForVersion", () => {
 });
 
 describe("projectChatActionAckForVersion", () => {
-  const preBridge: SchemaVersion = { major: 1, minor: 9 };
-  const bridge: SchemaVersion = { major: 1, minor: 10 };
+  // The ADJACENT pair, not a comfortable gap: `1.10` is the highest line that
+  // must never see the key, `1.11` the first that may. A test written against
+  // `1.9` would still pass with the threshold left at the wrong minor.
+  const preBridge: SchemaVersion = { major: 1, minor: 10 };
+  const bridge: SchemaVersion = { major: 1, minor: 11 };
 
-  it("strips a typed draft-image refusal cause for a 1.9 session", () => {
+  it("strips a typed draft-image refusal cause for a 1.10 session", () => {
     const frame = actionAckFrame("too-large");
     const projected = projectChatActionAckForVersion(frame, preBridge);
 
     expect(projected).not.toBe(frame);
     expect(Object.hasOwn(projected, "cause")).toBe(false);
-    const parsed = chatSubscribeV19.serverFrameSchema.parse(projected);
+    const parsed = chatSubscribeV110.serverFrameSchema.parse(projected);
     expect(parsed.kind).toBe("actionAck");
     expect(Object.hasOwn(parsed, "cause")).toBe(false);
   });
 
-  it("passes a typed draft-image refusal cause through on 1.10", () => {
+  it("strips it for a 1.9 session too - every line below the bridge", () => {
+    const frame = actionAckFrame("too-large");
+    const projected = projectChatActionAckForVersion(frame, {
+      major: 1,
+      minor: 9,
+    });
+
+    expect(Object.hasOwn(projected, "cause")).toBe(false);
+    expect(
+      Object.hasOwn(
+        chatSubscribeV19.serverFrameSchema.parse(projected),
+        "cause",
+      ),
+    ).toBe(false);
+  });
+
+  it("passes a typed draft-image refusal cause through on 1.11", () => {
     const frame = actionAckFrame("not-on-host");
     expect(projectChatActionAckForVersion(frame, bridge)).toBe(frame);
-    expect(chatSubscribeV110.serverFrameSchema.parse(frame)).toMatchObject({
+    expect(chatSubscribeV111.serverFrameSchema.parse(frame)).toMatchObject({
       cause: "not-on-host",
     });
   });
@@ -296,12 +316,12 @@ describe("projectChatActionAckForVersion", () => {
     expect(projectChatActionAckForVersion(frame, bridge)).toBe(frame);
   });
 
-  it("rejects an unknown cause and keeps the frozen 1.9 schema unchanged", () => {
+  it("rejects an unknown cause and keeps the frozen 1.10 schema unchanged", () => {
     const invalid = { ...actionAckFrame(undefined), cause: "unknown-cause" };
-    expect(chatSubscribeV110.serverFrameSchema.safeParse(invalid).success).toBe(
+    expect(chatSubscribeV111.serverFrameSchema.safeParse(invalid).success).toBe(
       false,
     );
-    const parsed = chatSubscribeV19.serverFrameSchema.parse(invalid);
+    const parsed = chatSubscribeV110.serverFrameSchema.parse(invalid);
     expect(parsed.kind).toBe("actionAck");
     expect(Object.hasOwn(parsed, "cause")).toBe(false);
   });
@@ -1710,6 +1730,9 @@ describe("projectChatServerFrameForVersion", () => {
     expect(Object.hasOwn(projected, "cause")).toBe(false);
     expect(
       projectChatServerFrameForVersion(frame, { major: 1, minor: 10 }),
+    ).not.toBe(frame);
+    expect(
+      projectChatServerFrameForVersion(frame, { major: 1, minor: 11 }),
     ).toBe(frame);
   });
 

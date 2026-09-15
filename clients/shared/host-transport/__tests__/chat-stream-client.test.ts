@@ -497,7 +497,8 @@ function makeNoopCallbacks(
 describe("ChatStreamClient protocol capability getters", () => {
   it.each([
     [{ major: 1, minor: 9 }, false],
-    [{ major: 1, minor: 10 }, true],
+    [{ major: 1, minor: 10 }, false],
+    [{ major: 1, minor: 11 }, true],
     [null, false],
     [{ major: 2, minor: 0 }, false],
   ] as const)(
@@ -517,13 +518,13 @@ describe("ChatStreamClient protocol capability getters", () => {
   );
 
   it("does not read a sibling/client-wide chat negotiation for this session", () => {
-    const session = new StubStreamSession({ major: 1, minor: 9 });
+    const session = new StubStreamSession({ major: 1, minor: 10 });
     const wsStreamClient: IStreamClient<typeof hostStreamRpcRegistry> = {
       subscribe: () => session,
       subscribeWithParamsProvider: () => session,
-      // Simulate a sibling session that negotiated 1.10: the client-wide
-      // accessor is intentionally newer than this session's 1.9 handshake.
-      getMethodSchemaVersion: () => ({ major: 1, minor: 10 }),
+      // Simulate a sibling session that negotiated 1.11: the client-wide
+      // accessor is intentionally newer than this session's 1.10 handshake.
+      getMethodSchemaVersion: () => ({ major: 1, minor: 11 }),
     };
     const client = new ChatStreamClient({
       wsStreamClient,

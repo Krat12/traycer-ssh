@@ -222,6 +222,7 @@ function rejectPlain(
     reason,
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -242,6 +243,7 @@ function rejectMissingAttachmentBytes(
     code: "MISSING_ATTACHMENT_BYTES",
     cause,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 

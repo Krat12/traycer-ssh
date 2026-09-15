@@ -17,7 +17,7 @@
  *    `1.7` opened above it.
  *
  * 3. `projectChatServerFrameForVersion` - the host's outbound projection,
- *    including `projectChatActionAckForVersion` for the 1.10 refusal cause.
+ *    including `projectChatActionAckForVersion` for the 1.11 refusal cause.
  *
  * These are pure and dependency-free so the host and the OSS clients run the
  * same code rather than two drifting copies.
@@ -25,13 +25,13 @@
 import type { SchemaVersion } from "@traycer/protocol/framework/versioned-stream-rpc";
 import type { ChatSubscribeClientFrame } from "@traycer/protocol/host/agent/gui/subscribe";
 
-/** Strip draft-image refusal causes before emitting to a pre-1.10 session. */
+/** Strip draft-image refusal causes before emitting to a pre-1.11 session. */
 export function projectChatActionAckForVersion(
   frame: ProjectedChatSubscribeServerFrame,
   negotiated: SchemaVersion | null,
 ): ProjectedChatSubscribeServerFrame {
   if (frame.kind !== "actionAck") return frame;
-  if (negotiated !== null && negotiated.major === 1 && negotiated.minor >= 10) {
+  if (negotiated !== null && negotiated.major === 1 && negotiated.minor >= 11) {
     return frame;
   }
   if (!("cause" in frame)) return frame;
@@ -662,7 +662,7 @@ export function projectChatServerFrameForVersion(
   frame: ProjectedChatSubscribeServerFrame,
   negotiated: SchemaVersion | null,
 ): ProjectedChatSubscribeServerFrame {
-  // The >=1.7 fast path still needs the newer 1.10 acknowledgement downgrade.
+  // The >=1.7 fast path still needs the newer 1.11 acknowledgement downgrade.
   const bridgeProjected = projectChatActionAckForVersion(frame, negotiated);
   // BEFORE the 1.7 identity return: `chat.imported` shipped on the 1.8 line,
   // and a released 1.7 client's strict event enum fails the WHOLE snapshot on

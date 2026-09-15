@@ -217,135 +217,149 @@
   animation: chat-dock-chip-pulse 620ms ease-out forwards;
 }
 
-/* Arriving at the model picker's LAST thinking level: a fine ring blooms out
-   of the slider's thumb once and dissolves, leaving a static halo on the thumb
-   and the accent on the end of the track. The thumb does not move and the
-   label does not change - the cue is the arrival, not the setting.
-
-   The `--reasoning-max-*` properties are local aliases of `--primary`, not
-   theme tokens: a custom primary recolours the halo with no React involved,
-   and an achromatic default theme still reads, because the ring's EXPANSION
-   is what carries the flourish.
-
-   Unlike the dock chip above, this one does get a reduced-motion rule. The
-   chip relies on `animationend` to take `data-pulse` off, so suppressing the
-   animation would strand it; here the owning hook refuses to create a cue
-   under reduced motion and clears one in flight, so the display rule is a
-   guard for the frames before React catches up rather than the whole
-   mechanism. */
-/* The max treatment's four alphas in one place. They were first set for the
-   default themes, where `--primary` is a saturated accent; in a monochrome
-   theme the same percentages of a near-foreground grey read as "slightly
-   lighter track" and the highest level was reported as having no treatment at
-   all. So the static pair carries most of the raise (the halo and tail are
-   what a still frame has to say max with), and the flowing band sits above
-   both - it has to be legible while crossing a track the tail has already
-   lit. The dots and the thumb paint above all of this, so none of it is at
-   their expense. */
-.reasoning-effort-slider {
-  --reasoning-max-ring: color-mix(in srgb, var(--primary) 50%, transparent);
-  --reasoning-max-halo: color-mix(in srgb, var(--primary) 40%, transparent);
-  --reasoning-max-tail: color-mix(in srgb, var(--primary) 85%, transparent);
-  --reasoning-max-flow: color-mix(in srgb, var(--primary) 95%, transparent);
+/* The thumb and fill share one response: quick eased follow while dragging,
+   then a softer arrival on release or direct selection. The drag target has
+   a small attraction to catalog stops; the brief follow gives it weight
+   without coasting past the chosen level. */
+.reasoning-effort-slider .reasoning-effort-range,
+.reasoning-effort-slider > span:has(> [data-slot="slider-thumb"]) {
+  transition:
+    left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    right 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-inline-end 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.reasoning-effort-thumb-core {
-  background: var(--foreground);
-  border: 2px solid var(--popover);
-  /* Position/size/rounding from composition classes above. */
+.reasoning-effort-slider[data-dragging="true"] .reasoning-effort-range,
+.reasoning-effort-slider[data-dragging="true"]
+  > span:has(> [data-slot="slider-thumb"]) {
+  transition-duration: 80ms;
 }
 
-.reasoning-effort-slider[data-max="true"] .reasoning-effort-thumb-core {
-  box-shadow:
-    0 0 0 2px var(--reasoning-max-ring),
-    0 0 12px 2px var(--reasoning-max-halo);
+/* Scale the disc, not Radix's positioning wrapper: pickup must not change
+   the measured track geometry or the location of the thumb's centre. */
+.reasoning-effort-slider [data-slot="slider-thumb"] {
+  scale: 1;
+  transition:
+    scale 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms ease-out,
+    border-color 120ms ease-out,
+    background-color 120ms ease-out;
 }
 
-.reasoning-effort-max-tail {
-  opacity: 0;
+.reasoning-effort-slider[data-pressed="true"] [data-slot="slider-thumb"] {
+  scale: 1.12;
+  box-shadow: 0 3px 8px rgb(0 0 0 / 22%);
+  transition-duration: 120ms;
 }
 
-.reasoning-effort-slider[data-max="true"] .reasoning-effort-max-tail {
-  opacity: 1;
+.reasoning-effort-label {
+  color: color-mix(in oklab, var(--primary) 60%, var(--foreground));
+}
+
+.reasoning-effort-label[data-max="true"] {
+  color: var(--reasoning-max-accent);
+}
+
+/* A crossfade keeps entering and leaving the top level as smooth as moving
+   the thumb. The accent remains theme-owned; no provider-specific hue or
+   usage claim is implied by this treatment. */
+.reasoning-effort-range::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   background: linear-gradient(
     to right,
-    transparent 35%,
-    var(--reasoning-max-tail)
+    var(--primary),
+    var(--reasoning-max-accent)
   );
+  opacity: 0;
+  transition: opacity 320ms ease-out;
 }
 
-/* `[dir="rtl"]` rather than `:dir(rtl)`: Tailwind v4's floor is Chrome 111 and
-   `:dir()` did not ship until Chrome 120, so the pseudo-class silently left
-   111-119 on the left-to-right gradient. The attribute is what the document
-   sets anyway, and matches every descendant of it. */
-[dir="rtl"]
-  .reasoning-effort-slider[data-max="true"]
-  .reasoning-effort-max-tail {
+.reasoning-effort-max-range::after {
+  opacity: 1;
+}
+
+[dir="rtl"] .reasoning-effort-range::after {
   background: linear-gradient(
     to left,
-    transparent 35%,
-    var(--reasoning-max-tail)
+    var(--primary),
+    var(--reasoning-max-accent)
   );
 }
 
-/* Feathered at both ends so the band has no edge to read as a moving object:
-   what travels is a brightening of the track, not a shape on it. The travel
-   itself is an inline `transform` written from the shared status clock - there
-   is deliberately no `animation` here. */
-.reasoning-effort-max-flow {
-  background: linear-gradient(
-    to right,
-    transparent,
-    var(--reasoning-max-flow) 50%,
-    transparent
+/* A fine edge defines the capsule without a bloom outside the footer. The
+   slow-moving light lives INSIDE the track and is driven by the shared clock. */
+.reasoning-effort-max-glow {
+  box-shadow: 0 0 0 1px
+    color-mix(in srgb, var(--reasoning-max-accent) 24%, transparent);
+}
+
+.reasoning-effort-max-sparkles {
+  animation: reasoning-sparkles-enter 320ms ease-out both;
+}
+
+.reasoning-effort-max-sparkles::before {
+  content: "";
+  position: absolute;
+  inset: -50%;
+  background: radial-gradient(
+    ellipse at center,
+    rgb(255 255 255 / 0.24),
+    transparent 60%
   );
+  transform: translateX(var(--reasoning-sheen-x, 0%));
 }
 
-.reasoning-effort-bloom {
-  inset: -4px;
-  border: 1px solid var(--primary);
-  opacity: 0;
-}
-
-.reasoning-effort-slider[data-open="true"][data-max="true"]
-  .reasoning-effort-bloom[data-pulse="true"] {
-  animation: reasoning-max-bloom 640ms cubic-bezier(0.16, 1, 0.3, 1) 1 both;
-}
-
-@keyframes reasoning-max-bloom {
-  0% {
-    opacity: 0.65;
-    transform: scale(0.75);
-  }
-  30% {
-    opacity: 0.42;
-  }
-  100% {
+@keyframes reasoning-sparkles-enter {
+  from {
     opacity: 0;
-    transform: scale(1.65);
+  }
+  to {
+    opacity: 1;
   }
 }
 
-/* The component already withholds both under the preference; these are the
-   floor for a frame rendered before React reads it. The halo and the tail stay
-   - they carry no motion, and they are what still says "max". */
+/* Small specular highlights, not stop markers. Per-point opacity and the
+   field's gentle drift are written by one shared status-clock subscription. */
+.reasoning-effort-sparkle {
+  background: #fff;
+  filter: drop-shadow(0 0 1px rgb(255 255 255 / 0.5));
+}
+
+.reasoning-effort-sparkle-glint {
+  color: #fff;
+  font-size: 5px;
+  line-height: 1;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .reasoning-effort-bloom,
-  .reasoning-effort-max-flow {
-    display: none;
+  .reasoning-effort-slider .reasoning-effort-range,
+  .reasoning-effort-slider > span:has(> [data-slot="slider-thumb"]),
+  .reasoning-effort-slider[data-dragging] .reasoning-effort-range,
+  .reasoning-effort-slider[data-dragging]
+    > span:has(> [data-slot="slider-thumb"]),
+  .reasoning-effort-slider [data-slot="slider-thumb"],
+  .reasoning-effort-slider[data-pressed] [data-slot="slider-thumb"],
+  .reasoning-effort-range::after {
+    transition: none;
+  }
+  .reasoning-effort-slider[data-pressed] [data-slot="slider-thumb"] {
+    scale: 1;
+  }
+  .reasoning-effort-max-sparkles {
+    animation: none;
   }
 }
 
 @media (forced-colors: active) {
-  .reasoning-effort-bloom,
-  .reasoning-effort-max-flow,
-  .reasoning-effort-max-tail {
-    display: none;
-  }
-  .reasoning-effort-slider[data-max="true"] .reasoning-effort-thumb-core {
+  .reasoning-effort-max-glow {
     box-shadow: none;
-    outline: 1px solid CanvasText;
-    outline-offset: 2px;
+  }
+  .reasoning-effort-range::after,
+  .reasoning-effort-max-sparkles {
+    display: none;
   }
 }
 
@@ -1005,6 +1019,11 @@
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
+  /* The reasoning slider's max accent is a registered theme token
+     (`themeTokens` in `lib/themes/theme-definition.ts`): its default lives in
+     `builtin-palettes.ts`, the fallback stylesheet carries it, the applier
+     writes it, and a custom theme overrides it like any other role. */
+  --color-reasoning-max-accent: var(--reasoning-max-accent);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
@@ -1385,21 +1404,6 @@
   [data-composer-editor] blockquote {
     @apply my-0.5 border-l-2 border-primary/60 pl-3 leading-snug text-muted-foreground;
   }
-}
-
-/*
- * Find-in-page highlight paints (`lib/find-engine/find-engine.ts`).
- * Uses the CSS Custom Highlight API so painting never touches
- * `window.getSelection()` - contenteditable editors don't see a
- * selection change and don't grab focus away from the find input.
- */
-::highlight(traycer-find-match) {
-  background-color: color-mix(in srgb, var(--primary) 35%, transparent);
-  color: inherit;
-}
-::highlight(traycer-find-match-active) {
-  background-color: color-mix(in srgb, var(--primary) 75%, transparent);
-  color: var(--primary-foreground);
 }
 
 /*

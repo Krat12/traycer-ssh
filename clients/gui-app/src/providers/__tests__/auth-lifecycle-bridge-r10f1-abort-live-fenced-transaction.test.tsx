@@ -195,6 +195,7 @@ function sendAndReject(args: {
     reason: "Not accepted.",
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -240,7 +241,7 @@ async function stashContainsText(text: string): Promise<boolean> {
 type PutMethod = (
   this: IDBObjectStore,
   value: unknown,
-  key?: IDBValidKey,
+  key: IDBValidKey | undefined,
 ) => IDBRequest<IDBValidKey>;
 
 /** Aborts observed on a transaction that had already written to `entries`. */
@@ -262,7 +263,7 @@ function hookEntriesPutSuccess(onEntriesPutSuccess: () => void): () => void {
   FakeIDBObjectStore.prototype.put = function (
     this: IDBObjectStore,
     value: unknown,
-    key?: IDBValidKey,
+    key: IDBValidKey | undefined,
   ): IDBRequest<IDBValidKey> {
     const request = original.call(this, value, key);
     if (this.name === "entries") {

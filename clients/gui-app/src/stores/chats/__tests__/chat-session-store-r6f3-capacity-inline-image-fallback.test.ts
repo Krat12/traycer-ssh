@@ -209,6 +209,7 @@ function rejectPlain(
     reason,
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 

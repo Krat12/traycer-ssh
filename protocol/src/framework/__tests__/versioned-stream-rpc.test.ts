@@ -116,9 +116,12 @@ describe("validateVersionedStreamRpcRegistry", () => {
     // Mainline's own `epic.subscribe` work landed as a new MAJOR (@2.0), so it
     // does not move this number.
     expect(hostStreamRpcRegistry["epic.subscribe"][1].latestMinor).toBe(6);
-    // `chat.subscribe@1.10` adds the draft-blob bridge capability and the
-    // typed cause on missing-attachment send rejections.
-    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(10);
+    // The same re-mint rule on the chat line: mainline's @1.9 (Antigravity
+    // anchors and delivery placement) stays frozen as staging shipped it,
+    // provider fallback took @1.10 above it, and the draft-blob bridge - the
+    // capability plus the typed cause on missing-attachment send rejections -
+    // took @1.11 above that.
+    expect(hostStreamRpcRegistry["chat.subscribe"][1].latestMinor).toBe(11);
     expect(hostStreamRpcRegistry["terminal.subscribe"][1].latestMinor).toBe(6);
     expect(hostStreamRpcRegistry["worktree.deleteByPath"][1].latestMinor).toBe(
       2,

@@ -233,6 +233,7 @@ function rejectMissingAttachmentBytes(
     code: "MISSING_ATTACHMENT_BYTES",
     cause,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 

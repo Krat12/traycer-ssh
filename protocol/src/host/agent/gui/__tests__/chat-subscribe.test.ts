@@ -17,6 +17,7 @@ import {
   chatSubscribeV18,
   chatSubscribeV19,
   chatSubscribeV110,
+  chatSubscribeV111,
   createImageResolutionUpdatedFrame,
 } from "@traycer/protocol/host/agent/gui/subscribe";
 import {
@@ -2273,33 +2274,66 @@ describe("chat.subscribe@1.6 (image generation)", () => {
 });
 
 describe("chat.subscribe registry membership", () => {
-  it("registers chat.subscribe major 1 latestMinor 10 as chatSubscribeV110", () => {
+  it("registers chat.subscribe major 1 latestMinor 11 as chatSubscribeV111", () => {
     const entry = hostStreamRpcRegistry["chat.subscribe"];
     expect(entry).toBeDefined();
     // Registering `8` was the switch to the windowed line: a stream minor
     // negotiates to the highest the peers share, so that line flipping to `8`
     // was the moment `1.8`-capable peers started exchanging windowed frames.
-    // `9` is windowed too - it differs from `8` only in the session-anchor
-    // union reachable through `rowContext`; `10` adds draft-blob bridge
+    // `9` is windowed too - it differs from `8` in the session-anchor union
+    // reachable through `rowContext` and in delivery placement.
+    //
+    // `10` carries the fallback surface (the `fallback-wait` background item,
+    // the two `fallback.*` client actions, the ack lease `token`, the fallback
+    // DTOs, and the fallback provider-notice kinds), and it is WINDOWED for
+    // that reason: this registry is the negotiation ceiling, so registering a
+    // full-snapshot contract above windowed `1.9` would silently un-window
+    // every peer already capable of it. That is what these assertions together
+    // protect - the ceiling, and the line shape at the ceiling.
+    //
+    // `11` is windowed for the same reason. It adds the draft-blob bridge
     // capability and the typed missing-attachment rejection cause.
-    expect(entry[1].latestMinor).toBe(10);
+    expect(entry[1].latestMinor).toBe(11);
     expect(entry[1].versions[6].contract).toBe(chatSubscribeV16);
     expect(entry[1].versions[7].contract).toBe(chatSubscribeV17);
     expect(entry[1].versions[8].contract).toBe(chatSubscribeV18);
     expect(entry[1].versions[9].contract).toBe(chatSubscribeV19);
     expect(entry[1].versions[10].contract).toBe(chatSubscribeV110);
+    expect(entry[1].versions[11].contract).toBe(chatSubscribeV111);
     expect(chatSubscribeV17.schemaVersion).toEqual({ major: 1, minor: 7 });
     expect(chatSubscribeV18.schemaVersion).toEqual({ major: 1, minor: 8 });
     expect(chatSubscribeV19.schemaVersion).toEqual({ major: 1, minor: 9 });
-    expect(chatSubscribeV110.schemaVersion).toEqual({ major: 1, minor: 10 });
+    expect(chatSubscribeV110.schemaVersion).toEqual({
+      major: 1,
+      minor: 10,
+    });
+    expect(chatSubscribeV111.schemaVersion).toEqual({
+      major: 1,
+      minor: 11,
+    });
+  });
+
+  it("keeps the FULL-SNAPSHOT schema version pinned at 1.7 while the ceiling moves", () => {
+    // `chatSubscribeFullSnapshotSchemaVersion` names the newest NON-windowed
+    // line, and it must not drift upward with the registry ceiling. `1.8`,
+    // `1.9`, `1.10` and `1.11` are all windowed, so the last full-snapshot line
+    // is still `1.7`; moving this to `11` would hand a full-snapshot consumer a
+    // contract whose snapshot frame carries a bounded `tail` instead of a
+    // whole chat.
+    expect(chatSubscribeFullSnapshotSchemaVersion).toEqual({
+      major: 1,
+      minor: 7,
+    });
   });
 
   // `cli-v1.3.0` / `host-v1.3.0` shipped `@1.8`, so it is frozen at the
   // twenty-arm session-anchor union those peers strict-decode. `@1.9` is the
   // first minor whose `rowContext` may carry the Antigravity arm. Streams have
   // no downgrade bridge, so the host projects the field away for a `<1.9`
-  // subscriber (`chat-session-manager.ts`'s `projectWindowedFrameForVersion`)
-  // rather than sending a frame that fails the peer's whole parse.
+  // subscriber (`projectChatHistoryForSchemaVersion` in
+  // `chat-frame-projection.ts`, applied at `emitWindowedFrameToSubscriber`)
+  // rather than sending a frame that fails the peer's whole parse. `@1.10`
+  // inherits the anchor unchanged.
   it("keeps an antigravity session anchor out of the released @1.8 frame", () => {
     const rangeFrame = {
       kind: "range" as const,
@@ -2342,6 +2376,9 @@ describe("chat.subscribe registry membership", () => {
     ).toBe(false);
     expect(
       chatSubscribeV19.serverFrameSchema.safeParse(rangeFrame).success,
+    ).toBe(true);
+    expect(
+      chatSubscribeV110.serverFrameSchema.safeParse(rangeFrame).success,
     ).toBe(true);
   });
 });

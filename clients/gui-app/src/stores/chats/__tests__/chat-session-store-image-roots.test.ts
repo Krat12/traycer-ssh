@@ -195,6 +195,7 @@ describe("chat session store restore-content image roots", () => {
       reason: "Host refused the send.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
 
     const state = harness.handle.store.getState();

@@ -233,6 +233,7 @@ function sendAndReject(args: {
     reason: "Not accepted.",
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -365,7 +366,7 @@ async function seedCapacityFillerEntry(byteLength: number): Promise<void> {
 type PutMethod = (
   this: IDBObjectStore,
   value: unknown,
-  key?: IDBValidKey,
+  key: IDBValidKey | undefined,
 ) => IDBRequest<IDBValidKey>;
 
 function hookEntriesPutSuccess(onEntriesPutSuccess: () => void): () => void {
@@ -384,7 +385,7 @@ function hookEntriesPutSuccess(onEntriesPutSuccess: () => void): () => void {
   FakeIDBObjectStore.prototype.put = function (
     this: IDBObjectStore,
     value: unknown,
-    key?: IDBValidKey,
+    key: IDBValidKey | undefined,
   ): IDBRequest<IDBValidKey> {
     const request = original.call(this, value, key);
     if (this.name === "entries") {

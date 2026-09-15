@@ -207,6 +207,7 @@ function sendAndRejectUnrecordedPrompt(args: {
     reason: "Not accepted.",
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -259,6 +260,7 @@ function sendAndRejectHashOnlyPrompt(args: {
     reason: "Not accepted.",
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 

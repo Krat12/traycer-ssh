@@ -350,7 +350,7 @@ function seedManagedCommandItem(
 
 function emitOwnerSnapshot(
   callbacks: ChatStreamCallbacks,
-  queueItems: ReadonlyArray<ChatQueuedManagedCommandItem> = [],
+  queueItems: ReadonlyArray<ChatQueuedManagedCommandItem>,
 ): void {
   callbacks.onConnectionStatus("open", null, null);
   const chat: Chat = {
@@ -507,6 +507,7 @@ function rejectMissingAttachmentBytes(
     code: "MISSING_ATTACHMENT_BYTES",
     cause,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -541,7 +542,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId, messageId } = sendHashOnlyMessage(harness, hash);
 
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
@@ -573,7 +574,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId, messageId } = sendHashOnlyMessage(harness, hash);
     expect(harness.handle.store.getState().pendingUserMessages).toHaveLength(1);
 
@@ -603,7 +604,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
 
@@ -630,7 +631,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     rejectMissingAttachmentBytes(harness, clientActionId, "unsupported-format");
@@ -659,7 +660,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     rejectMissingAttachmentBytes(harness, clientActionId, "too-large");
@@ -698,7 +699,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intent);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     const originalFrame = harness.sent[0];
@@ -801,7 +802,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     expect(harness.handle.store.getState().pendingUserMessages).toHaveLength(1);
 
@@ -850,7 +851,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hashB = await seedSecondConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const first = sendHashOnlyMessage(harness, hashA);
     const second = sendHashOnlyMessage(harness, hashB);
 
@@ -924,7 +925,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intentA);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     const originalFrame = harness.sent[0];
     if (originalFrame.kind !== "send") throw new Error("expected a send frame");
@@ -958,7 +959,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     });
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     const originalFrame = harness.sent[0];
     if (originalFrame.kind !== "send") throw new Error("expected a send frame");
@@ -1002,7 +1003,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const restoreContent = hashOnlyContent(hash);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendMessageWithContent(
       harness,
       wireContent,
@@ -1039,7 +1040,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
@@ -1070,7 +1071,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
@@ -1132,7 +1133,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     expect(harness.handle.store.getState().pendingUserMessages).toHaveLength(1);
 
@@ -1232,7 +1233,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     const registry = new ChatSessionRegistry({
@@ -1281,6 +1282,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: null,
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     harness.callbacks().onMessageAccepted({
       kind: "messageAccepted",
@@ -1316,7 +1318,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     expect(harness.handle.store.getState().pendingUserMessages).toHaveLength(1);
 
@@ -1359,7 +1361,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hashA = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
 
     // A: hash-only, recovers silently.
     const a = sendHashOnlyMessage(harness, hashA);
@@ -1389,6 +1391,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "B was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     const afterB = harness.handle.store.getState();
     expect(afterB.failedSendRestoration?.clientActionId).toBe(b.clientActionId);
@@ -1444,7 +1447,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
 
@@ -1544,7 +1547,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     };
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const wireContent = hashOnlyContent(hash);
     const action = harness.handle.store.getState().sendMessage({
       content: wireContent,
@@ -1617,7 +1620,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intentA);
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
 
     // First recovery: nothing re-stages while the retry is outstanding, so
     // the settled action's OWN hand-back is the only thing standing in the
@@ -1682,7 +1685,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hashB = await seedSecondConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
 
     // Phase 1: repaint. Pre-fix, `runHashOnlyInlineRetry`'s repaint of the
     // queue (removing the settled row, appending the retry's) had no
@@ -1742,7 +1745,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
     harness = createHarness();
     const chatA = harness;
-    emitOwnerSnapshot(chatA.callbacks());
+    emitOwnerSnapshot(chatA.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(chatA, hashA);
     rejectMissingAttachmentBytes(chatA, clientActionId, "not-on-host");
     expect(
@@ -1833,7 +1836,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
     harness = createHarness();
     const chatA = harness;
-    emitOwnerSnapshot(chatA.callbacks());
+    emitOwnerSnapshot(chatA.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(chatA, hashA);
     rejectMissingAttachmentBytes(chatA, clientActionId, "not-on-host");
     await vi.waitFor(() => {
@@ -1904,6 +1907,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: null,
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     chatA.callbacks().onMessageAccepted({
       kind: "messageAccepted",
@@ -1948,7 +1952,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     // `hasActiveWork`, the predicate the cap walk reaches (see RR1 above).
     harness = createHarness();
     const chatA = harness;
-    emitOwnerSnapshot(chatA.callbacks());
+    emitOwnerSnapshot(chatA.callbacks(), []);
     const plainContent: JsonContent = {
       type: "doc",
       content: [
@@ -1971,6 +1975,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "A was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     expect(
       chatA.handle.store.getState().failedSendRestoration?.clientActionId,
@@ -2047,7 +2052,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     );
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     const registry = new ChatSessionRegistry({
@@ -2104,6 +2109,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
         reason: null,
         code: null,
         backgroundStopTaskIds: [],
+        token: null,
       });
       harness.callbacks().onMessageAccepted({
         kind: "messageAccepted",
@@ -2137,7 +2143,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     const hash = await seedConfirmedImage();
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
     await vi.waitFor(() => {
@@ -2188,6 +2194,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
         reason: null,
         code: null,
         backgroundStopTaskIds: [],
+        token: null,
       });
       harness.callbacks().onMessageAccepted({
         kind: "messageAccepted",
@@ -2216,7 +2223,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
   it("RRR1 (6, DRIVE RED): idle expiry defers disposal while a failed send's prompt is unconsumed, and disposes once the composer takes it", () => {
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const plainContent: JsonContent = {
       type: "doc",
       content: [
@@ -2239,6 +2246,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     expect(
       harness.handle.store.getState().failedSendRestoration?.clientActionId,
@@ -2308,7 +2316,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intentA);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
 
     // A: hash-only, recovers silently, under A's own staged worktree pick.
     const a = sendHashOnlyMessage(harness, hashA);
@@ -2345,6 +2353,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "B was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     const afterB = harness.handle.store.getState();
     expect(afterB.failedSendRestoration?.clientActionId).toBe(b.clientActionId);
@@ -2443,7 +2452,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intentA);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
 
     // A: hash-only, recovers silently, under A's own staged worktree pick.
     const a = sendHashOnlyMessage(harness, hashA);
@@ -2475,6 +2484,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "B was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
 
     // The user stages a THIRD pick wholesale, after both A and B have already
@@ -2612,7 +2622,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     useWorktreeIntentStagingStore.getState().stageIntent(stagingKey, intentA);
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
     expect(readStagedWorktreeIntent(stagingKey)).toEqual(intentA);
@@ -2653,7 +2663,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     );
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     // Installed BEFORE the rejection: `runHashOnlyInlineRetry`'s async chain
@@ -2743,7 +2753,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     });
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const content = twoHashOnlyContent(hashA, hashB);
     const { clientActionId } = sendMessageWithContent(
       harness,
@@ -2881,7 +2891,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     );
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const a = sendMessageWithContent(
       harness,
       hashOnlyContentWithText(hashA, TEXT_A),
@@ -2967,7 +2977,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
     const hash = await seedConfirmedImage();
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     rejectMissingAttachmentBytes(harness, clientActionId, "not-on-host");
     expect(
@@ -3054,7 +3064,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     );
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
     const originalFrame = harness.sent[0];
     if (originalFrame.kind !== "send") throw new Error("expected a send frame");
@@ -3114,7 +3124,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
     harness = createHarness();
     const chatA = harness;
-    emitOwnerSnapshot(chatA.callbacks());
+    emitOwnerSnapshot(chatA.callbacks(), []);
     const a = sendHashOnlyMessage(chatA, hashA);
     rejectMissingAttachmentBytes(chatA, a.clientActionId, "not-on-host");
     expect(
@@ -3141,6 +3151,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "B was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
     expect(
       chatA.handle.store.getState().failedSendRestoration?.clientActionId,
@@ -3230,7 +3241,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
 
   it("R4F1 (idle expiry, DRIVE RED): idle expiry defers disposal while an undelivered last-copy notice is outstanding, and disposes once it is delivered", async () => {
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const hashA = await seedConfirmedImage();
     const a = sendHashOnlyMessage(harness, hashA);
     rejectMissingAttachmentBytes(harness, a.clientActionId, "not-on-host");
@@ -3256,6 +3267,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
       reason: "B was not accepted.",
       code: null,
       backgroundStopTaskIds: [],
+      token: null,
     });
 
     harness.callbacks().onConnectionStatus("reconnecting", null, null);
@@ -3334,7 +3346,7 @@ describe("chat session store - hash-only refusal (T5)", () => {
     );
 
     harness = createHarness();
-    emitOwnerSnapshot(harness.callbacks());
+    emitOwnerSnapshot(harness.callbacks(), []);
     const { clientActionId } = sendHashOnlyMessage(harness, hash);
 
     const registry = new ChatSessionRegistry({

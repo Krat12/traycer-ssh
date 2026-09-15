@@ -35,7 +35,7 @@ import {
 type PutMethod = (
   this: IDBObjectStore,
   value: unknown,
-  key?: IDBValidKey,
+  key: IDBValidKey | undefined,
 ) => IDBRequest<IDBValidKey>;
 
 /**
@@ -58,7 +58,7 @@ function hookEntriesPutSuccess(onSuccess: () => void): () => void {
   FakeIDBObjectStore.prototype.put = function (
     this: IDBObjectStore,
     value: unknown,
-    key?: IDBValidKey,
+    key: IDBValidKey | undefined,
   ): IDBRequest<IDBValidKey> {
     const request = original.call(this, value, key);
     if (this.name === "entries") {
@@ -73,8 +73,8 @@ function hookEntriesPutSuccess(onSuccess: () => void): () => void {
 
 type GetAllMethod = (
   this: IDBObjectStore,
-  query?: IDBValidKey | IDBKeyRange | null,
-  count?: number,
+  query: IDBValidKey | IDBKeyRange | null | undefined,
+  count: number | undefined,
 ) => IDBRequest<unknown[]>;
 
 /**
@@ -93,8 +93,8 @@ function hookEntriesGetAllSuccess(onSuccess: () => void): () => void {
   const original: GetAllMethod = descriptor.value as GetAllMethod;
   FakeIDBObjectStore.prototype.getAll = function (
     this: IDBObjectStore,
-    query?: IDBValidKey | IDBKeyRange | null,
-    count?: number,
+    query: IDBValidKey | IDBKeyRange | null | undefined,
+    count: number | undefined,
   ): IDBRequest<unknown[]> {
     const request = original.call(this, query, count);
     if (this.name === "entries") {

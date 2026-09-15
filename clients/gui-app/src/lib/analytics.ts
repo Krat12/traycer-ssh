@@ -90,6 +90,7 @@ export type AnalyticsSettingsSection =
   | "appearance"
   | "devices"
   | "diagnostics"
+  | "fallback"
   | "general"
   | "host"
   | "keybindings"
@@ -285,7 +286,6 @@ export type AnalyticsSetting =
   | "defaultSelection"
   | "defaultServiceTier"
   | "diffViewerPreferences"
-  | "glassOpacity"
   | "homeTabEnabled"
   // The Layout page's own controls. Dotted rather than camel-cased because
   // they name a path into one persisted store's slice, not a flat
@@ -312,6 +312,7 @@ export type AnalyticsSetting =
   | "layout.statusBar.rateLimits.showBar"
   | "layout.statusBar.rateLimits.showModeWord"
   | "layout.statusBar.rateLimits.showTimer"
+  | "layout.statusBar.shownProfiles"
   | "layout.statusBar.resources.enabled"
   | "layout.statusBar.resources.metric"
   | "layout.statusBar.resources.scope"
@@ -429,6 +430,8 @@ export enum AnalyticsEvent {
   // Externally" - the metric that decides whether the cap needs a
   // per-type raise or range streaming (PDF preview design, Q6).
   PdfPreviewTooLarge = "pdf_preview_too_large",
+  // The Word-document counterpart, recorded on the same failure path.
+  DocxPreviewTooLarge = "docx_preview_too_large",
   WorktreeCreated = "worktree_created",
   WorktreeImported = "worktree_imported",
   WorktreeSelected = "worktree_selected",
@@ -732,6 +735,9 @@ export interface AnalyticsEventProperties {
   readonly [AnalyticsEvent.WorkspaceFileOpened]: SourceProperties;
   readonly [AnalyticsEvent.PdfPreviewTooLarge]: {
     /** Which asset-stream surface the over-cap PDF was requested from. */
+    readonly surface: "workspace" | "git-old" | "git-new";
+  };
+  readonly [AnalyticsEvent.DocxPreviewTooLarge]: {
     readonly surface: "workspace" | "git-old" | "git-new";
   };
   readonly [AnalyticsEvent.WorkspaceOpenedInEditor]: SourceProperties & {
@@ -1174,6 +1180,7 @@ const ANALYTICS_SETTINGS_SECTIONS = new Set<string>(
     appearance: true,
     devices: true,
     diagnostics: true,
+    fallback: true,
     general: true,
     host: true,
     keybindings: true,
@@ -1215,7 +1222,6 @@ const ANALYTICS_SETTINGS = new Set<string>(
     defaultSelection: true,
     defaultServiceTier: true,
     diffViewerPreferences: true,
-    glassOpacity: true,
     homeTabEnabled: true,
     "layout.preset.compact": true,
     "layout.preset.default": true,
@@ -1234,6 +1240,7 @@ const ANALYTICS_SETTINGS = new Set<string>(
     "layout.statusBar.rateLimits.showBar": true,
     "layout.statusBar.rateLimits.showModeWord": true,
     "layout.statusBar.rateLimits.showTimer": true,
+    "layout.statusBar.shownProfiles": true,
     "layout.statusBar.resources.enabled": true,
     "layout.statusBar.resources.metric": true,
     "layout.statusBar.resources.scope": true,
@@ -1437,7 +1444,10 @@ const EVENT_PROPERTY_KEYS = new Map<AnalyticsEvent, ReadonlyArray<string>>([
     [AnalyticsEvent.TaskCreationFailed],
     ["source", "blocker", "mode"],
   ),
-  ...eventKeyEntries([AnalyticsEvent.PdfPreviewTooLarge], ["surface"]),
+  ...eventKeyEntries(
+    [AnalyticsEvent.PdfPreviewTooLarge, AnalyticsEvent.DocxPreviewTooLarge],
+    ["surface"],
+  ),
   ...eventKeyEntries(
     [AnalyticsEvent.HostSetupStarted, AnalyticsEvent.HostSetupSucceeded],
     ["reason"],

@@ -46,7 +46,7 @@ import {
 type PutMethod = (
   this: IDBObjectStore,
   value: unknown,
-  key?: IDBValidKey,
+  key: IDBValidKey | undefined,
 ) => IDBRequest<IDBValidKey>;
 
 /**
@@ -86,7 +86,7 @@ function hookStorePutSuccess(
   FakeIDBObjectStore.prototype.put = function (
     this: IDBObjectStore,
     value: unknown,
-    key?: IDBValidKey,
+    key: IDBValidKey | undefined,
   ): IDBRequest<IDBValidKey> {
     const request = original.call(this, value, key);
     if (this.name === storeName) {
@@ -113,7 +113,7 @@ function hookEntriesTransactionAbort(onAbort: () => void): () => void {
   FakeIDBObjectStore.prototype.put = function (
     this: IDBObjectStore,
     value: unknown,
-    key?: IDBValidKey,
+    key: IDBValidKey | undefined,
   ): IDBRequest<IDBValidKey> {
     const request = original.call(this, value, key);
     if (this.name === "entries" && !observed.has(this.transaction)) {

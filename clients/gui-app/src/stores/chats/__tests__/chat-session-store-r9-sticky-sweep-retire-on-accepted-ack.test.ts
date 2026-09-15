@@ -217,6 +217,7 @@ function rejectMissingAttachmentBytes(
     code: "MISSING_ATTACHMENT_BYTES",
     cause,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -232,6 +233,7 @@ function acceptAck(harness: Harness, clientActionId: string): void {
     reason: null,
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 

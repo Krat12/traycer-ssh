@@ -150,11 +150,10 @@ interface Harness {
   callbacks(): ChatStreamCallbacks;
 }
 
-function createHarness(
-  epicId: string = EPIC_ID,
-  chatId: string = CHAT_ID,
-  hostId: string = HOST_ID,
-): Harness {
+function createHarness(): Harness {
+  const epicId = EPIC_ID;
+  const chatId = CHAT_ID;
+  const hostId = HOST_ID;
   const sent: ChatSubscribeClientFrame[] = [];
   let callbacks: ChatStreamCallbacks | null = null;
   const handle = createChatSessionStore({
@@ -217,11 +216,9 @@ function createIdleChatHandle(
   });
 }
 
-function emitOwnerSnapshot(
-  callbacks: ChatStreamCallbacks,
-  epicId: string = EPIC_ID,
-  chatId: string = CHAT_ID,
-): void {
+function emitOwnerSnapshot(callbacks: ChatStreamCallbacks): void {
+  const epicId = EPIC_ID;
+  const chatId = CHAT_ID;
   callbacks.onConnectionStatus("open", null, null);
   const chat: Chat = {
     id: chatId,
@@ -297,6 +294,7 @@ function rejectPlain(
     reason,
     code: null,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
@@ -317,6 +315,7 @@ function rejectMissingAttachmentBytes(
     code: "MISSING_ATTACHMENT_BYTES",
     cause,
     backgroundStopTaskIds: [],
+    token: null,
   });
 }
 
