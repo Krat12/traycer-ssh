@@ -3204,6 +3204,93 @@ describe("ChatMessages scroll policy", () => {
       });
       expect(atSettle.highlighted).toBe("true");
     });
+    it("reports cancelled (never landed) when a later end navigation tears down a pending message landing", async () => {
+      const messages = makeCompletedTranscript(30);
+      const targetIndex = 10;
+      const target = messages[targetIndex];
+      expect(target).toBeTruthy();
+      const onScrollRequestSettled = vi.fn();
+      const { rerenderWith } = renderChatMessages({
+        messages,
+        scrollStateKey: "scroll-req-settled-end-cancels-message",
+        onScrollRequestSettled,
+      });
+      await settleLegendList();
+
+      rerenderWith({
+        scrollRequest: {
+          kind: "message",
+          messageId: target.id,
+          blockId: null,
+          requestId: 56,
+        },
+      });
+      // Before the message landing settles, an explicit end navigation tears
+      // it down through the shared `activeNavigationSettleCleanupRef` cleanup
+      // (`scrollToEnd`'s own teardown at the top of its callback) - this is
+      // NOT the same-request re-issue path (`reissuingScrollRequestIdRef`),
+      // so it must report the torn-down request cancelled rather than
+      // leaving it pending.
+      rerenderWith({
+        scrollRequest: { kind: "end", requestId: 57 },
+      });
+
+      await waitForNavigationSettle();
+      await waitForNavigationSettle();
+
+      expect(onScrollRequestSettled).toHaveBeenCalledWith(56, "cancelled");
+      expect(onScrollRequestSettled).not.toHaveBeenCalledWith(56, "landed");
+    });
+
+    it("does not re-issue a message landing already cancelled by an end navigation on a later hidden->visible transition", async () => {
+      const messages = makeCompletedTranscript(30);
+      const targetIndex = 10;
+      const target = messages[targetIndex];
+      expect(target).toBeTruthy();
+      const onScrollRequestSettled = vi.fn();
+      const { rerenderWith } = renderChatMessages({
+        messages,
+        scrollStateKey: "scroll-req-settled-end-cancels-message-hidden-visible",
+        onScrollRequestSettled,
+        visible: true,
+      });
+      await settleLegendList();
+
+      rerenderWith({
+        scrollRequest: {
+          kind: "message",
+          messageId: target.id,
+          blockId: null,
+          requestId: 58,
+        },
+      });
+      rerenderWith({
+        scrollRequest: { kind: "end", requestId: 59 },
+      });
+
+      await waitForNavigationSettle();
+      await waitForNavigationSettle();
+
+      expect(onScrollRequestSettled).toHaveBeenCalledWith(58, "cancelled");
+      const scrollTopAfterCancel = getScrollNode().scrollTop;
+      onScrollRequestSettled.mockClear();
+
+      // The cleared pending landing must NOT come back on the next
+      // hidden->visible transition - a re-issue there would be scrolling
+      // toward a request that already reached a terminal outcome.
+      rerenderWith({ visible: false });
+      rerenderWith({ visible: true });
+
+      await waitForNavigationSettle();
+      await waitForNavigationSettle();
+
+      expect(onScrollRequestSettled).not.toHaveBeenCalledWith(
+        58,
+        expect.anything(),
+      );
+      expect(getScrollNode().scrollTop).toBe(scrollTopAfterCancel);
+    });
+
     it("does not report an outcome for end requests", async () => {
       const messages = makeCompletedTranscript(30);
       const onScrollRequestSettled = vi.fn();

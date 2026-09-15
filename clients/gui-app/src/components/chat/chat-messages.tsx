@@ -1609,6 +1609,12 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
     useRef<PendingScrollRequestLanding | null>(null);
   /** The pending request whose landing has been issued at least once. */
   const scrollRequestLandingIssuedRef = useRef<number | null>(null);
+  /**
+   * Set while `landScrollRequestRow` supersedes its OWN earlier landing of
+   * the same request (a `listRows` retry, a hidden→visible re-issue), so the
+   * superseded landing's cleanup does not report the request `cancelled`.
+   */
+  const reissuingScrollRequestIdRef = useRef<number | null>(null);
   const onScrollRequestSettledRef = useRef(onScrollRequestSettled);
   const backgroundToolBlockIdsRef = useRef<ReadonlySet<string>>(
     EMPTY_BACKGROUND_TOOL_BLOCK_IDS,
@@ -2772,7 +2778,11 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
       const initialIndex = rowIndexByKeyRef.current.get(messageId);
       if (!list || initialIndex === undefined) return false;
 
+      // Superseding an earlier landing of THIS request is a re-issue, not a
+      // cancellation; any other active navigation is torn down as cancelled.
+      reissuingScrollRequestIdRef.current = requestId;
       activeNavigationSettleCleanupRef.current?.();
+      reissuingScrollRequestIdRef.current = null;
       const generationAtIssue = anchorUserScrollGenerationRef.current;
       followLatchRef.current?.beginOwnedFreeNavigation();
       const imperativeScrollGeneration = beginImperativeScrollOperation(false);
@@ -2809,14 +2819,19 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
         }
         return queryMountedChatMessageRoot(scrollNode, messageId) !== null;
       };
+      // Idempotent: the cleanup below runs `finish` again after a landing
+      // that already settled, and ownership must be released exactly once.
+      let landingFinished = false;
       const finish = (): void => {
+        if (landingFinished) return;
+        landingFinished = true;
         finishImperativeScrollOperation(imperativeScrollGeneration);
         followLatchRef.current?.completeOwnedFreeNavigation();
       };
 
       let pendingScrollPromise = issue(initialIndex);
       let lastSettleTimedOut = false;
-      activeNavigationSettleCleanupRef.current = settleChatTimelineNavigation({
+      const cancelLandingLoop = settleChatTimelineNavigation({
         awaitSettle: (onSettle) =>
           awaitChatTimelineScrollPromiseSettle(
             () => pendingScrollPromise,
@@ -2879,6 +2894,19 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
         },
         maxRetries: CHAT_TIMELINE_NAVIGATION_MAX_RETRIES,
       });
+      // Another navigation (`scrollToEnd`, find, a restore, unmount) tears
+      // this landing down through the shared cleanup without bumping the
+      // reader generation, so `isAborted` never sees it. Report `cancelled`
+      // from here instead - otherwise the request stays pending, a later
+      // hidden→visible transition re-issues the stale landing over the tail,
+      // and the tile keeps the target row's hydration hold until its TTL.
+      activeNavigationSettleCleanupRef.current = (): void => {
+        cancelLandingLoop();
+        finish();
+        if (reissuingScrollRequestIdRef.current !== requestId) {
+          settleScrollRequest(requestId, "cancelled");
+        }
+      };
       return true;
     },
     [
@@ -3050,11 +3078,12 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
       return;
     }
 
-    activeNavigationSettleCleanupRef.current?.();
-    activeNavigationSettleCleanupRef.current = null;
     // A scroll request that has not reached a terminal outcome is the newer
     // intent: re-issue it against the now-measurable geometry instead of
-    // replaying the saved reading position over it. Its ring stays.
+    // replaying the saved reading position over it. Its ring stays. The
+    // re-issue supersedes its own earlier landing itself (silently, as the
+    // same request); the shared cleanup runs here only when no request is
+    // pending, or it would report that request cancelled and release it.
     const pendingLanding = pendingScrollRequestLandingRef.current;
     if (pendingLanding !== null) {
       if (landScrollRequestRow(pendingLanding)) {
@@ -3062,6 +3091,8 @@ function ChatMessagesInner(props: ChatMessagesInnerProps) {
       }
       return;
     }
+    activeNavigationSettleCleanupRef.current?.();
+    activeNavigationSettleCleanupRef.current = null;
     queueMicrotask(() => {
       clearNavigationHighlight();
     });
