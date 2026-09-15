@@ -59,6 +59,14 @@ import { z } from "zod";
 // 1.4 adds autonomous_resume.deliveryPlacement, defaulting to unknown for
 // old data. It is presentation metadata; the minimum reader does not change.
 //
+// 1.4 also carries `error.failure` (the typed provider failure behind an
+// error block - a `chat.subscribe@1.10` field that lands in a publication). It
+// rides this still-unreleased minor on the same rule as `agentMessageReceipt`
+// above: `host-v1.3.0` shipped chat-sync 1.3, so 1.4 is the next line a
+// released reader will meet. Defaulted `null`, so an older record parses
+// unchanged and residual capture (§3) carries it through an older publisher
+// losslessly; the minimum reader does not change.
+//
 // 1.5 reopens `core.settings.permissionMode` from a closed enum to a checked
 // string, so the `auto` mode (and whatever follows it) does not make a
 // published chat unreadable to shipped readers - the same reopening

@@ -100,7 +100,7 @@ const invalidateQueriesMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
  * exact slot `useHostQuery` writes for `agent.gui.listHarnesses`.
  */
 const queryDataHarness = vi.hoisted(() => ({
-  value: undefined as unknown,
+  value: undefined as ListGuiHarnessesResponse | undefined,
   keys: [] as unknown[],
 }));
 vi.mock("@tanstack/react-query", () => ({

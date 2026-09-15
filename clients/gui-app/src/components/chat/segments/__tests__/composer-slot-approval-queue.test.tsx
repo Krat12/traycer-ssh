@@ -11,9 +11,7 @@ afterEach(() => {
 // Parsed through the protocol schema (not a hand-typed object literal) so a
 // future required field on `chatApprovalStateSchema` fails this fixture loudly
 // instead of silently reading `undefined` in the component under test.
-function approval(
-  overrides: Partial<ChatApprovalState> = {},
-): ChatApprovalState {
+function approval(overrides: Partial<ChatApprovalState>): ChatApprovalState {
   return chatApprovalStateSchema.parse({
     approvalId: "approval-1",
     toolName: "bash",

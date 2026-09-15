@@ -9,9 +9,7 @@ afterEach(() => {
   cleanup();
 });
 
-function approval(
-  overrides: Partial<ChatApprovalState> = {},
-): ChatApprovalState {
+function approval(overrides: Partial<ChatApprovalState>): ChatApprovalState {
   return chatApprovalStateSchema.parse({
     approvalId: "approval-1",
     toolName: "bash",

@@ -54,9 +54,7 @@ afterEach(() => {
   setAutoJudgeMock.isPending = false;
 });
 
-function harnessRow(
-  overrides: Partial<GuiHarnessOption> = {},
-): GuiHarnessOption {
+function harnessRow(overrides: Partial<GuiHarnessOption>): GuiHarnessOption {
   return guiHarnessOptionSchema.parse({
     id: CLAUDE_HARNESS_ID,
     label: "Claude Code",
@@ -69,9 +67,7 @@ function harnessRow(
   });
 }
 
-function providerState(
-  overrides: Partial<ProviderCliState> = {},
-): ProviderCliState {
+function providerState(overrides: Partial<ProviderCliState>): ProviderCliState {
   return {
     providerId: "claude-code",
     enabled: true,
@@ -108,7 +104,7 @@ describe("<ProviderAutoJudgeSection />", () => {
     guiHarnessesQueryMock.data = undefined;
 
     const { container } = render(
-      <ProviderAutoJudgeSection state={providerState()} />,
+      <ProviderAutoJudgeSection state={providerState({})} />,
     );
 
     expect(container.firstChild).toBeNull();
@@ -119,7 +115,7 @@ describe("<ProviderAutoJudgeSection />", () => {
       harnesses: [harnessRow({ nativeAutoJudge: false })],
     };
 
-    render(<ProviderAutoJudgeSection state={providerState()} />);
+    render(<ProviderAutoJudgeSection state={providerState({})} />);
 
     // The tab is drawn for every provider, so "nothing to choose" is still
     // an answer: the question the tab is named for, and where the judge that
@@ -138,7 +134,7 @@ describe("<ProviderAutoJudgeSection />", () => {
       harnesses: [harnessRow({ nativeAutoJudge: true })],
     };
 
-    render(<ProviderAutoJudgeSection state={providerState()} />);
+    render(<ProviderAutoJudgeSection state={providerState({})} />);
 
     // Spelled out rather than built from `PROVIDER_DISPLAY_NAMES`: this is the
     // label a user reads, and the row is deliberately NOT called "Auto mode

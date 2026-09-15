@@ -11,8 +11,8 @@ import {
 
 describe("visibleComposerApprovals", () => {
   it("suppresses only plan approvals from the generic composer queue", () => {
-    const toolApproval = approval("tool-approval", "tool");
-    const planApproval = approval("plan-approval", "plan");
+    const toolApproval = approval("tool-approval", "tool", {});
+    const planApproval = approval("plan-approval", "plan", {});
 
     expect(visibleComposerApprovals([toolApproval, planApproval])).toEqual([
       toolApproval,
@@ -25,19 +25,19 @@ describe("composerHasBlockingApprovals", () => {
     // Plan approvals are resolved via the plan card, so they must not become an
     // invisible composer send gate.
     expect(
-      composerHasBlockingApprovals([approval("plan-approval", "plan")], 0),
+      composerHasBlockingApprovals([approval("plan-approval", "plan", {})], 0),
     ).toBe(false);
   });
 
   it("blocks composer submit for a non-plan tool approval", () => {
     expect(
-      composerHasBlockingApprovals([approval("tool-approval", "tool")], 0),
+      composerHasBlockingApprovals([approval("tool-approval", "tool", {})], 0),
     ).toBe(true);
   });
 
   it("blocks composer submit for a pending file-edit approval alongside a plan approval", () => {
     expect(
-      composerHasBlockingApprovals([approval("plan-approval", "plan")], 1),
+      composerHasBlockingApprovals([approval("plan-approval", "plan", {})], 1),
     ).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe("composerHasBlockingApprovals", () => {
 describe("humanActionableApprovals", () => {
   it("drops plan approvals", () => {
     expect(
-      humanActionableApprovals([approval("plan-approval", "plan")]),
+      humanActionableApprovals([approval("plan-approval", "plan", {})]),
     ).toEqual([]);
   });
 
@@ -95,7 +95,7 @@ describe("humanActionableApprovals", () => {
     const judging = approval("judging-approval", "tool", {
       reviewing: "checking",
     });
-    const plan = approval("plan-approval", "plan");
+    const plan = approval("plan-approval", "plan", {});
     const actionable = approval("tool-approval", "tool", { reviewing: null });
 
     expect(humanActionableApprovals([judging, plan, actionable])).toEqual([
@@ -163,7 +163,7 @@ describe("chat-tile lowerSurfacesHeight → composerOverlayHeight (ticket 18 rid
 function approval(
   approvalId: string,
   kind: ChatApprovalState["kind"],
-  overrides: Partial<Pick<ChatApprovalState, "reviewing" | "reason">> = {},
+  overrides: Partial<Pick<ChatApprovalState, "reviewing" | "reason">>,
 ): ChatApprovalState {
   return {
     approvalId,

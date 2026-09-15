@@ -264,7 +264,12 @@ import { HostWorkspaceSelector } from "@/components/home/host-workspace-selector
 import type { FatalErrorDetails } from "@traycer/protocol/framework/ws-protocol";
 import type { StreamConnectionStatus } from "@traycer-clients/shared/host-transport/i-stream-session";
 import type { TraycerNextStepOption } from "@/markdown/traycer-next-steps";
-import { ChatLowerInteractionSurfaces } from "./chat-tile-lower-surfaces";
+import {
+  ChatDockWorkspaceControls,
+  ChatLowerInteractionSurfaces,
+} from "./chat-tile-lower-surfaces";
+import { FallbackRetryRow } from "@/components/chat/fallback/fallback-retry-row";
+import type { ChatProviderFallbackState } from "@/components/chat/fallback/fallback-state";
 import { composerHasBlockingApprovals } from "./chat-approval-visibility";
 import {
   chatTileUiReducer,
@@ -1492,6 +1497,24 @@ export function ChatTileSessionView(props: ChatTileSessionViewProps) {
                 >
                   <div className="pointer-events-none">
                     <SurfaceActivityProvider active={view.surfaceFocused}>
+                      {/*
+                       * Above the dock and outside the lower surfaces: this row
+                       * is a turn-tail status line, not composer chrome, and it
+                       * belongs to the transcript side of the seam. Mounted
+                       * here rather than inside `ChatLowerInteractionSurfaces`
+                       * because it resolves the tab's routed host client, and
+                       * that surface is deliberately renderable without one
+                       * (see its `hostId` prop). It renders `null` for every
+                       * traversal state but `retrying`, so it is mounted
+                       * unconditionally and the component owns the predicate.
+                       */}
+                      <FallbackRetryRow
+                        pending={view.lower.fallback.pending}
+                        // The tile's one routed client, already resolved above
+                        // for attachments. Re-resolving it would add a second
+                        // directory-query subscription for the same answer.
+                        client={attachmentHostClient}
+                      />
                       <ChatLowerInteractionSurfaces
                         epicId={view.currentEpicId}
                         viewTabId={view.viewTabId}
@@ -1506,6 +1529,7 @@ export function ChatTileSessionView(props: ChatTileSessionViewProps) {
                         composer={view.lower.composer}
                         todo={view.todo}
                         restoreContext={view.restoreContext}
+                        providerFallback={view.lower.fallback}
                         backgroundItems={view.lower.backgroundItems}
                         backgroundStopPendingTaskIds={
                           view.lower.backgroundStopPendingTaskIds
@@ -1772,6 +1796,11 @@ function useChatTileSessionViewModel(
       accumulatedSummaryAssemblyStarted: s.accumulatedSummaryAssemblyStarted,
       accumulatedFileChangeCount: s.accumulatedFileChangeCount,
       backgroundItems: s.backgroundItems,
+      // Both change only when a traversal transitions - a handful of times per
+      // failure, against `backgroundItems`' every background event - so they
+      // ride this slice rather than earning a second subscription path.
+      pendingFallback: s.pendingFallback,
+      pendingReturn: s.pendingReturn,
       pendingBackgroundStops: s.pendingBackgroundStops,
       pendingBackgroundStopAll: s.pendingBackgroundStopAll,
       pendingBackgroundSessionStop: s.pendingBackgroundSessionStop,
@@ -3088,14 +3117,18 @@ function useChatTileSessionViewModel(
   // its output, the Background strip lists what is running, and the output
   // window is where a shell is stopped, started or deleted. A second index
   // over the same shells crowded the composer without adding a capability.
+  // The compact chips close the left cell, hard against the context-usage
+  // cluster: they describe what this chat is DOING and come and go with it,
+  // and the host / workspace pickers ahead of them describe where it runs and
+  // must not shift under the pointer when a chip appears. That ordering lives
+  // inside `ChatDockWorkspaceControls`, which has a suite on it - this memo
+  // only keeps the node's identity still while a count moves.
   const workspaceControls = useMemo(
     () => (
-      <>
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          {hostWorkspaceSelector}
-        </div>
-        {usageChip}
-      </>
+      <ChatDockWorkspaceControls
+        hostWorkspaceSelector={hostWorkspaceSelector}
+        usageChip={usageChip}
+      />
     ),
     [hostWorkspaceSelector, usageChip],
   );
@@ -3311,6 +3344,23 @@ function useChatTileSessionViewModel(
     return new Set(taskIds);
   }, [state.pendingBackgroundStopAll, state.pendingBackgroundStops]);
 
+  // One group rather than two peer fields: the fallback surfaces are a set that
+  // appears and disappears together, and grouping them keeps the threading
+  // through the lower surfaces to a single prop.
+  //
+  // Memoized like its neighbours and for the same reason: this hook's return
+  // object is rebuilt on every render, so a bare literal here would hand the
+  // composer a new `providerFallback` per streamed token and defeat its memo.
+  // On the overwhelmingly common chat both fields are `undefined` forever, so
+  // this memo returns one identity for the life of the tile.
+  const lowerProviderFallback = useMemo<ChatProviderFallbackState>(
+    () => ({
+      pending: state.pendingFallback,
+      pendingReturn: state.pendingReturn,
+    }),
+    [state.pendingFallback, state.pendingReturn],
+  );
+
   return {
     handle,
     node,
@@ -3364,6 +3414,7 @@ function useChatTileSessionViewModel(
         state.pendingBackgroundStopAll !== null ||
         backgroundStopPendingTaskIds.size > 0,
       backgroundSessionStopPending: state.pendingBackgroundSessionStop !== null,
+      fallback: lowerProviderFallback,
     },
     todo: pinnedTodoRenderState.todo,
     revertOnEdit,

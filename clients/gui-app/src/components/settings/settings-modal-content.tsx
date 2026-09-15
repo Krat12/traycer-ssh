@@ -7,6 +7,7 @@ import {
 } from "@/lib/settings-sections";
 import { GeneralSettingsPanel } from "@/components/settings/panels/general-settings-panel";
 import { AppearanceSettingsPanel } from "@/components/settings/panels/appearance-settings-panel";
+import { LayoutSettingsPanel } from "@/components/settings/panels/layout-settings-panel";
 import { OpeningBehaviorPanel } from "@/components/settings/panels/opening-behavior-panel";
 import { KeybindingsSettingsPanel } from "@/components/settings/panels/keybindings-settings-panel";
 import { ShellSettingsPanel } from "@/components/settings/panels/shell-settings-panel";
@@ -20,6 +21,7 @@ import { DiagnosticsSettingsPanel } from "@/components/settings/panels/diagnosti
 import { ProvidersSettingsPanel } from "@/components/settings/panels/providers-settings-panel";
 import { AgentsSettingsPanel } from "@/components/settings/panels/agents-settings-panel";
 import { PermissionsSettingsPanel } from "@/components/settings/panels/permissions-settings-panel";
+import { FallbackSettingsPanel } from "@/components/settings/panels/fallback-settings-panel";
 import { NotificationsSettingsPanel } from "@/components/settings/panels/notifications-settings-panel";
 import { UsageSettingsPanel } from "@/components/settings/panels/usage-settings-panel";
 import { useSystemTabModalActions } from "@/stores/tabs/use-system-tab-modal";
@@ -81,12 +83,14 @@ export function SettingsModalContent(
 const SETTINGS_PANELS = {
   general: GeneralSettingsPanel,
   appearance: AppearanceSettingsPanel,
+  layout: LayoutSettingsPanel,
   "opening-behavior": OpeningBehaviorPanel,
   "app-notifications": AppNotificationsSettingsPanel,
   providers: ProvidersSettingsPanel,
   notifications: NotificationsSettingsPanel,
   permissions: PermissionsSettingsPanel,
   agents: AgentsSettingsPanel,
+  fallback: FallbackSettingsPanel,
   keybindings: KeybindingsSettingsPanel,
   shell: ShellSettingsPanel,
   worktrees: WorktreesSettingsPanel,

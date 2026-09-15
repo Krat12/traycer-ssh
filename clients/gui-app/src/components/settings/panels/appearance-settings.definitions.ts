@@ -20,7 +20,6 @@ export const APPEARANCE = defineSettingsSection("appearance", {
       "color scheme",
       "theme mode",
       "follow device",
-      "background opacity",
       "palette",
       "preset",
       "gruvbox",
@@ -70,16 +69,6 @@ export const APPEARANCE = defineSettingsSection("appearance", {
     description: null,
     availableWhen: alwaysAvailable,
     keywords: ["palette", "preset"],
-  },
-  backgroundOpacity: {
-    kind: "row",
-    group: "themes",
-    search: { anchor: "appearance-background-opacity" },
-    label: "Background opacity",
-    description:
-      "Opacity of menu, dialog, and prompt backgrounds. Lower values let more show through; 100% is solid.",
-    availableWhen: alwaysAvailable,
-    keywords: ["transparency", "translucent", "glass", "blur"],
   },
   startPage: {
     kind: "group",
@@ -184,16 +173,6 @@ export const APPEARANCE = defineSettingsSection("appearance", {
       "Use a hand cursor over buttons, links, and other clickable controls.",
     availableWhen: alwaysAvailable,
     keywords: ["cursor", "mouse", "hand", "hover"],
-  },
-  minimapSide: {
-    kind: "row",
-    group: "interface",
-    search: { anchor: "appearance-minimap-side" },
-    label: "Minimap position",
-    description:
-      "Minimaps are compact overviews for navigating chats and artifacts. Choose where they appear, or hide them.",
-    availableWhen: alwaysAvailable,
-    keywords: ["minimap", "side", "overview", "left", "right", "hide"],
   },
   typography: {
     kind: "group",

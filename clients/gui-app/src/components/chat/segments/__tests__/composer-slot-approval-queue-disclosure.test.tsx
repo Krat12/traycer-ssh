@@ -5,9 +5,7 @@ import type { ChatApprovalState } from "@traycer/protocol/host/agent/gui/subscri
 import { ComposerSlotApprovalQueue } from "@/components/chat/segments/composer-slot-approval-queue";
 import { JUDGE_CAP_NOTICE } from "@/components/chat/segments/approval-card-disclosure";
 
-function approval(
-  overrides: Partial<ChatApprovalState> = {},
-): ChatApprovalState {
+function approval(overrides: Partial<ChatApprovalState>): ChatApprovalState {
   return chatApprovalStateSchema.parse({
     approvalId: "approval-1",
     toolName: "bash",
