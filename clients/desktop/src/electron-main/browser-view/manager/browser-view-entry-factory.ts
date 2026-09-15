@@ -131,25 +131,7 @@ export class BrowserViewEntryFactory {
         ): void => {
           this.handleViewStartNavigation(entry, isInPlace, isMainFrame);
         },
-        // Both fire for a main-frame navigation that will never commit: the
-        // provisional one when it is cancelled (stop, a superseding
-        // navigation, a download), the plain one for a network or server
-        // failure. Chromium emits exactly one of them per navigation, which
-        // is what lets `handleFailedLoad` count in-flight navigations down.
-        "did-fail-load": (
-          _event: Event,
-          errorCode: number,
-          errorDescription: string,
-          _validatedUrl: string,
-          isMainFrame: boolean,
-        ): void => {
-          this.handleFailedLoad(
-            entry,
-            errorCode,
-            errorDescription,
-            isMainFrame,
-          );
-        },
+        // Deliberately NOT `did-fail-load` - see `handleFailedLoad`.
         "did-fail-provisional-load": (
           _event: Event,
           errorCode: number,
@@ -199,8 +181,6 @@ export class BrowserViewEntryFactory {
       status: "loading",
       statusReason: null,
       navigationAttempt: 0,
-      pendingMainFrameNavigations: 0,
-      attemptAwaitingStart: false,
       findState: {
         appRequestId: 0,
         query: "",
@@ -246,27 +226,38 @@ export class BrowserViewEntryFactory {
   ): void {
     if (entry.internalNavigation) return;
     if (!isMainFrame || isInPlace) return;
-    entry.pendingMainFrameNavigations += 1;
-    entry.attemptAwaitingStart = false;
     this.annotations.end(entry, "navigation");
   }
 
   /**
-   * A main-frame load that will never commit. Without this, a reload or a
-   * history move whose page fails (offline, DNS, 5xx with no body, a
-   * cancelled provisional load) left the entry at `loading` for good - the
-   * `did-navigate` settle only fires for a commit.
+   * A main-frame navigation that ended on an error page. Without this, a
+   * reload or a history move whose page fails (offline, DNS, a refused
+   * connection) left the entry at `loading` for good - the `did-navigate`
+   * settle only fires for a successful commit.
    *
-   * Correlated by count, not by "we are loading" and not by url: a
-   * superseded navigation fails with `ERR_ABORTED` while the superseder is
-   * still in flight - under the same url, when a reload interrupts a page
-   * still loading - and settling on that would report `ready` for a page
-   * that has not arrived. A failure settles only when it is the last
-   * in-flight navigation AND no host attempt is still waiting for its own
-   * start (the abort of the old navigation can arrive before the new one's
-   * `did-start-navigation`). `ERR_ABORTED` for a genuinely last navigation
-   * is the user's stop (or a download that took the navigation's place):
-   * the previous page stays, so it settles with no reason.
+   * Only `did-fail-provisional-load` is a settle, and it is treated exactly
+   * like `did-navigate` - unconditionally for the current navigation. That
+   * follows from the emitter, not the event's name or its docs. In Electron
+   * 42.11.1 (`shell/browser/api/electron_api_web_contents.cc`,
+   * `WebContents::DidFinishNavigation`): a navigation that never committed
+   * - cancelled by a stop, a download, or a newer navigation superseding it
+   * - returns before emitting ANYTHING, so a superseded navigation cannot
+   * be mistaken for the current one; a navigation that committed an ERROR
+   * PAGE emits `did-fail-provisional-load` and then, unless the code is
+   * `ERR_ABORTED`, `did-fail-load` too. So the provisional event fires
+   * exactly once per failed navigation, and Chromium only ever commits the
+   * newest one.
+   *
+   * `did-fail-load` is deliberately not listened to: it doubles the
+   * provisional event for the same navigation, and `WebContents::DidFailLoad`
+   * also emits it for a COMMITTED document whose load was interrupted (the
+   * page being left while still loading resources) - a false settle for the
+   * navigation that interrupted it.
+   *
+   * `ERR_ABORTED` is ignored rather than settled. Today it never reaches
+   * this event (an abort never commits); if a later Electron emits it here
+   * for a cancelled navigation, ignoring it degrades to the stall surface
+   * instead of reporting `ready` under a superseder still in flight.
    */
   private handleFailedLoad(
     entry: BrowserViewEntry,
@@ -277,18 +268,9 @@ export class BrowserViewEntryFactory {
     if (entry.internalNavigation) return;
     if (!isMainFrame) return;
     if (!entry.identity.lifecycle.accepted) return;
-    entry.pendingMainFrameNavigations = Math.max(
-      0,
-      entry.pendingMainFrameNavigations - 1,
-    );
     if (entry.status !== "loading") return;
-    if (entry.pendingMainFrameNavigations > 0) return;
-    if (entry.attemptAwaitingStart) return;
-    this.setStatus(
-      entry,
-      "ready",
-      errorCode === ERR_ABORTED ? null : failedLoadReason(errorDescription),
-    );
+    if (errorCode === ERR_ABORTED) return;
+    this.setStatus(entry, "ready", failedLoadReason(errorDescription));
   }
 
   private handleCommittedNavigation(
@@ -306,11 +288,6 @@ export class BrowserViewEntryFactory {
     if (!entry.identity.lifecycle.accepted) return;
     entry.currentUrl = url;
     entry.requestedUrl = url;
-    // A commit ends every navigation that was in flight: Chromium cancels
-    // the older ones on the way, and a straggling failure for one of them
-    // meets a `ready` entry and is ignored.
-    entry.pendingMainFrameNavigations = 0;
-    entry.attemptAwaitingStart = false;
     entry.currentTitle = entry.webContents.getTitle();
     this.observePrimaryProfileOrigin(url, entry.webContents, entry.profile);
     entry.certificateError = null;

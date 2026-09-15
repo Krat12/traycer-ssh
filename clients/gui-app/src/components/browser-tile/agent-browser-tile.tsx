@@ -347,6 +347,11 @@ export function ElectronTabSurface(props: ElectronTabSurfaceProps) {
   const onRequestClose = props.onRequestClose;
   useEffect(() => {
     if (browserView === null) return;
+    // The latch describes an attempt against the guest this subscription is
+    // for. A replaced registration is a fresh guest: a pre-echo latch left
+    // over from the old one would drop the new guest's first `ready` as a
+    // stale settle and hold the tile at loading until the stall surface.
+    attemptedNavigationRef.current = null;
     const subscription = browserView.onNativeTabStatusChange((change) => {
       if (
         change.hostId !== props.binding.hostId ||

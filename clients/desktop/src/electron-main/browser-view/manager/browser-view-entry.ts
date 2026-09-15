@@ -63,23 +63,6 @@ export interface BrowserViewEntry {
    * change so the renderer can tell a new episode from a refresh of one.
    */
   navigationAttempt: number;
-  /**
-   * Main-frame, cross-document navigations the guest has started and not yet
-   * finished (committed or failed). Every such navigation produces exactly
-   * one `did-start-navigation` and exactly one terminal event, so a failure
-   * is a settle only when it leaves this at zero: a failure that leaves a
-   * count behind belongs to a navigation something newer has superseded.
-   * Correlating by url is not enough - a reload of a page still loading
-   * aborts the old navigation under the SAME url as the new one.
-   */
-  pendingMainFrameNavigations: number;
-  /**
-   * A host-driven attempt (navigate / reload / back / forward) has been
-   * issued and the guest has not yet reported its `did-start-navigation`.
-   * A failure heard in that window is the previous navigation being torn
-   * down to make room, never the new attempt failing, so it must not settle.
-   */
-  attemptAwaitingStart: boolean;
   findState: BrowserViewEntryFindState;
   certificateError: BrowserViewCertificateErrorChange | null;
   debugSession: BrowserDebugSession | null;

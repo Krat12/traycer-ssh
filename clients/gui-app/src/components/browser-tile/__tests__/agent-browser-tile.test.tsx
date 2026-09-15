@@ -1117,6 +1117,38 @@ describe("ElectronTabSurface echo-less settle", () => {
     expect(screen.queryByText("This page did not load")).toBeNull();
   });
 
+  it("forgets a pre-echo latch when the binding registration changes", async () => {
+    const bridge = state.bridge;
+    if (bridge === null) throw new Error("bridge missing");
+    const binding = createBinding(() =>
+      Promise.resolve({ detach: () => Promise.resolve() }),
+    );
+    const view = renderTile(binding);
+    await act(() => Promise.resolve());
+
+    // An address submit against the OLD guest that never echoed.
+    act(() => {
+      latch("https://example.com/page-b");
+    });
+    // The directory replaced the binding: a fresh guest whose first report
+    // is a ready for some other page. Without the reset, the stale latch
+    // would drop it as a pre-echo settle and hold the tile at loading.
+    await act(async () => {
+      view.rerender(
+        surfaceElement(NODE, { ...binding, registrationId: "registration-2" }),
+      );
+      await Promise.resolve();
+    });
+    act(() => {
+      bridge.emitStatus({
+        ...statusChange("https://other.example/", "ready"),
+        registrationId: "registration-2",
+      });
+    });
+
+    expect(loaderOverlayClassName()).toContain("opacity-0");
+  });
+
   it("still drops an echo-less ready for a different url (newest submit wins)", async () => {
     const bridge = state.bridge;
     if (bridge === null) throw new Error("bridge missing");
