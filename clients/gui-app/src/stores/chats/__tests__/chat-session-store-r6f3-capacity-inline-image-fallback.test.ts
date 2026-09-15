@@ -247,7 +247,7 @@ describe("R6F3: a save refused for capacity falls back to a TEXT-ONLY handoff, e
     const TEXT = "inline-image prompt refused for capacity";
     const { clientActionId } = sendMessageWithContent(
       harness,
-      inlineImageContent(TEXT, new Uint8Array([1, 2, 3, 4, 5])),
+      inlineImageContent(TEXT, pngBytesOfSize(32)),
     );
     rejectPlain(harness, clientActionId, "Not accepted.");
     expect(

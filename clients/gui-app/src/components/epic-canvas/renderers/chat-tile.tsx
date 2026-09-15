@@ -3042,6 +3042,7 @@ function useChatTileSessionViewModel(
     chatActions,
     handle,
     nodeId: node.id,
+    tileInstanceId: node.instanceId,
     replaceDraftContent,
     clearDraftContent,
     currentComposerSettings,

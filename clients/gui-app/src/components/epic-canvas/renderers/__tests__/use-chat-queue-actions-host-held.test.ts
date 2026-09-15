@@ -151,6 +151,7 @@ function baseInput(
     chatActions: fakeChatActions({}),
     handle: createHandle(),
     nodeId: NODE_ID,
+    tileInstanceId: `${NODE_ID}-instance`,
     replaceDraftContent: () => undefined,
     clearDraftContent: () => undefined,
     currentComposerSettings: SETTINGS,

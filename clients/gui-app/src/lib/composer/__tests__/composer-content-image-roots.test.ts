@@ -120,4 +120,52 @@ describe("withHeldComposerContentImageRoots", () => {
 
     expect(settleCount).toBe(1);
   });
+  it("two overlapping holds under one label do not release each other (DRIVE RED)", async () => {
+    // The lifetime of a scoped hold is one async call, and two can legitimately
+    // overlap under one surface identity: a composer remounted under the same
+    // `taskId` while the previous preparation is still awaiting, or two canvas
+    // tiles showing one chat. Keyed by the label, the second `hold` overwrote
+    // the first's entry and the FIRST `finally` deleted the second's - so the
+    // bytes the still-running preparation needs were reaped mid-flight.
+    const HASH_A = "aa".repeat(32);
+    const HASH_B = "bb".repeat(32);
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseSecond: () => void = () => undefined;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+
+    const first = withHeldComposerContentImageRoots(
+      "overlapping-label",
+      docWithHashOnlyImage(HASH_A),
+      () => firstGate,
+      () => undefined,
+    );
+    const second = withHeldComposerContentImageRoots(
+      "overlapping-label",
+      docWithHashOnlyImage(HASH_B),
+      () => secondGate,
+      () => undefined,
+    );
+
+    // Both are in flight, so both documents are rooted.
+    expect(landingLiveImageRootHashes().has(HASH_A)).toBe(true);
+    expect(landingLiveImageRootHashes().has(HASH_B)).toBe(true);
+
+    // The FIRST settles while the second is still preparing.
+    releaseFirst();
+    await first;
+
+    expect(landingLiveImageRootHashes().has(HASH_A)).toBe(false);
+    // The second still needs its bytes - this is the assertion that goes red
+    // when the key is the label rather than the acquisition.
+    expect(landingLiveImageRootHashes().has(HASH_B)).toBe(true);
+
+    releaseSecond();
+    await second;
+    expect(landingLiveImageRootHashes().has(HASH_B)).toBe(false);
+  });
 });

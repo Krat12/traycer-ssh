@@ -88,13 +88,31 @@ export function composerContentImageRootHashes(): ReadonlyArray<string> {
  * when each call site owned this inline. Swallowing one here would turn a
  * genuine submit fault into a silently dropped send, and rethrowing would only
  * be the compiler's box ticked at the cost of a stack frame.
+ *
+ * ## The key is per ACQUISITION, not per surface
+ *
+ * `label` names the call site for debugging; the registry key is that label
+ * plus a fresh token. A caller's own identity is a poor key for a hold whose
+ * lifetime is one async call, because two holds can legitimately overlap under
+ * it: a composer remounted under the same `taskId` while the previous
+ * preparation is still awaiting `run()`, or two canvas tiles showing the same
+ * chat. The second `hold` would overwrite the first's entry and the FIRST
+ * `finally` would then delete the second's - releasing a root while the
+ * preparation that needs it is still running, which is the reap this module
+ * exists to prevent. Minting the key here rather than asking each caller to is
+ * deliberate: there is no correct caller-supplied value, so there is nothing
+ * for a caller to get wrong.
  */
+let scopedHolderSequence = 0;
+
 export async function withHeldComposerContentImageRoots(
-  holderId: string,
+  label: string,
   content: JsonContent,
   run: () => Promise<void>,
   onSettled: () => void,
 ): Promise<void> {
+  scopedHolderSequence += 1;
+  const holderId = `${label}#${scopedHolderSequence}`;
   holdComposerContentImageRoots(holderId, content);
   try {
     await run();

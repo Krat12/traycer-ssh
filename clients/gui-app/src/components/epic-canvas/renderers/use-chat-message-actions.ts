@@ -38,6 +38,7 @@ import {
 } from "@/lib/composer/tiptap-json-content";
 import { inlineHashOnlyImageBytes } from "@/lib/composer/image-atoms";
 import { withHeldComposerContentImageRoots } from "@/lib/composer/composer-content-image-roots";
+import { appLogger } from "@/lib/logger";
 import { blobHashesFromContent } from "@/lib/drafts/draft-write-codec";
 import {
   draftImageInliningNeeded,
@@ -355,11 +356,12 @@ export function useChatMessageActions(
       const targetMessageId = activeInlineEdit.targetMessageId;
       // `currentContent` lives only in this tile's reducer, so while the read
       // runs it is the sole thing naming these bytes to the image GC.
-      const holderId = `inline-edit-submit:${targetMessageId}`;
+      // A LABEL; the helper mints the per-acquisition key. See its doc.
+      const rootsLabel = `inline-edit-submit:${targetMessageId}`;
       // The hold/release try/finally lives in the helper: a `try` without a
       // `catch` in a hook body defeats the React Compiler's memoization.
       void withHeldComposerContentImageRoots(
-        holderId,
+        rootsLabel,
         activeInlineEdit.currentContent,
         async () => {
           await prepareDraftImageInlining({
@@ -400,7 +402,16 @@ export function useChatMessageActions(
         () => {
           editImagePrepFlight.current = false;
         },
-      );
+      ).catch((error: unknown) => {
+        // The helper propagates rather than swallowing, so `void` alone left
+        // this unhandled. The flag is cleared by its `finally` either way; what
+        // this adds is a record that the edit was abandoned.
+        appLogger.error(
+          "[chat-tile] inline edit image preparation failed",
+          { targetMessageId },
+          error,
+        );
+      });
     },
     [activeInlineEdit, dispatchUi, submitPreparedEdit, tabHostId],
   );

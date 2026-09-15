@@ -180,6 +180,39 @@ describe("draft blob transport", () => {
     expect(second).toEqual([hash]);
   });
 
+  it("two owners do not share one upload flight (DRIVE RED)", async () => {
+    // The host's blob store is owner-PARTITIONED, so an upload made under one
+    // account says nothing about another's partition. Keyed by digest alone,
+    // owner B joined A's flight and was handed `true` while the confirmation
+    // was recorded only for A - and that `true` is what
+    // `rememberLandingBlobsOnHost` turns into permission to evict B's local
+    // bytes, from a partition that may not hold them.
+    const hash = await putImage(pngBytes());
+    const { client, calls } = countingClient(() =>
+      Promise.resolve({ ok: true }),
+    );
+
+    const [forA, forB] = await Promise.all([
+      putDraftBlobs(HOST, client, [hash], OWNER),
+      putDraftBlobs(HOST, client, [hash], "owner-b"),
+    ]);
+
+    // One request per OWNER, not one per digest. This is the whole assertion:
+    // at 1, one of these two answers was produced under the other's identity.
+    expect(calls()).toBe(2);
+    expect(forA).toEqual([hash]);
+    expect(forB).toEqual([hash]);
+    // The memo's single-owner-per-digest shape is unchanged and deliberate (see
+    // the module doc): the later confirmation replaces the earlier, and the
+    // displaced owner re-uploads once. That is a wasted request, which is the
+    // fail-safe direction; being told about a partition you never wrote to is
+    // not.
+    expect(
+      isDraftBlobConfirmed(HOST, hash, OWNER) ||
+        isDraftBlobConfirmed(HOST, hash, "owner-b"),
+    ).toBe(true);
+  });
+
   it("a late acknowledgement after re-bootstrap is reported unconfirmed, not just unmemoized", async () => {
     // Pre-T5, there was no epoch at all: `uploadOneDraftBlob` recorded a
     // confirmation unconditionally on a successful response, so an ack that

@@ -43,11 +43,15 @@ const blobUnsupportedHosts = new Set<string>();
  *    cannot answer - and it is the shape the ticket specifies. Widen it to a
  *    per-digest owner SET only if switching accounts on one host turns out to
  *    be common enough for the churn to matter.
- *  - `inFlightBlobUploads`: digest -> the upload already running for it, so two
- *    concurrent first writes of the same image issue ONE request. Registered
- *    before the local byte read, not after: the read is itself an await, and
- *    two callers that both got past it before either registered would both
- *    upload.
+ *  - `inFlightBlobUploads`: upload key -> the upload already running for it, so
+ *    two concurrent first writes of the same image issue ONE request.
+ *    Registered before the local byte read, not after: the read is itself an
+ *    await, and two callers that both got past it before either registered
+ *    would both upload. The key carries the OWNER as well as the digest,
+ *    because the host's blob store is owner-partitioned: a joiner under a
+ *    different account would be handed an answer about bytes that landed in
+ *    somebody else's partition, and that answer feeds the landing draft's
+ *    eviction gate.
  *  - `unbridgeableBlobs`: digests this host answered `unsupported-format` for.
  *    Deliberately NOT owner-keyed - what a host's writer can decode is a
  *    property of the host BUILD, so a different account cannot change the
@@ -286,9 +290,25 @@ export async function putDraftBlobs(
   return confirmed;
 }
 
+/** The in-flight key: one upload per (host, digest, owner) at a time. */
+function blobUploadKey(sha256: string, ownerUserId: string | null): string {
+  // A null owner is its own bucket rather than sharing the first account's: an
+  // upload made with no signed-in identity records no confirmation, so joining
+  // it would hand a real owner an answer nothing memoized.
+  return `${sha256}\u0000${ownerUserId ?? ""}`;
+}
+
 /**
- * One upload per (host, digest) at a time. A second caller for a digest already
- * going up awaits that same promise instead of starting its own.
+ * One upload per (host, digest, owner) at a time. A second caller for a digest
+ * already going up under the SAME owner awaits that promise instead of starting
+ * its own.
+ *
+ * The owner is in the key because the host partitions blobs by it. Keyed by
+ * digest alone, owner B joining owner A's flight was told `true` while
+ * `uploadOneDraftBlob` recorded the confirmation only for A - and that `true`
+ * is what `rememberLandingBlobsOnHost` turns into permission to evict B's local
+ * bytes, in a partition that may not hold them. Same shape as the retired-epoch
+ * bug one function down: an answer about one conversation used for another.
  *
  * The registration is synchronous with the decision to start - before
  * `uploadOneDraftBlob`'s first await - which is the only ordering that actually
@@ -301,24 +321,25 @@ function joinOrStartBlobUpload(
   sha256: string,
   ownerUserId: string | null,
 ): Promise<boolean> {
-  const joined = inFlightBlobUploads.get(hostId)?.get(sha256);
+  const key = blobUploadKey(sha256, ownerUserId);
+  const joined = inFlightBlobUploads.get(hostId)?.get(key);
   if (joined !== undefined) return joined;
   // Never rejects - every failure is contained into `false` - so the cleanup
   // below and the joiners above need no rejection handling of their own.
   const flight = uploadOneDraftBlob(hostId, client, sha256, ownerUserId);
   const perHost = inFlightBlobUploads.get(hostId);
   if (perHost === undefined) {
-    inFlightBlobUploads.set(hostId, new Map([[sha256, flight]]));
+    inFlightBlobUploads.set(hostId, new Map([[key, flight]]));
   } else {
-    perHost.set(sha256, flight);
+    perHost.set(key, flight);
   }
   void flight.finally(() => {
     const live = inFlightBlobUploads.get(hostId);
     // Identity-checked: `forgetConfirmedDraftBlobs` may have dropped this
     // host's map and a NEWER upload of the same digest may already own the
     // slot. Deleting by key alone would evict that one and un-dedupe it.
-    if (live?.get(sha256) !== flight) return;
-    live.delete(sha256);
+    if (live?.get(key) !== flight) return;
+    live.delete(key);
     if (live.size === 0) inFlightBlobUploads.delete(hostId);
   });
   return flight;

@@ -1408,16 +1408,18 @@ export const useWorktreeIntentStagingStore =
             // And the same removals again, against the HOST rather than a
             // slot - see `sessionSweptRefsByHost`.
             const priorForHost = state.sessionSweptRefsByHost[hostId];
+            // Through the shared merge, which dedupes branch records by
+            // repo-qualified identity and returns the PRIOR object unchanged
+            // when an observation adds nothing. The hand-rolled union here did
+            // neither: the live sweep folds after every sweep, so repeats
+            // accumulated identical branch records, and a new object every time
+            // made the `!==` below true on a purge that changed nothing - so
+            // every subscriber, including each recovery's sweep-evidence
+            // listener, re-ran for no reason. `removed` is never null, so the
+            // fallback is unreachable and present only to keep the type honest.
             const mergedForHost: RemovedWorktreeRefs =
-              priorForHost === undefined
-                ? removed
-                : {
-                    worktreePaths: new Set([
-                      ...priorForHost.worktreePaths,
-                      ...removed.worktreePaths,
-                    ]),
-                    branches: [...priorForHost.branches, ...removed.branches],
-                  };
+              mergeRemovedWorktreeRefs(priorForHost ?? null, removed) ??
+              removed;
             const sessionSweptRefsByHost = {
               ...state.sessionSweptRefsByHost,
               [hostId]: mergedForHost,

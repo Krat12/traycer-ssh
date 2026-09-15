@@ -321,6 +321,25 @@ export function useChatComposerSubmit(
     submitBlockedRef.current = submitBlocked;
   }, [submitBlocked]);
 
+  // The steering inputs, live for the same reason and read at the same moment.
+  // `getActiveTurnForSteer` is already a getter - the turn was the fact most
+  // obviously able to move while a dialog is open - but the other three inputs
+  // to the policy were still the staging render's. A host that reconnected and
+  // negotiated a line without same-turn steering during the byte read would
+  // have its restart dispatched as a STEER it can no longer serve.
+  const steerInputsRef = useRef({
+    activeTurnStatus,
+    steerEnabled,
+    steerProtocolSupported,
+  });
+  useEffect(() => {
+    steerInputsRef.current = {
+      activeTurnStatus,
+      steerEnabled,
+      steerProtocolSupported,
+    };
+  }, [activeTurnStatus, steerEnabled, steerProtocolSupported]);
+
   const submitDraft = useCallback(
     (source: ChatComposerSubmitSource): void => {
       if (submitBlocked()) return;
@@ -352,7 +371,14 @@ export function useChatComposerSubmit(
         annotationImages: ReadonlyArray<AnnotationImageAtom>,
         draftImageBase64ByHash: ReadonlyMap<string, string>,
       ): void => {
-        if (submitBlocked()) return;
+        // LIVE, not the `submitBlocked` this render built. Every call below
+        // reaches here after an awaited image read, and a workspace that became
+        // blocked, a send that became disabled or a draft that became read-only
+        // during it moves none of the identity checks that follow - so the
+        // captured predicate would send the prompt and clear the composer
+        // against a block that is already in force. Same reason the deferred
+        // staged-conflict continuation reads the ref.
+        if (submitBlockedRef.current()) return;
         // Re-read the document rather than comparing the `revision` captured
         // before the async annotation-image read. `revision` bumps on every
         // keystroke, so a single character typed during that read dropped the
@@ -585,12 +611,17 @@ export function useChatComposerSubmit(
       // The captured document is the only thing still naming these bytes if the
       // draft row is replaced mid-read, so it is a GC root for exactly as long
       // as the preparation runs.
-      const holderId = `chat-composer-submit:${taskId}`;
+      // A LABEL, not a key - the helper mints a per-acquisition key so two
+      // overlapping preparations under one `taskId` cannot release each other.
+      const rootsLabel = `chat-composer-submit:${taskId}`;
       // The hold/release try/finally lives in the helper, not here: a `try`
       // without a `catch` inside a hook body is something the React Compiler
-      // cannot lower, and it would cost this whole hook its memoization.
+      // cannot lower, and it would cost this whole hook its memoization. The
+      // helper deliberately does not swallow a rejection, so the `catch` below
+      // is where one lands: `void` alone left it unhandled, and the send is
+      // already abandoned by then - what was missing was saying so.
       void withHeldComposerContentImageRoots(
-        holderId,
+        rootsLabel,
         editorContent,
         async () => {
           // Awaited BEFORE the reconcile loop, not beside it. As one leg of a
@@ -660,7 +691,13 @@ export function useChatComposerSubmit(
           annotationPrepFlight.current = false;
           setAnnotationPreparationPending(false);
         },
-      );
+      ).catch((error: unknown) => {
+        appLogger.error(
+          "[chat-composer] submit image preparation failed",
+          { taskId },
+          error,
+        );
+      });
     },
     [
       activeTurnStatus,
@@ -705,12 +742,13 @@ export function useChatComposerSubmit(
         currentTurn !== null &&
         pendingConflict.originTurnId !== null &&
         currentTurn.turnId === pendingConflict.originTurnId;
+      const steerInputs = steerInputsRef.current;
       const deliveryPolicy = sameTurn
         ? resolveSubmitDeliveryPolicy({
             source: "mod-enter",
-            activeTurnStatus,
-            steerEnabled,
-            steerProtocolSupported,
+            activeTurnStatus: steerInputs.activeTurnStatus,
+            steerEnabled: steerInputs.steerEnabled,
+            steerProtocolSupported: steerInputs.steerProtocolSupported,
           })
         : "auto";
       if (
@@ -726,14 +764,7 @@ export function useChatComposerSubmit(
         setPendingConflict(null);
       }
     },
-    [
-      finalizeSend,
-      activeTurnStatus,
-      steerEnabled,
-      steerProtocolSupported,
-      getActiveTurnForSteer,
-      submitBlocked,
-    ],
+    [finalizeSend, getActiveTurnForSteer, submitBlocked],
   );
 
   const onRestart = useCallback((): void => {

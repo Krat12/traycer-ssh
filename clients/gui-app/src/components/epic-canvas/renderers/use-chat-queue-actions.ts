@@ -39,6 +39,15 @@ export interface ChatQueueActionsInput {
   readonly chatActions: ChatActions;
   readonly handle: ChatSessionStoreHandle;
   readonly nodeId: string;
+  /**
+   * The mounted TAB, not the chat. Used only as the image-root holder identity:
+   * two tiles can show one chat, each with its own saved-draft snapshot in its
+   * own ref, and a holder keyed by the chat id would have them share one entry
+   * in a process-wide map - so one tile's cleanup releases the other's roots
+   * while its restore still needs those bytes. Everything else here is keyed by
+   * `nodeId`, correctly: the draft row and the host-held hashes are the CHAT's.
+   */
+  readonly tileInstanceId: string;
   readonly replaceDraftContent: (
     nodeId: string,
     content: JsonContent,
@@ -100,6 +109,7 @@ export function useChatQueueActions(
     chatActions,
     handle,
     nodeId,
+    tileInstanceId,
     replaceDraftContent,
     clearDraftContent,
     currentComposerSettings,
@@ -130,7 +140,7 @@ export function useChatQueueActions(
    * reconcile in that window reaps their bytes, and the cancel that restores the
    * document hands back a hash-only draft that can no longer be resolved.
    */
-  const savedDraftHolderId = `queue-edit-saved-draft:${nodeId}`;
+  const savedDraftHolderId = `queue-edit-saved-draft:${tileInstanceId}`;
   // Released on unmount too - a tile closed mid-queue-edit would otherwise pin
   // those bytes for the life of the renderer.
   useEffect(
