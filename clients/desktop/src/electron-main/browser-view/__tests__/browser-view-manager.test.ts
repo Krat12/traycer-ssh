@@ -329,6 +329,7 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     clear: () => {},
     goBack: () => {
       this.goBackCalls += 1;
+      if (this.goBackThrows) throw new Error("goBack failed");
     },
     goForward: () => {
       this.goForwardCalls += 1;
@@ -352,8 +353,17 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
   readonly backgroundThrottlingStates: boolean[] = [];
   canGoBackValue = false;
   canGoForwardValue = false;
+  goBackThrows = false;
   throwDeprecatedNavigation = false;
   destroyed = false;
+  /**
+   * When set, the next `loadURL` call resolves/rejects through this deferred
+   * settlement instead of the default immediate resolve - lets a test control
+   * exactly when an in-flight `loadURL` settles relative to a later
+   * navigation, to prove an OLDER attempt's rejection cannot settle a NEWER
+   * one.
+   */
+  nextLoadURLDeferred: PromiseWithResolvers<void> | null = null;
   zoomFactor = 1;
   title = "";
   emptyCapture = false;
@@ -383,6 +393,11 @@ class FakeWebContents extends EventEmitter implements BrowserViewWebContents {
     this.lifecycle.push("loadURL");
     this.url = url;
     this.loadUrls.push(url);
+    if (this.nextLoadURLDeferred !== null) {
+      const deferred = this.nextLoadURLDeferred;
+      this.nextLoadURLDeferred = null;
+      return deferred.promise;
+    }
     if (url === "http://127.0.0.1:65535/") {
       return Promise.reject(new Error("ERR_CONNECTION_REFUSED"));
     }
@@ -5000,5 +5015,363 @@ describe("reserved chords are matched against the guest's own window", () => {
     // the wrong one of them.
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("BrowserViewManager navigation attempts and failure settles", () => {
+  it("reports a new attempt for a reload issued while already loading", async () => {
+    const harness = createHarness();
+    const { capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    const first = harness.nativeTabStatuses.at(-1);
+    expect(first).toMatchObject({ status: "loading", reason: null });
+    harness.nativeTabStatuses.length = 0;
+
+    // Still loading: `setStatus` would dedupe on (status, reason) and emit
+    // nothing, leaving the renderer's stall clock on the previous episode.
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    const second = harness.nativeTabStatuses.at(-1);
+    expect(second).toMatchObject({ status: "loading", reason: null });
+    expect(second?.navigationAttempt).toBe(
+      (first?.navigationAttempt as number) + 1,
+    );
+  });
+
+  it("bumps navigationAttempt for every host-initiated navigation", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    const readyAttempt = harness.nativeTabStatuses.at(-1)?.navigationAttempt;
+    expect(typeof readyAttempt).toBe("number");
+    harness.nativeTabStatuses.length = 0;
+
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    const afterReload = harness.nativeTabStatuses.at(-1);
+    expect(afterReload).toMatchObject({ status: "loading" });
+    expect(afterReload?.navigationAttempt).toBeGreaterThan(
+      readyAttempt as number,
+    );
+    // Settle the reload back to ready before the next action - a real caller
+    // never drives goBack while a reload is still in flight, and `setStatus`
+    // dedupes on (status, reason) alone, so a second `loading` set while
+    // still `loading` would otherwise emit nothing to assert on.
+    view.emit("did-navigate", {}, "https://example.com/first", 200, "OK");
+
+    view.canGoBackValue = true;
+    harness.nativeTabStatuses.length = 0;
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "goBack" },
+    });
+    const afterGoBack = harness.nativeTabStatuses.at(-1);
+    expect(afterGoBack).toMatchObject({ status: "loading" });
+    expect(afterGoBack?.navigationAttempt).toBeGreaterThan(
+      afterReload?.navigationAttempt as number,
+    );
+    view.emit(
+      "did-navigate-in-page",
+      {},
+      "https://example.com/first",
+      true,
+      1,
+      2,
+    );
+
+    harness.nativeTabStatuses.length = 0;
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "navigate", url: "https://example.com/second" },
+    });
+    const afterNavigate = harness.nativeTabStatuses.at(-1);
+    expect(afterNavigate).toMatchObject({ status: "loading" });
+    expect(afterNavigate?.navigationAttempt).toBeGreaterThan(
+      afterGoBack?.navigationAttempt as number,
+    );
+  });
+
+  it("settles a failed reload to ready with a bounded reason", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit(
+      "did-start-navigation",
+      {},
+      "https://example.com/first",
+      false,
+      true,
+    );
+    view.emit(
+      "did-fail-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://example.com/first",
+      true,
+    );
+
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      reason: "This page did not load (ERR_NAME_NOT_RESOLVED)",
+    });
+  });
+
+  it("settles ERR_ABORTED with no reason", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit(
+      "did-start-navigation",
+      {},
+      "https://example.com/first",
+      false,
+      true,
+    );
+    view.emit(
+      "did-fail-load",
+      {},
+      -3,
+      "ERR_ABORTED",
+      "https://example.com/first",
+      true,
+    );
+
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      reason: null,
+    });
+  });
+
+  it("ignores a failure for a navigation a newer one has already superseded", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit("did-start-navigation", {}, "https://example.com/a", false, true);
+    view.emit("did-start-navigation", {}, "https://example.com/b", false, true);
+    // A's provisional load fails with ERR_ABORTED (B superseded it), but B
+    // is the pending url now - A's failure must not settle the tile.
+    view.emit(
+      "did-fail-load",
+      {},
+      -3,
+      "ERR_ABORTED",
+      "https://example.com/a",
+      true,
+    );
+    expect(harness.nativeTabStatuses).toEqual([]);
+
+    view.emit("did-navigate", {}, "https://example.com/b", 200, "OK");
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      reason: null,
+      url: "https://example.com/b",
+    });
+  });
+
+  it("ignores a subframe load failure", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    view.emit(
+      "did-start-navigation",
+      {},
+      "https://example.com/first",
+      false,
+      true,
+    );
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit(
+      "did-fail-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://example.com/first",
+      false,
+    );
+
+    expect(harness.nativeTabStatuses).toEqual([]);
+  });
+
+  it("ignores a load failure while the entry is already ready", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    void capability;
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit(
+      "did-fail-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://example.com/first",
+      true,
+    );
+
+    expect(harness.nativeTabStatuses).toEqual([]);
+  });
+
+  it("settles a failed reload on did-fail-provisional-load the same way", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "reload" },
+    });
+    harness.nativeTabStatuses.length = 0;
+
+    view.emit(
+      "did-start-navigation",
+      {},
+      "https://example.com/first",
+      false,
+      true,
+    );
+    view.emit(
+      "did-fail-provisional-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://example.com/first",
+      true,
+    );
+
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      reason: "This page did not load (ERR_NAME_NOT_RESOLVED)",
+    });
+  });
+
+  it("does not let an older attempt's loadURL rejection settle a newer one", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/start",
+    );
+    harness.nativeTabStatuses.length = 0;
+
+    const deferredFirst = Promise.withResolvers<void>();
+    view.nextLoadURLDeferred = deferredFirst;
+    // Started but never resolves until the test says so: the first attempt
+    // is still "in flight" from the manager's point of view.
+    const firstNavigate = harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "navigate", url: "https://example.com/a" },
+    });
+    void firstNavigate.catch(() => undefined);
+
+    // A second navigation supersedes it before the first ever settles.
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "navigate", url: "https://example.com/b" },
+    });
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "loading",
+    });
+    harness.nativeTabStatuses.length = 0;
+
+    // Now the first (superseded) attempt's loadURL rejects. It must not
+    // settle the tile to "ready" out from under the second, still-loading
+    // attempt.
+    deferredFirst.reject(new Error("ERR_ABORTED"));
+    await expect(firstNavigate).rejects.toThrow("ERR_ABORTED");
+    expect(harness.nativeTabStatuses).toEqual([]);
+
+    // The second attempt commits normally afterwards.
+    view.emit("did-navigate", {}, "https://example.com/b", 200, "OK");
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      url: "https://example.com/b",
+    });
+  });
+
+  it("settles a history move to ready when the native goBack throws synchronously", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    view.canGoBackValue = true;
+    view.goBackThrows = true;
+    harness.nativeTabStatuses.length = 0;
+
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "goBack" },
+    });
+
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      reason: "Navigation failed",
+    });
   });
 });
