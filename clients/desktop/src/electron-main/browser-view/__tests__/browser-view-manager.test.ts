@@ -5093,7 +5093,16 @@ describe("BrowserViewManager navigation attempts and failure settles", () => {
     // it says nothing about the navigation that interrupted it.
     const harness = createHarness();
     const { view } = await reloadingTab(harness);
-    view.emit("did-fail-load", {}, -3, "", "https://example.com/first", true);
+    // A non-abort code, so the test bites if a did-fail-load listener is
+    // ever re-registered (ERR_ABORTED is ignored by the settle anyway).
+    view.emit(
+      "did-fail-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://example.com/first",
+      true,
+    );
     expect(harness.nativeTabStatuses).toEqual([]);
   });
 
