@@ -70,6 +70,7 @@ export type AnalyticsSettingsSection =
   | "app-diagnostics"
   | "app-notifications"
   | "appearance"
+  | "delete-account"
   | "devices"
   | "diagnostics"
   | "general"
@@ -1099,6 +1100,7 @@ const ANALYTICS_SETTINGS_SECTIONS = new Set<string>(
     "app-diagnostics": true,
     "app-notifications": true,
     appearance: true,
+    "delete-account": true,
     devices: true,
     diagnostics: true,
     general: true,
