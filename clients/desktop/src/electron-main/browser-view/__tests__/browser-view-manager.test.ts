@@ -5064,6 +5064,36 @@ describe("BrowserViewManager navigation attempts and failure settles", () => {
     });
   });
 
+  it("follows the failed navigation's url when it ends on an error page", async () => {
+    const harness = createHarness();
+    const { view, capability } = await attachNativeTab(
+      harness,
+      "window-1",
+      BASE_TILE_KEY,
+      "https://example.com/first",
+    );
+    await harness.manager.controlElectronTab("window-1", {
+      ...capability,
+      action: { kind: "navigate", url: "https://nowhere.invalid/" },
+    });
+    harness.nativeTabStatuses.length = 0;
+    // The guest is showing Chromium's error page for the NEW url; the entry
+    // must say so, as it would for a successful commit, or the toolbar and
+    // the host keep naming the page that was left.
+    view.emit(
+      "did-fail-provisional-load",
+      {},
+      -105,
+      "ERR_NAME_NOT_RESOLVED",
+      "https://nowhere.invalid/",
+      true,
+    );
+    expect(harness.nativeTabStatuses.at(-1)).toMatchObject({
+      status: "ready",
+      url: "https://nowhere.invalid/",
+    });
+  });
+
   it("does not settle twice on the paired did-fail-load that follows the provisional event", async () => {
     const harness = createHarness();
     const { view } = await reloadingTab(harness);

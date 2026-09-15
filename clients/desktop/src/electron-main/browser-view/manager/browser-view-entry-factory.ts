@@ -136,13 +136,14 @@ export class BrowserViewEntryFactory {
           _event: Event,
           errorCode: number,
           errorDescription: string,
-          _validatedUrl: string,
+          validatedUrl: string,
           isMainFrame: boolean,
         ): void => {
           this.handleFailedLoad(
             entry,
             errorCode,
             errorDescription,
+            validatedUrl,
             isMainFrame,
           );
         },
@@ -263,6 +264,7 @@ export class BrowserViewEntryFactory {
     entry: BrowserViewEntry,
     errorCode: number,
     errorDescription: string,
+    validatedUrl: string,
     isMainFrame: boolean,
   ): void {
     if (entry.internalNavigation) return;
@@ -270,6 +272,12 @@ export class BrowserViewEntryFactory {
     if (!entry.identity.lifecycle.accepted) return;
     if (entry.status !== "loading") return;
     if (errorCode === ERR_ABORTED) return;
+    // The guest is now showing Chromium's error page FOR this url, so the
+    // entry follows it exactly as a successful commit would - otherwise the
+    // toolbar and the host's tab state keep naming the page that was left.
+    entry.currentUrl = validatedUrl;
+    entry.requestedUrl = validatedUrl;
+    entry.currentTitle = entry.webContents.getTitle();
     this.setStatus(entry, "ready", failedLoadReason(errorDescription));
   }
 
