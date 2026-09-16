@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import type { SshHostProfile } from "@traycer-clients/shared/platform/ssh-host";
+import { reportHostTransportDiagnostic } from "@traycer-clients/shared/host-transport/transport-diagnostics";
 import {
   classifySshFailure,
   parseRemoteSshHost,
@@ -150,6 +151,7 @@ async function reservePort(): Promise<number> {
 
 function readRemoteMetadata(
   target: string,
+  hostId: string,
   signal: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -157,6 +159,11 @@ function readRemoteMetadata(
       reject(new SshConnectionError("SSH connection cancelled.", false));
       return;
     }
+    reportHostTransportDiagnostic({
+      plane: "ssh",
+      event: "discovery-start",
+      hostId,
+    });
     const child = spawn(sshExecutable(), discoveryArgs(target), {
       windowsHide: true,
       stdio: "pipe",
@@ -171,6 +178,14 @@ function readRemoteMetadata(
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
       child.kill();
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "discovery-finish",
+        hostId,
+        state: error === null ? "success" : "failed",
+        retryable: error?.retryable,
+        reason: error?.message,
+      });
       if (error) reject(error);
       else resolve(stdout);
     };
@@ -224,6 +239,7 @@ function readRemoteMetadata(
 
 function openTunnel(
   target: string,
+  hostId: string,
   localPort: number,
   remote: RemoteSshHost,
   signal: AbortSignal,
@@ -233,6 +249,11 @@ function openTunnel(
       reject(new SshConnectionError("SSH connection cancelled.", false));
       return;
     }
+    reportHostTransportDiagnostic({
+      plane: "ssh",
+      event: "tunnel-start",
+      hostId,
+    });
     const child = spawn(
       sshExecutable(),
       tunnelArgs(target, localPort, remote),
@@ -253,6 +274,14 @@ function openTunnel(
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
       child.kill();
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "tunnel-finish",
+        hostId,
+        state: ready ? "closed" : "failed",
+        retryable: error.retryable,
+        reason: error.message,
+      });
       if (!ready) reject(error);
       closeTunnel(error);
     };
@@ -291,6 +320,11 @@ function openTunnel(
       ) {
         ready = true;
         clearTimeout(deadline);
+        reportHostTransportDiagnostic({
+          plane: "ssh",
+          event: "tunnel-ready",
+          hostId,
+        });
         resolve({
           websocketUrl: `ws://127.0.0.1:${localPort}/rpc`,
           version: remote.version,
@@ -316,9 +350,19 @@ export class OpenSshTransport implements SshTransport {
     profile: SshHostProfile,
     signal: AbortSignal,
   ): Promise<SshTunnel> {
-    const raw = await readRemoteMetadata(profile.target, signal);
+    const raw = await readRemoteMetadata(
+      profile.target,
+      profile.hostId,
+      signal,
+    );
     const remote = parseRemoteSshHost(raw, profile.hostId);
     const port = await reservePort();
-    return await openTunnel(profile.target, port, remote, signal);
+    return await openTunnel(
+      profile.target,
+      profile.hostId,
+      port,
+      remote,
+      signal,
+    );
   }
 }

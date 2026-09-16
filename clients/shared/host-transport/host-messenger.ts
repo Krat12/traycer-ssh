@@ -7,6 +7,7 @@ import {
   type ResponseOfMethod,
 } from "@traycer/protocol/host-transport/remote/rpc-types";
 import type { OpenFrameBearerSource } from "../auth/bearer-source";
+import { reportHostTransportDiagnostic } from "./transport-diagnostics";
 
 export {
   HostMethodVersionUnsatisfiedError,
@@ -233,7 +234,16 @@ export async function withHostRpcErrorBoundary<T>(
   try {
     return await run();
   } catch (error) {
-    throw toHostRpcError(error, method);
+    const normalized = toHostRpcError(error, method);
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "rpc-failure",
+      method,
+      code: normalized.code,
+      reason: normalized.message,
+      retryable: isTransientHostRpcFailure(normalized),
+    });
+    throw normalized;
   }
 }
 

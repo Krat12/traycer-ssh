@@ -6,6 +6,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@traycer-clients\/shared\/(.*)$/,
+        replacement: `${path.resolve(__dirname, "../shared")}/$1`,
+      },
+      {
         find: "@traycer-clients/shared",
         replacement: path.resolve(__dirname, "../shared"),
       },

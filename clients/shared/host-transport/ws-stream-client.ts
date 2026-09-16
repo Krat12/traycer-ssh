@@ -80,6 +80,7 @@ import type { IntervalHandle, TimerHandle } from "./timer-handle";
 import type { ReconnectAllOptions } from "./host-stream-client";
 import type { AvailabilityRecoveryKind } from "./availability-recovery-kind";
 import { backoffFor } from "./backoff";
+import { reportHostTransportDiagnostic } from "./transport-diagnostics";
 
 /**
  * Options for constructing the shared `/stream` transport.
@@ -507,6 +508,7 @@ export class WsStreamClient<
     }
     let removeSession = (): void => undefined;
     const session = new StreamSession<Registry>({
+      clientId: this.instanceId,
       method,
       paramsProvider,
       requiredSchemaVersion,
@@ -1437,6 +1439,7 @@ type ExtractOpenRequest<MethodRegistry> =
     : unknown;
 
 interface StreamSessionOptions<Registry extends VersionedStreamRpcRegistry> {
+  readonly clientId: string;
   readonly method: keyof Registry & string;
   /**
    * Read once per wire subscribe, and handed the version the params are about
@@ -2159,6 +2162,15 @@ class StreamSession<
     }
 
     const dialUrl = toStreamDialUrl(selected.websocketUrl);
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "dial-start",
+      hostId: selected.hostId,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      phase: this.phase,
+      attempt: this.reconnectAttempt,
+    });
     const socket = this.config.webSocketFactory.create(
       dialUrl,
       // A session is bound to one subscription method for its whole life, so
@@ -2226,6 +2238,15 @@ class StreamSession<
     if (socket === null) {
       return;
     }
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "socket-open",
+      hostId: this.openFrameHostId ?? undefined,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      phase: this.phase,
+      attempt: this.reconnectAttempt,
+    });
 
     const token = this.openFrameToken;
     if (token === null) {
@@ -3143,6 +3164,16 @@ class StreamSession<
     if (socket === null) {
       return;
     }
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "socket-error",
+      hostId: this.openFrameHostId ?? undefined,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      phase: this.phase,
+      attempt: this.reconnectAttempt,
+      reason: "socket-error",
+    });
     this.teardownSocket(4005, "socket-error");
     this.onTransportDrop();
   }
@@ -3151,6 +3182,17 @@ class StreamSession<
     if (this.disposed) {
       return;
     }
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "socket-close",
+      hostId: this.openFrameHostId ?? undefined,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      phase: this.phase,
+      attempt: this.reconnectAttempt,
+      code: event.code,
+      reason: event.reason,
+    });
     // A host slow-client eviction is a recoverable close (no fatalError
     // frame) whose reason is prefixed `SLOW_CLIENT`. Flag it so the reconnect
     // backoff escalates across repeated evictions instead of retrying at the
@@ -3353,6 +3395,16 @@ class StreamSession<
       this.config.maxBackoffMs,
     );
     this.reconnectAttempt += 1;
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "reconnect-scheduled",
+      hostId: this.openFrameHostId ?? undefined,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      phase: this.phase,
+      attempt: this.reconnectAttempt,
+      delayMs: delay,
+    });
     this.backoffTimer = setTimeout(() => {
       this.backoffTimer = null;
       this.connect();
@@ -3487,6 +3539,21 @@ class StreamSession<
       return;
     }
     this.status = next;
+    reportHostTransportDiagnostic({
+      plane: "ws",
+      event: "status",
+      hostId: this.openFrameHostId ?? undefined,
+      clientId: this.config.clientId,
+      method: String(this.config.method),
+      state: next,
+      phase: this.phase,
+      reason:
+        reason?.kind === "fatalError"
+          ? reason.details.code
+          : reason?.kind === "caller"
+            ? "caller"
+            : retryCause?.code,
+    });
     const handler = this.statusHandler;
     if (handler === null) {
       return;

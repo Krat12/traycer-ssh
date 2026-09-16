@@ -7,6 +7,8 @@ import type { Disposable } from "@traycer-clients/shared/platform/uri-callback";
 import type { SshProfileStore } from "./ssh-profile-store";
 import type { SshTransport, SshTunnel } from "./openssh-transport";
 import { parseSshProfile, SshConnectionError } from "./ssh-validation";
+import { reportHostTransportDiagnostic } from "@traycer-clients/shared/host-transport/transport-diagnostics";
+import type { RemoteSshDiagnosticSnapshot } from "./ssh-remote-diagnostics";
 
 interface Entry {
   connection: SshHostConnection;
@@ -29,6 +31,9 @@ export class SshHostManager implements ISshHostManager {
   constructor(
     private readonly store: SshProfileStore,
     private readonly transport: SshTransport,
+    private readonly remoteDiagnostic:
+      | ((profile: SshHostProfile) => Promise<RemoteSshDiagnosticSnapshot>)
+      | null,
   ) {}
 
   start(): Promise<void> {
@@ -92,6 +97,7 @@ export class SshHostManager implements ISshHostManager {
       if (!entry) throw new Error("SSH device was removed.");
       this.stop(entry);
       entry.attempts = 0;
+      void this.captureRemoteDiagnostic(entry.connection.profile);
       void this.begin(entry);
     });
   }
@@ -144,6 +150,13 @@ export class SshHostManager implements ISshHostManager {
       state: entry.attempts ? "reconnecting" : "connecting",
       websocketUrl: null,
     };
+    reportHostTransportDiagnostic({
+      plane: "ssh",
+      event: "manager-attempt",
+      hostId: entry.connection.profile.hostId,
+      attempt: entry.attempts,
+      state: entry.attempts ? "reconnecting" : "connecting",
+    });
     this.publish();
     try {
       const tunnel = await this.transport.connect(
@@ -163,6 +176,12 @@ export class SshHostManager implements ISshHostManager {
         version: tunnel.version,
         message: null,
       };
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "manager-connected",
+        hostId: entry.connection.profile.hostId,
+        state: "connected",
+      });
       this.publish();
       void tunnel.closed.then((error) => {
         if (!abort.signal.aborted && entry.abort === abort && !this.disposed)
@@ -183,6 +202,7 @@ export class SshHostManager implements ISshHostManager {
             "SSH connection failed. Reconnect to try again.",
             false,
           );
+    const hostId = entry.connection.profile.hostId;
     entry.connection = {
       ...entry.connection,
       state: failure.retryable ? "reconnecting" : "error",
@@ -192,10 +212,30 @@ export class SshHostManager implements ISshHostManager {
     if (failure.retryable) {
       const delay = Math.min(1_000 * 2 ** Math.min(entry.attempts, 5), 30_000);
       entry.attempts += 1;
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "manager-retry-scheduled",
+        hostId,
+        attempt: entry.attempts,
+        delayMs: delay,
+        state: "reconnecting",
+        retryable: true,
+        reason: failure.message,
+      });
       entry.retry = setTimeout(() => {
         entry.retry = null;
         void this.begin(entry);
       }, delay);
+    } else {
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "manager-terminal-failure",
+        hostId,
+        attempt: entry.attempts,
+        state: "error",
+        retryable: false,
+        reason: failure.message,
+      });
     }
     this.publish();
   }
@@ -206,6 +246,53 @@ export class SshHostManager implements ISshHostManager {
     entry.abort.abort();
     entry.tunnel?.dispose();
     entry.tunnel = null;
+  }
+
+  private async captureRemoteDiagnostic(
+    profile: SshHostProfile,
+  ): Promise<void> {
+    if (this.remoteDiagnostic === null) return;
+    try {
+      const snapshot = await this.remoteDiagnostic(profile);
+      const service = Object.entries(snapshot.service)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(",");
+      const pid = Object.entries(snapshot.pid)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(",");
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "remote-snapshot",
+        hostId: profile.hostId,
+        state: snapshot.timedOut
+          ? "timed-out"
+          : snapshot.aborted
+            ? "aborted"
+            : "complete",
+        reason: `exit=${snapshot.exitCode ?? "none"}; service=${service || "none"}; pid=${pid || "none"}; sockets=${snapshot.sockets.length}; processes=${snapshot.processes.length}`,
+      });
+      for (const socket of snapshot.sockets)
+        reportHostTransportDiagnostic({
+          plane: "ssh",
+          event: "remote-socket",
+          hostId: profile.hostId,
+          reason: socket,
+        });
+      for (const process of snapshot.processes)
+        reportHostTransportDiagnostic({
+          plane: "ssh",
+          event: "remote-process",
+          hostId: profile.hostId,
+          reason: process,
+        });
+    } catch (error) {
+      reportHostTransportDiagnostic({
+        plane: "ssh",
+        event: "remote-snapshot-failed",
+        hostId: profile.hostId,
+        reason: error instanceof Error ? error.message : "unknown error",
+      });
+    }
   }
 
   private mutate(action: () => Promise<void>): Promise<void> {

@@ -67,6 +67,23 @@ installed. The selected account device must match the `hostId` in that file.
   versions that reject required options need an update. Password prompts are
   not supported.
 
+## Diagnostics
+
+The fork records one-line transport events in `%APPDATA%\Traycer SSH\traycer-desktop.log`.
+They contain only lifecycle data: SSH discovery/tunnel state, stream method,
+socket close code, retry number and bounded error text. Tokens, URLs, prompts,
+frames and command-line arguments are excluded.
+
+The events distinguish the Windows side (`plane=ws`) from the SSH side
+(`plane=ssh`). A failed Host RPC is recorded as `event=rpc-failure`; this is the
+case behind the message that the Host never received a restart request.
+
+When an incident is visible, use **Reconnect SSH** once. That explicit action
+also runs one bounded, read-only Linux snapshot and records `systemd` state,
+safe Host metadata, loopback sockets with process owners, and a short process
+list. It does not restart or signal anything. The snapshot is deliberately not
+run on every retry, so diagnostics cannot create a second reconnect storm.
+
 ## Isolation
 
 | Item                          | Fork                                        |

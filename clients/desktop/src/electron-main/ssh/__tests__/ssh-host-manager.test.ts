@@ -5,6 +5,7 @@ import { SshHostManager } from "../ssh-host-manager";
 import type { SshProfileStore } from "../ssh-profile-store";
 import type { SshTransport, SshTunnel } from "../openssh-transport";
 import { SshConnectionError } from "../ssh-validation";
+import { setHostTransportDiagnosticSink } from "@traycer-clients/shared/host-transport/transport-diagnostics";
 
 const profile: SshHostProfile = {
   hostId: "linux-host",
@@ -59,7 +60,7 @@ function setup(profiles: readonly SshHostProfile[]) {
       return result.promise;
     }),
   };
-  const manager = new SshHostManager(store, transport);
+  const manager = new SshHostManager(store, transport, null);
   return { manager, store, transport, requests };
 }
 
@@ -73,6 +74,39 @@ afterEach(() => {
 });
 
 describe("SshHostManager", () => {
+  it("emits safe lifecycle events for one tunnel and its retry", async () => {
+    const events: Array<{ event: string; attempt?: number; reason?: string }> =
+      [];
+    const restore = setHostTransportDiagnosticSink((event) => {
+      events.push({
+        event: event.event,
+        attempt: event.attempt,
+        reason: event.reason,
+      });
+    });
+    try {
+      const { manager, requests } = setup([profile]);
+      await manager.start();
+      const first = tunnel(43000);
+      requests[0]!.result.resolve(first);
+      await settle();
+      first.fail(new SshConnectionError("socket dropped", true));
+      await settle();
+      expect(events.map(({ event }) => event)).toEqual([
+        "manager-attempt",
+        "manager-connected",
+        "manager-retry-scheduled",
+      ]);
+      expect(events[2]).toMatchObject({
+        attempt: 1,
+        reason: "socket dropped",
+      });
+      manager.dispose();
+    } finally {
+      restore();
+    }
+  });
+
   it("has no constructor side effects and restores routes exactly once before start returns", async () => {
     const { manager, store, transport } = setup([profile]);
     expect(store.load).not.toHaveBeenCalled();
