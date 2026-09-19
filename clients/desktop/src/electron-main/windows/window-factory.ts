@@ -243,6 +243,10 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
         logStructuredRendererEntry(structured.level, entry);
         return;
       }
+      if (details.message.startsWith("[transport] ")) {
+        log.info("[renderer]", entry);
+        return;
+      }
       if (canOpenDevTools) {
         log.info("[renderer]", { level: details.level, ...entry });
         return;

@@ -16,6 +16,8 @@ interface Entry {
   tunnel: SshTunnel | null;
   retry: NodeJS.Timeout | null;
   attempts: number;
+  healthTimer: NodeJS.Timeout | null;
+  healthFailures: number;
 }
 
 /** One owner per app. Renderer windows only observe its snapshots. */
@@ -33,6 +35,9 @@ export class SshHostManager implements ISshHostManager {
     private readonly transport: SshTransport,
     private readonly remoteDiagnostic:
       | ((profile: SshHostProfile) => Promise<RemoteSshDiagnosticSnapshot>)
+      | null,
+    private readonly probe:
+      | ((url: string, signal: AbortSignal) => Promise<boolean>)
       | null,
   ) {}
 
@@ -136,6 +141,8 @@ export class SshHostManager implements ISshHostManager {
       tunnel: null,
       retry: null,
       attempts: 0,
+      healthTimer: null,
+      healthFailures: 0,
     };
     this.entries.set(profile.hostId, entry);
     void this.begin(entry);
@@ -183,6 +190,7 @@ export class SshHostManager implements ISshHostManager {
         state: "connected",
       });
       this.publish();
+      this.scheduleHealth(entry, abort, tunnel);
       void tunnel.closed.then((error) => {
         if (!abort.signal.aborted && entry.abort === abort && !this.disposed)
           this.failed(entry, error);
@@ -194,7 +202,7 @@ export class SshHostManager implements ISshHostManager {
   }
 
   private failed(entry: Entry, error: unknown): void {
-    entry.tunnel = null;
+    this.stop(entry);
     const failure =
       error instanceof SshConnectionError
         ? error
@@ -241,11 +249,58 @@ export class SshHostManager implements ISshHostManager {
   }
 
   private stop(entry: Entry): void {
+    if (entry.healthTimer) clearTimeout(entry.healthTimer);
+    entry.healthTimer = null;
+    entry.healthFailures = 0;
     if (entry.retry) clearTimeout(entry.retry);
     entry.retry = null;
     entry.abort.abort();
     entry.tunnel?.dispose();
     entry.tunnel = null;
+  }
+
+  private scheduleHealth(
+    entry: Entry,
+    abort: AbortController,
+    tunnel: SshTunnel,
+  ): void {
+    if (this.probe === null) return;
+    entry.healthTimer = setTimeout(() => {
+      entry.healthTimer = null;
+      void this.checkHealth(entry, abort, tunnel);
+    }, 30_000);
+  }
+
+  private async checkHealth(
+    entry: Entry,
+    abort: AbortController,
+    tunnel: SshTunnel,
+  ): Promise<void> {
+    const healthy = await this.probe?.(tunnel.websocketUrl, abort.signal).catch(
+      () => false,
+    );
+    if (abort.signal.aborted || entry.abort !== abort || this.disposed) return;
+    entry.healthFailures = healthy ? 0 : entry.healthFailures + 1;
+    reportHostTransportDiagnostic({
+      plane: "ssh",
+      event: "host-health",
+      hostId: entry.connection.profile.hostId,
+      state: healthy ? "responsive" : "unresponsive",
+      attempt: entry.healthFailures,
+    });
+    if (entry.healthFailures >= 3) {
+      // SSH may remain alive across a Host restart. Re-read metadata to learn
+      // its new port instead of forever forwarding into the old listener.
+      this.failed(
+        entry,
+        new SshConnectionError(
+          "Host is not responding. Rediscovering its SSH endpoint.",
+          true,
+        ),
+      );
+      return;
+    }
+    this.scheduleHealth(entry, abort, tunnel);
   }
 
   private async captureRemoteDiagnostic(

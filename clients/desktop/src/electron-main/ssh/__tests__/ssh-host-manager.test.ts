@@ -40,7 +40,10 @@ function tunnel(
   };
 }
 
-function setup(profiles: readonly SshHostProfile[]) {
+function setup(
+  profiles: readonly SshHostProfile[],
+  probe: ((url: string, signal: AbortSignal) => Promise<boolean>) | null,
+) {
   const requests: {
     signal: AbortSignal;
     result: {
@@ -60,7 +63,7 @@ function setup(profiles: readonly SshHostProfile[]) {
       return result.promise;
     }),
   };
-  const manager = new SshHostManager(store, transport, null);
+  const manager = new SshHostManager(store, transport, null, probe);
   return { manager, store, transport, requests };
 }
 
@@ -74,6 +77,59 @@ afterEach(() => {
 });
 
 describe("SshHostManager", () => {
+  it("rediscovers a restarted Host after three failed HTTP probes even if SSH stays alive", async () => {
+    vi.useFakeTimers();
+    const probe = vi.fn(async () => false);
+    const { manager, requests } = setup([profile], probe);
+    await manager.start();
+    const first = tunnel(43000);
+    requests[0]!.result.resolve(first);
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(first.dispose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(first.dispose).toHaveBeenCalledOnce();
+    expect(requests[0]!.signal.aborted).toBe(true);
+    expect(manager.snapshot()[0]?.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(requests).toHaveLength(2);
+    requests[1]!.result.resolve(tunnel(44000));
+    await settle();
+    expect(manager.snapshot()[0]?.websocketUrl).toBe(
+      "ws://127.0.0.1:44000/rpc",
+    );
+    manager.dispose();
+  });
+
+  it("a healthy response resets failures and late probe results cannot close a replacement", async () => {
+    vi.useFakeTimers();
+    const pending = deferred<boolean>();
+    const probe = vi
+      .fn(async () => false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockImplementationOnce(() => pending.promise);
+    const { manager, requests } = setup([profile], probe);
+    await manager.start();
+    const first = tunnel(43000);
+    requests[0]!.result.resolve(first);
+    await settle();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(first.dispose).not.toHaveBeenCalled();
+    manager.resume();
+    const replacement = tunnel(44000);
+    requests[1]!.result.resolve(replacement);
+    await settle();
+    pending.resolve(false);
+    await settle();
+    expect(replacement.dispose).not.toHaveBeenCalled();
+    manager.dispose();
+    const count = probe.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(probe).toHaveBeenCalledTimes(count);
+  });
+
   it("emits safe lifecycle events for one tunnel and its retry", async () => {
     const events: Array<{ event: string; attempt?: number; reason?: string }> =
       [];
@@ -85,7 +141,7 @@ describe("SshHostManager", () => {
       });
     });
     try {
-      const { manager, requests } = setup([profile]);
+      const { manager, requests } = setup([profile], null);
       await manager.start();
       const first = tunnel(43000);
       requests[0]!.result.resolve(first);
@@ -108,7 +164,7 @@ describe("SshHostManager", () => {
   });
 
   it("has no constructor side effects and restores routes exactly once before start returns", async () => {
-    const { manager, store, transport } = setup([profile]);
+    const { manager, store, transport } = setup([profile], null);
     expect(store.load).not.toHaveBeenCalled();
     await Promise.all([manager.start(), manager.start()]);
     expect(store.load).toHaveBeenCalledTimes(1);
@@ -127,7 +183,7 @@ describe("SshHostManager", () => {
 
   it("retains the SSH route during outage and rediscovers after a bounded backoff", async () => {
     vi.useFakeTimers();
-    const { manager, requests } = setup([profile]);
+    const { manager, requests } = setup([profile], null);
     await manager.start();
     const first = tunnel(43000);
     requests[0]!.result.resolve(first);
@@ -154,7 +210,7 @@ describe("SshHostManager", () => {
 
   it("does not retry host identity/key failures or silently discard the route", async () => {
     vi.useFakeTimers();
-    const { manager, requests } = setup([profile]);
+    const { manager, requests } = setup([profile], null);
     await manager.start();
     requests[0]!.result.reject(
       new SshConnectionError("Host identity mismatch.", false),
@@ -171,7 +227,7 @@ describe("SshHostManager", () => {
   });
 
   it("removal cancels discovery and refuses its late tunnel result", async () => {
-    const { manager, requests, store } = setup([profile]);
+    const { manager, requests, store } = setup([profile], null);
     await manager.start();
     await manager.remove(profile.hostId);
     expect(store.save).toHaveBeenCalledWith([]);
@@ -185,7 +241,7 @@ describe("SshHostManager", () => {
   });
 
   it("waking cancels only owned tunnels and stale close events cannot poison a replacement", async () => {
-    const { manager, requests } = setup([profile]);
+    const { manager, requests } = setup([profile], null);
     await manager.start();
     const first = tunnel(43000);
     requests[0]!.result.resolve(first);
@@ -206,7 +262,7 @@ describe("SshHostManager", () => {
   });
 
   it("failed persistence preserves the existing tunnel and profile", async () => {
-    const { manager, requests, store } = setup([profile]);
+    const { manager, requests, store } = setup([profile], null);
     await manager.start();
     const first = tunnel(43000);
     requests[0]!.result.resolve(first);
@@ -221,7 +277,7 @@ describe("SshHostManager", () => {
   });
 
   it("corrupt persisted routes block startup instead of appearing as an empty fleet", async () => {
-    const { manager, store, transport } = setup([]);
+    const { manager, store, transport } = setup([], null);
     vi.mocked(store.load).mockRejectedValue(
       new Error("Invalid saved profiles"),
     );
@@ -232,7 +288,7 @@ describe("SshHostManager", () => {
   });
 
   it("serializes concurrent profile writes so saving a second device cannot lose the first", async () => {
-    const { manager, store } = setup([]);
+    const { manager, store } = setup([], null);
     await manager.start();
     const other = { ...profile, hostId: "other-host", target: "other-vm" };
     await Promise.all([manager.save(profile), manager.save(other)]);

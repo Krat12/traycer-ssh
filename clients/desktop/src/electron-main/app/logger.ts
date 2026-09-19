@@ -1,4 +1,5 @@
 import log from "electron-log";
+import { setHostTransportDiagnosticSink } from "@traycer-clients/shared/host-transport/transport-diagnostics";
 import { app } from "electron";
 import { join } from "node:path";
 import { isDevBuild } from "../../config";
@@ -50,6 +51,7 @@ export function initLogger(): void {
   // user's system console; the dev slot keeps `debug`.
   log.transports.console.level = isDevBuild ? "debug" : "info";
   installSanitizingHook();
+  setHostTransportDiagnosticSink((event) => log.info("[transport]", event));
   log.info("[desktop] logger initialised", { logPath });
 }
 

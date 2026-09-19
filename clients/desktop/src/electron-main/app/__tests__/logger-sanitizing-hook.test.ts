@@ -41,6 +41,8 @@ vi.mock("../desktop-log-level", () => ({
 }));
 
 import { initLogger } from "../logger";
+import log from "electron-log";
+import { reportHostTransportDiagnostic } from "@traycer-clients/shared/host-transport/transport-diagnostics";
 
 /** What every installed hook does to one log call's arguments. */
 function throughHooks(data: unknown[]): unknown[] {
@@ -52,6 +54,18 @@ describe("electron-log sanitizing hook", () => {
   beforeEach(() => {
     hooks.length = 0;
     initLogger();
+  });
+
+  it("routes main transport diagnostics to the persistent logger", () => {
+    reportHostTransportDiagnostic({
+      plane: "ssh",
+      event: "host-health",
+      state: "unresponsive",
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "[transport]",
+      expect.objectContaining({ event: "host-health", state: "unresponsive" }),
+    );
   });
 
   it("is installed by initLogger", () => {

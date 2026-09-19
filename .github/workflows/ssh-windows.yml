@@ -13,7 +13,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux watchdog regression tests
+        run: python3 -m unittest discover -s scripts/ssh-host-watchdog -v
+
   windows:
+    needs: watchdog
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -30,6 +39,8 @@ jobs:
         run: >-
           bun x vitest run
           src/electron-main/ssh/__tests__
+          src/electron-main/app/__tests__/logger-sanitizing-hook.test.ts
+          src/electron-main/windows/__tests__/window-factory.test.ts
           src/electron-main/browser-sessions/__tests__/browser-sessions-transport.test.ts
           src/electron-main/browser-sessions/__tests__/browser-sessions-owner.test.ts
           src/electron-main/browser-sessions/__tests__/browser-sessions-host-directory.test.ts

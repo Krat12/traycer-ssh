@@ -49,7 +49,7 @@ export function reportHostTransportDiagnostic(
   });
 }
 
-/** Test seam; production callers should only use reportHostTransportDiagnostic. */
+/** Desktop main installs its persistent log sink here; tests can restore it. */
 export function setHostTransportDiagnosticSink(
   next: HostTransportDiagnosticSink | null,
 ): () => void {

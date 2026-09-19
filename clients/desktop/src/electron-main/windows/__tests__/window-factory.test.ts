@@ -1,3 +1,4 @@
+import log from "electron-log";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const electronState = vi.hoisted(() => ({
@@ -480,6 +481,35 @@ describe("loadMainWindow", () => {
     });
 
     expect(electronState.webContentsOnChannels).not.toContain("found-in-page");
+  });
+
+  it("persists transport info diagnostics in production with DevTools disabled", () => {
+    configState.canOpenDevTools = false;
+    configState.isDevBuild = false;
+    createMainWindowForTest({
+      preloadPath: "/preload.js",
+      windowId: "window-a",
+      initialRoute: "/",
+      zoomFactor: 1,
+      placement: createFirstLaunchWindowPlacement(),
+    });
+    const listener = electronState.webContentsListeners.get("console-message");
+    listener?.({
+      level: "info",
+      message:
+        '[transport] {"event":"socket-close","reason":"Bearer secret123"}',
+      lineNumber: 1,
+      sourceId: "app://renderer/",
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "[renderer]",
+      expect.objectContaining({
+        message: expect.stringContaining("socket-close"),
+      }),
+    );
+    expect(JSON.stringify(vi.mocked(log.info).mock.calls)).not.toContain(
+      "secret123",
+    );
   });
 
   it("redacts a secret-bearing string field on a perf-telemetry console line before persisting it", () => {
